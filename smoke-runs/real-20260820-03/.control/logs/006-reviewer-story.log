@@ -1,0 +1,380 @@
+OpenAI Codex v0.148.0
+--------
+workdir: /Users/yutaaoki/write-uuter/.worktrees/1/smoke-runs/real-20260820-03
+model: gpt-5.6-sol
+provider: openai
+approval: never
+sandbox: workspace-write [workdir, /tmp, $TMPDIR]
+reasoning effort: high
+reasoning summaries: none
+session id: 01a01f34-3188-7992-9400-ab73c0e22934
+--------
+user
+# Story Reviewer lens contract
+
+Review only whether the exact candidate follows a coherent narrative and
+fulfills the supplied outline's section purposes and reader takeaways. Do not
+perform evidence, clarity, or copy review. Never edit a draft.
+
+Write the assigned `result.json` and `report.md`. Use status `clean`,
+`fix_required`, or `blocked`; the exact supplied lens and revision; and an
+array of findings. Every finding requires a stable ID, severity, location,
+problem, and `suggested_direction`. The report must repeat every machine
+finding's fields verbatim.
+
+
+## Assignment
+
+Lens: `story`
+Candidate: `article-001`
+Revision: `sha256:a0a75f9bb3b5dc0a60c500b14ba315b82204c384472f966b1a709cebc2839bb7`
+Write only `reviews/article-001/story/result.json` and `reviews/article-001/story/report.md`; never edit a draft.
+
+## Provided context: brief.md
+
+<write-uuter-context name="brief.md">
+# Brief
+
+## Question
+
+How does write-uuter turn a brief into an inspectable reviewed article?
+
+## Audience
+
+Engineers evaluating a small, artifact-driven editorial workflow.
+
+## Provisional takeaway
+
+A deterministic Go controller can coordinate isolated Codex roles while
+leaving evidence, drafts, reviews, and decisions available for inspection.
+
+## Scope
+
+Describe the workflow implemented by this repository and the reason its
+durable artifact gates matter.
+
+## Out of scope
+
+Publishing integrations, web interfaces, and claims about workflows outside
+this repository.
+
+## Publication target
+
+A concise repository article for technical readers.
+
+## Constraints
+
+Use only facts supported by README.md and docs/. Keep the article under 900
+words and explain terms in plain language.
+
+## Done when
+
+The article accurately explains the roles, sequential review loop, candidate
+budget, and inspectable terminal artifacts.
+
+## Source hints
+
+- README.md
+- docs/workflow.md
+- docs/roles.md
+- docs/artifacts.md
+
+</write-uuter-context>
+
+## Provided context: drafts/article-001.md
+
+<write-uuter-context name="drafts/article-001.md">
+# From Brief to Inspectable Reviewed Article
+
+`write-uuter` is a Go command-line tool that turns a Markdown brief into a reviewed article while retaining the materials and decisions that produced it. Evidence, the claim ledger, outline, numbered candidates, reviews, and product-manager decisions remain available as files. The article is therefore not just an endpoint: it can be traced through the run that created it.
+
+The important qualifier is that the Go controller, not an agent conversation, owns the workflow. Before starting, it checks the brief's required sections and confirms that the target run does not already exist. It initializes the run in a temporary sibling directory and renames that directory into place only after initialization succeeds. From then on, Go controls state transitions, validates outputs, tracks candidate revision hashes, enforces timeouts, and cleans up processes.
+
+An agent saying that it has finished is not enough. The controller advances only when the file owned by the active role exists and passes that role's validation. This makes the on-disk artifacts part of the control mechanism rather than a transcript assembled after the work.
+
+## Roles with explicit handoffs
+
+One persistent product manager, or PM, starts before research. At most one other worker runs at a time in the dedicated tmux session. Those workers proceed in a fixed production order: Researcher, Story Editor, Writer, then Evidence, Story, Clarity, and Copy reviewers.
+
+Each role has narrow ownership. The Researcher prepares sources and a claim ledger. The Story Editor creates the outline. The Writer produces only its assigned numbered candidate. Reviewers report findings but cannot edit that candidate. Each reviewer is a fresh process given the durable context appropriate to its lens; it does not inherit earlier reviewers' conversations or reports.
+
+Review, judgment, and routing are also separate. A reviewer records findings. After every lens that runs, the PM classifies each finding as `valid_must_fix`, `valid_optional`, `invalid` with a reason, or `needs_human_judgment`. The PM does not write candidates or reviews. Go then validates the PM's decision file and applies the corresponding state transition. These boundaries leave a visible chain from finding, to editorial judgment, to controller action.
+
+## A sequential, bounded review loop
+
+The four review lenses never run in parallel. A candidate begins with Evidence review and, when permitted to continue, moves through Story, Clarity, and Copy. The PM classifies the result after each reached lens before the controller decides what happens next.
+
+A validated must-fix stops the remaining lenses for that candidate. If revision budget remains, the Writer creates the next numbered candidate, and review starts again at Evidence. Restarting from the first lens ensures that the approvals leading to success concern the same candidate revision. Optional or invalid findings do not spend a candidate. A finding that needs human judgment blocks the run for the human editor to resolve.
+
+The budget is a firm operational limit: candidate 003 is the last candidate. If it still has a validated must-fix, the workflow blocks rather than creating candidate 004. The limit bounds automated revision without claiming that three attempts are universally ideal.
+
+## Files that act as gates
+
+Every handoff has content checks specific to its artifact. Research, for example, must include non-empty sources and a claim ledger containing all five defined classes: fact, firsthand observation, inference, opinion, and unresolved. Outlines, drafts, reviews, and PM decisions have their own structural requirements.
+
+Review validation is especially strict. A review result must identify its assigned lens and the exact SHA-256 revision of the candidate it examined. Its findings must be structurally valid, and the same finding fields must appear in the accompanying readable report. A malformed review, a mismatched lens, or stale revision metadata cannot advance the workflow. Binding a review to the candidate's hash reduces the risk that feedback for an older draft is accidentally treated as approval of a newer one.
+
+## Inspectable endings
+
+Revision does not erase history. Earlier candidates, partial lens sequences, review results, and PM decisions remain in the run directory. The controller atomically rewrites `workflow.json` as its source of truth, recording the current or terminal status, phase, candidate and revision, active role, artifact paths, review attempts, timestamps, and any block reason.
+
+On success, `article.md` appears only after all four lenses pass PM routing. It is a byte-for-byte copy of the accepted candidate, so the published terminal artifact can be matched exactly to the reviews and decisions behind it. On failure, an actionable reason and the artifacts reached so far remain available for diagnosis. A timeout, premature process exit, malformed or stale output, human-judgment decision, or exhausted candidate budget can all produce such a blocked state. In either terminal case, the controller kills its dedicated tmux session, so completion does not depend on lingering agents, scrollback, or chat transcripts.
+
+This inspectability should not be confused with resumability. The shipped controller handles one run at a time and does not implement parallel runs, restart-and-resume, or edits to completed runs. What it does provide is a durable account of the run: the accepted article is traceable to one candidate, and a blocked run remains explainable from validated files left on disk.
+
+</write-uuter-context>
+
+## Provided context: outline.md
+
+<write-uuter-context name="outline.md">
+# Outline: From brief to inspectable reviewed article
+
+## Planned article shape
+
+- Target length: 750–850 words, staying below the 900-word limit.
+- Narrative spine: introduce the artifact-driven promise, follow one run through its role sequence and review loop, then show how validation and retained terminal artifacts make the result inspectable.
+- Terminology: describe the controller as Go-owned and validation-driven, not as making all agent output deterministic.
+
+## 1. A brief becomes a controlled run
+
+**Purpose**
+
+Open with the repository's central behavior: `write-uuter` takes a Markdown brief toward a reviewed article, while preserving the materials and decisions behind that article. Establish that Go—not an agent conversation—controls transitions, validation, timeouts, revision hashes, and cleanup. Briefly explain that validation happens before the run directory is atomically initialized.
+
+**Supporting evidence**
+
+- F01: the CLI turns a brief into a reviewed article and preserves evidence, outline, candidates, reviews, and PM decisions (S1).
+- F02: required brief sections and target availability are checked before atomic run initialization (S2).
+- F03: Go owns state transitions, validation, revision hashes, timeouts, and cleanup (S1, S3).
+- F10: a final chat message or process exit is not accepted as completion without a valid owned artifact (S2).
+
+**Reader takeaway**
+
+The workflow begins as a controller-managed run whose progress is defined by validated files, not by claims made in transient agent conversation.
+
+## 2. Narrow roles create explicit handoffs
+
+**Purpose**
+
+Introduce the actors in production order and explain their boundaries in plain language. The persistent PM begins before research; one worker at a time serves as Researcher, Story Editor, Writer, or a fresh reviewer. Distinguish reporting, editorial classification, and state routing: reviewers identify findings, the PM classifies them, and Go validates the decision and moves the run.
+
+**Supporting evidence**
+
+- F04–F05: one persistent PM, at most one worker, and the order Researcher → Story Editor → Writer → Evidence → Story → Clarity → Copy (S1, S2).
+- F06–F07: the PM classifies findings after each reached lens, while Go validates decisions and applies routing (S2, S3).
+- F13: reviewers cannot edit candidates and each starts fresh with only lens-specific durable context (S3).
+- I03: the separation among reviewer findings, PM classification, and controller routing creates inspectable decision boundaries.
+
+**Reader takeaway**
+
+Each role has a limited job and a durable output, so readers can tell who produced a finding, who judged it, and what mechanism changed workflow state.
+
+## 3. Sequential review spends a bounded candidate budget
+
+**Purpose**
+
+Walk through the review loop. The four lenses run one at a time in a fixed order. After every reached lens, the PM classifies its findings. A validated must-fix stops later lenses and sends the Writer to a replacement candidate when budget remains; that candidate restarts at Evidence. Optional or invalid findings do not consume a candidate, while a need for human judgment blocks the run. Make clear that candidate 003 is the hard ceiling without arguing that three is an ideal number.
+
+**Supporting evidence**
+
+- F06: lenses are sequential and PM classification occurs after each reached lens (S2, S3).
+- F07: the four PM classifications are `valid_must_fix`, `valid_optional`, `invalid` with a reason, and `needs_human_judgment` (S3).
+- F08–F09: must-fix routing, restart at Evidence, non-consuming optional/invalid findings, human block, and the candidate 003 limit (S1, S2).
+- I04: restarting review at Evidence means the final four approvals can all refer to the same candidate revision.
+
+**Reader takeaway**
+
+Revision is controlled and finite: every replacement candidate receives the full ordered review sequence, and unresolved must-fix work cannot continue beyond candidate 003.
+
+## 4. Artifact gates turn files into workflow checkpoints
+
+**Purpose**
+
+Explain what an artifact gate is: the controller advances only when the current role's required file exists and satisfies role-specific rules. Use research and review artifacts as concrete examples. Research needs non-empty sources and a ledger containing all five claim classes; review data must name the assigned lens and exact candidate SHA-256 revision, use valid finding structure, and match its human-readable report. Stale or malformed output is rejected.
+
+**Supporting evidence**
+
+- F10–F11: role advancement depends on validated owned artifacts, including required research, outline, draft, review, and PM-decision structures (S2).
+- F12: review results bind the lens and exact candidate revision, and JSON findings must match report fields (S2, S4).
+- I02: lens-and-revision checks reduce the risk that stale review output advances the workflow.
+
+**Reader takeaway**
+
+Files are not merely a record made after the fact; their validated content is the gate that permits each transition and ties every review to the candidate it evaluated.
+
+## 5. Success and failure both remain inspectable
+
+**Purpose**
+
+Close by showing what remains on disk. Earlier candidates, partial review sequences, findings, and PM decisions survive revision or blocking. `workflow.json` is the atomically rewritten source of truth for current and terminal state. On success, `article.md` appears only after all four lenses pass routing and exactly matches the accepted candidate. On failure, the run retains an actionable block reason and diagnostic artifacts. Note the current boundary: runs are single-run and non-resumable, with no parallel execution or edits to completed runs.
+
+**Supporting evidence**
+
+- F14: superseded candidates, partial reviews, reviews, and decisions remain available (S4).
+- F15: successful `article.md` is byte-for-byte identical to the candidate accepted after all four lenses (S1, S4).
+- F16–F18: atomic workflow state, actionable terminal reasons, cleanup, and independence from tmux scrollback or chat transcripts (S2, S4).
+- F19: parallel runs, resume, and completed-run edits are not implemented (S2).
+- I01 and I05: durable artifacts make intermediate and blocked outcomes inspectable, even though a blocked run cannot be resumed.
+
+**Reader takeaway**
+
+The terminal article is traceable to one accepted candidate, and unsuccessful runs are still explainable from retained state and artifacts; inspectability does not imply resume support.
+
+</write-uuter-context>
+codex
+I’m using the review-format skill because this assignment requires a structured review with paired machine-readable and human-readable outputs. I’ll apply only the story lens and write only the two assigned files.
+exec
+/bin/zsh -lc "sed -n '1,240p' /Users/yutaaoki/.codex/RTK.md && sed -n '1,260p' /Users/yutaaoki/dotfiles/skills/review-format/SKILL.md" in /Users/yutaaoki/write-uuter/.worktrees/1/smoke-runs/real-20260820-03
+ succeeded in 0ms:
+# RTK - Rust Token Killer (Codex CLI)
+
+**Usage**: Token-optimized CLI proxy for shell commands.
+
+## Rule
+
+Always prefix shell commands with `rtk`.
+
+Examples:
+
+```bash
+rtk git status
+rtk cargo test
+rtk npm run build
+rtk pytest -q
+```
+
+## Meta Commands
+
+```bash
+rtk gain            # Token savings analytics
+rtk gain --history  # Recent command savings history
+rtk proxy <cmd>     # Run raw command without filtering
+```
+
+## Verification
+
+```bash
+rtk --version
+rtk gain
+which rtk
+```
+---
+name: review-format
+description: Output in the specified format when a review of specific markdown is requested.
+---
+
+- Score (up to 100)
+- Accuracy score (up to 100 – this score is calculated by a gap between docs/goal.md and the target markdown. The smaller the gap is, the higher the score is)
+- Completeness Score
+- Relevance Score
+- Actionability Score
+- Short summary
+- Critical issue
+- Potentially performance issue
+- potential bug
+
+codex
+The skill’s generic scorecard conflicts with the supplied contract, so I’m following the assignment’s required schema and statuses. The narrative tracks the outline’s five-part progression; I’m checking the repository’s existing review artifacts now so the JSON and report formatting match the workflow’s validator expectations.
+exec
+/bin/zsh -lc "rtk rg --files reviews docs | head -120 && rtk rg -n '\"lens\"|suggested_direction|fix_required|Revision:' reviews docs -g 'result.json' -g 'report.md' -g '*.md' | head -240" in /Users/yutaaoki/write-uuter/.worktrees/1/smoke-runs/real-20260820-03
+ succeeded in 0ms:
+rg: docs: No such file or directory (os error 2)
+reviews/article-001/evidence/report.md
+reviews/article-001/evidence/result.json
+rg: docs: No such file or directory (os error 2)
+reviews/article-001/evidence/result.json:3:  "lens": "evidence",
+
+exec
+/bin/zsh -lc "rtk proxy sed -n '1,240p' reviews/article-001/evidence/result.json && rtk proxy sed -n '1,260p' reviews/article-001/evidence/report.md && rtk git status --short" in /Users/yutaaoki/write-uuter/.worktrees/1/smoke-runs/real-20260820-03
+ succeeded in 0ms:
+{
+  "status": "clean",
+  "lens": "evidence",
+  "reviewed_revision": "sha256:a0a75f9bb3b5dc0a60c500b14ba315b82204c384472f966b1a709cebc2839bb7",
+  "findings": []
+}
+# Evidence Review
+
+- Status: `clean`
+- Lens: `evidence`
+- Reviewed revision: `sha256:a0a75f9bb3b5dc0a60c500b14ba315b82204c384472f966b1a709cebc2839bb7`
+
+No findings.
+ M ../../README.md
+ M ../../docs/artifacts.md
+ M ../../docs/roles.md
+ M ../../docs/workflow.md
+?? ../../Makefile
+?? ../../bin/
+?? ../../cmd/
+?? ../../examples/
+?? ../../go.mod
+?? ../../internal/
+?? ../../prompts/
+?? ../
+?? ../../tmp/
+exec
+/bin/zsh -lc 'rtk ls -la reviews/article-001 && rtk wc -w drafts/article-001.md' in /Users/yutaaoki/write-uuter/.worktrees/1/smoke-runs/real-20260820-03
+ succeeded in 0ms:
+755  evidence/
+755  story/
+847
+
+codex
+Story review is clean: each section fulfills its matching outline purpose, preserves the planned sequence from controlled run through inspectable endings, and lands the intended reader takeaway without narrative gaps or detours. I’m recording that result with no findings.
+apply patch
+patch: completed
+/Users/yutaaoki/write-uuter/.worktrees/1/smoke-runs/real-20260820-03/reviews/article-001/story/report.md
+/Users/yutaaoki/write-uuter/.worktrees/1/smoke-runs/real-20260820-03/reviews/article-001/story/result.json
+diff --git a/smoke-runs/real-20260820-03/reviews/article-001/story/report.md b/smoke-runs/real-20260820-03/reviews/article-001/story/report.md
+new file mode 100644
+index 0000000000000000000000000000000000000000..03b71323c7b13100ec619ea8f9e0a32ffc242c2e
+--- /dev/null
++++ b/smoke-runs/real-20260820-03/reviews/article-001/story/report.md
+@@ -0,0 +1,7 @@
++# Story Review
++
++- Status: `clean`
++- Lens: `story`
++- Reviewed revision: `sha256:a0a75f9bb3b5dc0a60c500b14ba315b82204c384472f966b1a709cebc2839bb7`
++
++No findings.
+diff --git a/smoke-runs/real-20260820-03/reviews/article-001/story/result.json b/smoke-runs/real-20260820-03/reviews/article-001/story/result.json
+new file mode 100644
+index 0000000000000000000000000000000000000000..78991884eb5a1cf64a47c79a9c5d6d0c6a6ff68f
+--- /dev/null
++++ b/smoke-runs/real-20260820-03/reviews/article-001/story/result.json
+@@ -0,0 +1,6 @@
++{
++  "status": "clean",
++  "lens": "story",
++  "reviewed_revision": "sha256:a0a75f9bb3b5dc0a60c500b14ba315b82204c384472f966b1a709cebc2839bb7",
++  "findings": []
++}
+
+diff --git a/smoke-runs/real-20260820-03/reviews/article-001/story/report.md b/smoke-runs/real-20260820-03/reviews/article-001/story/report.md
+new file mode 100644
+index 0000000000000000000000000000000000000000..03b71323c7b13100ec619ea8f9e0a32ffc242c2e
+--- /dev/null
++++ b/smoke-runs/real-20260820-03/reviews/article-001/story/report.md
+@@ -0,0 +1,7 @@
++# Story Review
++
++- Status: `clean`
++- Lens: `story`
++- Reviewed revision: `sha256:a0a75f9bb3b5dc0a60c500b14ba315b82204c384472f966b1a709cebc2839bb7`
++
++No findings.
+diff --git a/smoke-runs/real-20260820-03/reviews/article-001/story/result.json b/smoke-runs/real-20260820-03/reviews/article-001/story/result.json
+new file mode 100644
+index 0000000000000000000000000000000000000000..78991884eb5a1cf64a47c79a9c5d6d0c6a6ff68f
+--- /dev/null
++++ b/smoke-runs/real-20260820-03/reviews/article-001/story/result.json
+@@ -0,0 +1,6 @@
++{
++  "status": "clean",
++  "lens": "story",
++  "reviewed_revision": "sha256:a0a75f9bb3b5dc0a60c500b14ba315b82204c384472f966b1a709cebc2839bb7",
++  "findings": []
++}
+

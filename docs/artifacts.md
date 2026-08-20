@@ -1,96 +1,102 @@
 # Artifacts
 
-Agents hand work off through files with explicit ownership. Chat transcripts
-may help diagnose a run, but they are not the source of truth for completion.
-
 ## Run layout
 
 ```text
-article-run/
+<run-dir>/
 ├── brief.md
+├── workflow.json
 ├── evidence/
 │   ├── sources.md
-│   ├── firsthand.md
+│   ├── firsthand.md                 # optional
 │   └── assets/
-├── claim-ledger.json
+├── claim-ledger.md
 ├── outline.md
-├── article.md
+├── drafts/
+│   ├── article-001.md
+│   └── article-00N.md
 ├── reviews/
-│   ├── evidence.json
-│   ├── story.json
-│   ├── clarity.json
-│   └── copy.json
-├── pm-review-decision.json
-├── workflow.json
-└── publish-report.md
+│   └── article-00N/
+│       ├── evidence/{result.json,report.md}
+│       ├── story/{result.json,report.md}
+│       ├── clarity/{result.json,report.md}
+│       └── copy/{result.json,report.md}
+├── pm-decisions/
+│   └── article-00N.md
+├── article.md                        # success only
+└── .control/                         # generated prompts and lifecycle files
 ```
 
-## PM intake gate
-
-The PM may start a run when `brief.md` defines all of the following:
-
-```yaml
-question:
-audience:
-provisional_takeaway:
-scope:
-out_of_scope:
-publication_target:
-constraints:
-done_when:
-source_hints:
-```
-
-The takeaway is provisional and may change after investigation. If a required
-field is missing or contradictory, the run is `blocked` instead of guessed.
+Earlier candidates, partial lens sequences, reviews, and PM decisions are kept
+when a revision occurs or a run blocks. `article.md` is written only after all
+four final-candidate lenses pass PM routing and is byte-for-byte identical to
+that candidate.
 
 ## Review result
 
-Each review result is machine-readable and tied to the exact revision that was
-reviewed.
+`result.json` has this validated minimum shape:
 
 ```json
 {
   "status": "fix_required",
-  "reviewed_revision": "sha256:...",
   "lens": "clarity",
+  "reviewed_revision": "sha256:...",
   "findings": [
     {
       "id": "clarity-001",
       "severity": "must_fix",
       "location": "section: Introduction",
-      "claim_id": null,
-      "problem": "The audience cannot identify the recommended action.",
-      "suggestion": "State the action before explaining the background."
+      "problem": "The requested action is not visible.",
+      "suggested_direction": "State the action before the background."
     }
   ]
 }
 ```
 
-Allowed review statuses are:
+Allowed statuses are `clean`, `fix_required`, and `blocked`. A clean result has
+no findings; `fix_required` has at least one. IDs are non-empty and unique
+within the result, all finding fields are non-empty, lens/revision must match
+the assignment, and `report.md` repeats every finding field.
 
-- `running`
-- `clean`
-- `fix_required`
-- `blocked`
+## PM decision
 
-## PM review decision
-
-The PM validates findings before routing work back to the Writer or another
-phase.
+`pm-decisions/article-00N.md` contains one fenced JSON object. Its `lenses` map
+accumulates only the lenses reached for that candidate:
 
 ```json
 {
-  "finding_id": "clarity-001",
-  "decision": "valid_must_fix",
-  "route_to": "writer",
-  "reason": "The article contract requires the action to be visible early."
+  "reviewed_revision": "sha256:...",
+  "lenses": {
+    "evidence": [],
+    "story": [
+      {
+        "finding_id": "story-001",
+        "decision": "invalid",
+        "reason": "The candidate already satisfies the outline."
+      }
+    ]
+  }
 }
 ```
 
-## Completion rule
+Each reached lens covers every finding exactly once. Unknown, duplicate, or
+missing IDs and stale revisions fail the contract.
 
-An agent message such as “done” is not sufficient. The PM advances the run only
-when the required artifact exists, is valid, has a terminal status where
-applicable, and references the current revision.
+## workflow.json
 
+`workflow.json` is atomically rewritten and is the controller's source of
+truth. Schema version 1 records:
+
+- `status`: `running`, `succeeded`, or `blocked`;
+- `phase`: current controller phase;
+- `current_candidate` and `current_revision` (`sha256:<hex>`);
+- `active_role`;
+- stable relative `artifact_paths`;
+- `review_attempt_count` (one per reviewer process);
+- `started_at`, `updated_at`, and terminal `completed_at` timestamps;
+- terminal `block_reason` when blocked.
+
+The `.control/` directory is controller-owned. It preserves generated prompt
+assignments for audit, per-invocation logs, the launcher, exit markers when
+agents exit naturally, and the transient PM request while one is active.
+Editorial completion never depends on tmux scrollback or chat transcripts.
