@@ -1,0 +1,1841 @@
+OpenAI Codex v0.148.0
+--------
+workdir: /var/folders/8r/lkx2j8bn15g71gbtr5_c5bpw0000gn/T/write-uuter-agent-001-pm-3875441967
+model: gpt-5.6-sol
+provider: openai
+approval: never
+sandbox: workspace-write [workdir, /tmp, $TMPDIR]
+reasoning effort: high
+reasoning summaries: none
+session id: 01a01f91-23cb-7af1-8ae9-1520b6e1c09e
+--------
+user
+# PM role contract
+
+You are the editorial PM for one `write-uuter` run. Go owns all workflow
+transitions. Remain active and handle one durable request at a time in the
+isolated workspace described by the runtime protocol.
+
+For each request, validate every finding and classify it as
+`valid_must_fix`, `valid_optional`, `invalid`, or `needs_human_judgment`. An
+`invalid` decision requires a non-empty reason. Preserve the complete validated
+history from `previous-decision.md`; do not invent future-lens entries.
+
+Write one Markdown file containing exactly one fenced JSON object:
+
+```json
+{
+  "reviewed_revision": "sha256:...",
+  "lenses": {
+    "evidence": {
+      "request_id": "controller-issued-id",
+      "review_digest": "sha256:...",
+      "decisions": []
+    }
+  }
+}
+```
+
+Use the active request's exact request ID, review digest, revision, and lens.
+Treat `request_path` as the acknowledgement identity: after publishing the
+decision, wait for that exact request-specific file to disappear before
+polling for another request. Never write a candidate or reviewer artifact.
+
+
+## Runtime protocol
+
+This is an isolated PM workspace. Poll `inbox/` for one request-ID-named JSON file at a time. Record that exact inbox path, read only the request's `context_directory`, and write the complete decision document atomically to its unique `output_path`. Preserve every prior reached-lens record from `previous-decision.md` and add only the active lens with the request's exact request ID and review digest. After writing, wait until that exact request-specific inbox file is removed; a later request uses a different filename and cannot satisfy this acknowledgement. Then poll for the next file. Continue until the process is terminated by the controller.
+codex
+I’m starting the PM loop now. I’ll process exactly one request file at a time, publish only the required decision artifact, and wait for that same request file’s removal before advancing.
+exec
+/bin/zsh -lc "sed -n '1,240p' /Users/yutaaoki/.codex/RTK.md" in /var/folders/8r/lkx2j8bn15g71gbtr5_c5bpw0000gn/T/write-uuter-agent-001-pm-3875441967
+ succeeded in 0ms:
+# RTK - Rust Token Killer (Codex CLI)
+
+**Usage**: Token-optimized CLI proxy for shell commands.
+
+## Rule
+
+Always prefix shell commands with `rtk`.
+
+Examples:
+
+```bash
+rtk git status
+rtk cargo test
+rtk npm run build
+rtk pytest -q
+```
+
+## Meta Commands
+
+```bash
+rtk gain            # Token savings analytics
+rtk gain --history  # Recent command savings history
+rtk proxy <cmd>     # Run raw command without filtering
+```
+
+## Verification
+
+```bash
+rtk --version
+rtk gain
+which rtk
+```
+
+exec
+/bin/zsh -lc "rtk find inbox -maxdepth 1 -type f -name '*.json' -print | sort" in /var/folders/8r/lkx2j8bn15g71gbtr5_c5bpw0000gn/T/write-uuter-agent-001-pm-3875441967
+ succeeded in 0ms:
+rtk find: unknown flag '-print', ignored
+
+exec
+/bin/zsh -lc 'rtk ls -la inbox' in /var/folders/8r/lkx2j8bn15g71gbtr5_c5bpw0000gn/T/write-uuter-agent-001-pm-3875441967
+ succeeded in 0ms:
+(empty)
+
+exec
+/bin/zsh -lc "rtk proxy zsh -c 'while true; do files=(inbox/*.json(N)); if (( "'${#files[@]} > 0 )); then print -r -- ${files[1]}; exit 0; fi; sleep 2; done'"'" in /var/folders/8r/lkx2j8bn15g71gbtr5_c5bpw0000gn/T/write-uuter-agent-001-pm-3875441967
+codex
+No request is present yet. The request-specific poll is active; I’m staying in the loop and will validate the first controller-issued item as soon as it appears.
+codex
+The inbox is still empty, so there is nothing to adjudicate or publish yet. I’m continuing to wait without creating any placeholder artifacts.
+codex
+Still waiting on the controller’s first request file. The active poll remains scoped to `inbox/*.json`, and no decision output has been written.
+ succeeded in 286244ms:
+inbox/c3ae5761620da90c2503f334cc618389.json
+
+exec
+/bin/zsh -lc 'rtk cat inbox/c3ae5761620da90c2503f334cc618389.json' in /var/folders/8r/lkx2j8bn15g71gbtr5_c5bpw0000gn/T/write-uuter-agent-001-pm-3875441967
+ succeeded in 1545ms:
+{
+  "request_id": "c3ae5761620da90c2503f334cc618389",
+  "candidate": 1,
+  "lens": "evidence",
+  "reviewed_revision": "sha256:835c3916d7bfea00d8e29566c64322d6392f1ba35facfa2c995e805f8ef4bc2e",
+  "review_digest": "sha256:2813ddb6e38a19ba0643eb3833d86c3e48cacf71c5199301b91249db63cd8925",
+  "result_path": "requests/c3ae5761620da90c2503f334cc618389/result.json",
+  "report_path": "requests/c3ae5761620da90c2503f334cc618389/report.md",
+  "decision_path": "pm-decisions/article-001.md",
+  "request_path": "inbox/c3ae5761620da90c2503f334cc618389.json",
+  "context_directory": "requests/c3ae5761620da90c2503f334cc618389",
+  "output_path": "outbox/c3ae5761620da90c2503f334cc618389.md"
+}
+
+codex
+Request `c3ae5761620da90c2503f334cc618389` is active under the `evidence` lens. I’m now checking only its declared context directory and will preserve any supplied prior decision history verbatim in substance.
+exec
+/bin/zsh -lc 'rtk ls -la requests/c3ae5761620da90c2503f334cc618389' in /var/folders/8r/lkx2j8bn15g71gbtr5_c5bpw0000gn/T/write-uuter-agent-001-pm-3875441967
+ succeeded in 1572ms:
+755  drafts/
+755  evidence/
+444  brief.md  1017B
+444  claim-ledger.md  9.5K
+444  outline.md  6.7K
+444  report.md  295B
+444  result.json  162B
+
+exec
+/bin/zsh -lc 'rtk proxy find requests/c3ae5761620da90c2503f334cc618389 -type f -maxdepth 4 -print' in /var/folders/8r/lkx2j8bn15g71gbtr5_c5bpw0000gn/T/write-uuter-agent-001-pm-3875441967
+ succeeded in 1605ms:
+requests/c3ae5761620da90c2503f334cc618389/result.json
+requests/c3ae5761620da90c2503f334cc618389/evidence/sources.md
+requests/c3ae5761620da90c2503f334cc618389/outline.md
+requests/c3ae5761620da90c2503f334cc618389/report.md
+requests/c3ae5761620da90c2503f334cc618389/drafts/article-001.md
+requests/c3ae5761620da90c2503f334cc618389/claim-ledger.md
+requests/c3ae5761620da90c2503f334cc618389/brief.md
+
+exec
+/bin/zsh -lc 'rtk cat requests/c3ae5761620da90c2503f334cc618389/brief.md' in /var/folders/8r/lkx2j8bn15g71gbtr5_c5bpw0000gn/T/write-uuter-agent-001-pm-3875441967
+exec
+/bin/zsh -lc 'rtk cat requests/c3ae5761620da90c2503f334cc618389/result.json' in /var/folders/8r/lkx2j8bn15g71gbtr5_c5bpw0000gn/T/write-uuter-agent-001-pm-3875441967
+exec
+/bin/zsh -lc 'rtk cat requests/c3ae5761620da90c2503f334cc618389/report.md' in /var/folders/8r/lkx2j8bn15g71gbtr5_c5bpw0000gn/T/write-uuter-agent-001-pm-3875441967
+ succeeded in 1763ms:
+{
+  "status": "clean",
+  "lens": "evidence",
+  "reviewed_revision": "sha256:835c3916d7bfea00d8e29566c64322d6392f1ba35facfa2c995e805f8ef4bc2e",
+  "findings": []
+}
+
+ succeeded in 1766ms:
+# Brief
+
+## Question
+
+How does write-uuter turn a brief into an inspectable reviewed article?
+
+## Audience
+
+Engineers evaluating a small, artifact-driven editorial workflow.
+
+## Provisional takeaway
+
+A deterministic Go controller can coordinate isolated Codex roles while
+leaving evidence, drafts, reviews, and decisions available for inspection.
+
+## Scope
+
+Describe the workflow implemented by this repository and the reason its
+durable artifact gates matter.
+
+## Out of scope
+
+Publishing integrations, web interfaces, and claims about workflows outside
+this repository.
+
+## Publication target
+
+A concise repository article for technical readers.
+
+## Constraints
+
+Use only facts supported by README.md and docs/. Keep the article under 900
+words and explain terms in plain language.
+
+## Done when
+
+The article accurately explains the roles, sequential review loop, candidate
+budget, and inspectable terminal artifacts.
+
+## Source hints
+
+- ../README.md
+- ../docs/workflow.md
+- ../docs/roles.md
+- ../docs/artifacts.md
+
+ succeeded in 1762ms:
+# Evidence Review
+
+- status: `clean`
+- lens: `evidence`
+- reviewed_revision: `sha256:835c3916d7bfea00d8e29566c64322d6392f1ba35facfa2c995e805f8ef4bc2e`
+- findings: `[]`
+
+All material claims in the exact candidate are supported by, or faithfully bounded to, the supplied sources and claim ledger.
+
+exec
+/bin/zsh -lc 'rtk ls -ld outbox' in /var/folders/8r/lkx2j8bn15g71gbtr5_c5bpw0000gn/T/write-uuter-agent-001-pm-3875441967
+ succeeded in 1677ms:
+700  outbox/
+
+apply patch
+patch: completed
+/var/folders/8r/lkx2j8bn15g71gbtr5_c5bpw0000gn/T/write-uuter-agent-001-pm-3875441967/outbox/.c3ae5761620da90c2503f334cc618389.md.tmp
+diff --git a/outbox/.c3ae5761620da90c2503f334cc618389.md.tmp b/outbox/.c3ae5761620da90c2503f334cc618389.md.tmp
+new file mode 100644
+index 0000000000000000000000000000000000000000..c8076bed2099445f1feb9cdcdc7b1316a66a26d1
+--- /dev/null
++++ b/outbox/.c3ae5761620da90c2503f334cc618389.md.tmp
+@@ -0,0 +1,12 @@
++```json
++{
++  "reviewed_revision": "sha256:835c3916d7bfea00d8e29566c64322d6392f1ba35facfa2c995e805f8ef4bc2e",
++  "lenses": {
++    "evidence": {
++      "request_id": "c3ae5761620da90c2503f334cc618389",
++      "review_digest": "sha256:2813ddb6e38a19ba0643eb3833d86c3e48cacf71c5199301b91249db63cd8925",
++      "decisions": []
++    }
++  }
++}
++```
+
+diff --git a/outbox/.c3ae5761620da90c2503f334cc618389.md.tmp b/outbox/.c3ae5761620da90c2503f334cc618389.md.tmp
+new file mode 100644
+index 0000000000000000000000000000000000000000..c8076bed2099445f1feb9cdcdc7b1316a66a26d1
+--- /dev/null
++++ b/outbox/.c3ae5761620da90c2503f334cc618389.md.tmp
+@@ -0,0 +1,12 @@
++```json
++{
++  "reviewed_revision": "sha256:835c3916d7bfea00d8e29566c64322d6392f1ba35facfa2c995e805f8ef4bc2e",
++  "lenses": {
++    "evidence": {
++      "request_id": "c3ae5761620da90c2503f334cc618389",
++      "review_digest": "sha256:2813ddb6e38a19ba0643eb3833d86c3e48cacf71c5199301b91249db63cd8925",
++      "decisions": []
++    }
++  }
++}
++```
+
+exec
+/bin/zsh -lc 'rtk mv outbox/.c3ae5761620da90c2503f334cc618389.md.tmp outbox/c3ae5761620da90c2503f334cc618389.md' in /var/folders/8r/lkx2j8bn15g71gbtr5_c5bpw0000gn/T/write-uuter-agent-001-pm-3875441967
+ succeeded in 1599ms:
+diff --git a/outbox/.c3ae5761620da90c2503f334cc618389.md.tmp b/outbox/.c3ae5761620da90c2503f334cc618389.md.tmp
+new file mode 100644
+index 0000000000000000000000000000000000000000..c8076bed2099445f1feb9cdcdc7b1316a66a26d1
+--- /dev/null
++++ b/outbox/.c3ae5761620da90c2503f334cc618389.md.tmp
+@@ -0,0 +1,12 @@
++```json
++{
++  "reviewed_revision": "sha256:835c3916d7bfea00d8e29566c64322d6392f1ba35facfa2c995e805f8ef4bc2e",
++  "lenses": {
++    "evidence": {
++      "request_id": "c3ae5761620da90c2503f334cc618389",
++      "review_digest": "sha256:2813ddb6e38a19ba0643eb3833d86c3e48cacf71c5199301b91249db63cd8925",
++      "decisions": []
++    }
++  }
++}
++```
+
+codex
+The evidence review is clean and contains no findings to classify, so I published an empty `decisions` array with the exact revision, request ID, and review digest. I’m now waiting for the controller to remove this exact inbox file before accepting another request.
+exec
+/bin/zsh -lc "rtk proxy zsh -c 'while [[ -e inbox/c3ae5761620da90c2503f334cc618389.json ]]; do sleep 2; done; print acknowledged'" in /var/folders/8r/lkx2j8bn15g71gbtr5_c5bpw0000gn/T/write-uuter-agent-001-pm-3875441967
+ succeeded in 2075ms:
+acknowledged
+
+diff --git a/outbox/.c3ae5761620da90c2503f334cc618389.md.tmp b/outbox/.c3ae5761620da90c2503f334cc618389.md.tmp
+new file mode 100644
+index 0000000000000000000000000000000000000000..c8076bed2099445f1feb9cdcdc7b1316a66a26d1
+--- /dev/null
++++ b/outbox/.c3ae5761620da90c2503f334cc618389.md.tmp
+@@ -0,0 +1,12 @@
++```json
++{
++  "reviewed_revision": "sha256:835c3916d7bfea00d8e29566c64322d6392f1ba35facfa2c995e805f8ef4bc2e",
++  "lenses": {
++    "evidence": {
++      "request_id": "c3ae5761620da90c2503f334cc618389",
++      "review_digest": "sha256:2813ddb6e38a19ba0643eb3833d86c3e48cacf71c5199301b91249db63cd8925",
++      "decisions": []
++    }
++  }
++}
++```
+
+exec
+/bin/zsh -lc "rtk proxy zsh -c 'while true; do files=(inbox/*.json(N)); if (( "'${#files[@]} > 0 )); then print -r -- ${files[1]}; exit 0; fi; sleep 2; done'"'" in /var/folders/8r/lkx2j8bn15g71gbtr5_c5bpw0000gn/T/write-uuter-agent-001-pm-3875441967
+ succeeded in 23007ms:
+inbox/a371ba55064733d10a5ec76b670b9901.json
+
+diff --git a/outbox/.c3ae5761620da90c2503f334cc618389.md.tmp b/outbox/.c3ae5761620da90c2503f334cc618389.md.tmp
+new file mode 100644
+index 0000000000000000000000000000000000000000..c8076bed2099445f1feb9cdcdc7b1316a66a26d1
+--- /dev/null
++++ b/outbox/.c3ae5761620da90c2503f334cc618389.md.tmp
+@@ -0,0 +1,12 @@
++```json
++{
++  "reviewed_revision": "sha256:835c3916d7bfea00d8e29566c64322d6392f1ba35facfa2c995e805f8ef4bc2e",
++  "lenses": {
++    "evidence": {
++      "request_id": "c3ae5761620da90c2503f334cc618389",
++      "review_digest": "sha256:2813ddb6e38a19ba0643eb3833d86c3e48cacf71c5199301b91249db63cd8925",
++      "decisions": []
++    }
++  }
++}
++```
+
+exec
+/bin/zsh -lc 'rtk cat inbox/a371ba55064733d10a5ec76b670b9901.json' in /var/folders/8r/lkx2j8bn15g71gbtr5_c5bpw0000gn/T/write-uuter-agent-001-pm-3875441967
+ succeeded in 1489ms:
+{
+  "request_id": "a371ba55064733d10a5ec76b670b9901",
+  "candidate": 1,
+  "lens": "story",
+  "reviewed_revision": "sha256:835c3916d7bfea00d8e29566c64322d6392f1ba35facfa2c995e805f8ef4bc2e",
+  "review_digest": "sha256:e408671016f10eb64277cafbd5539df4bc38c73ea7b2090943584fc7b60129c9",
+  "result_path": "requests/a371ba55064733d10a5ec76b670b9901/result.json",
+  "report_path": "requests/a371ba55064733d10a5ec76b670b9901/report.md",
+  "decision_path": "pm-decisions/article-001.md",
+  "request_path": "inbox/a371ba55064733d10a5ec76b670b9901.json",
+  "context_directory": "requests/a371ba55064733d10a5ec76b670b9901",
+  "output_path": "outbox/a371ba55064733d10a5ec76b670b9901.md"
+}
+
+diff --git a/outbox/.c3ae5761620da90c2503f334cc618389.md.tmp b/outbox/.c3ae5761620da90c2503f334cc618389.md.tmp
+new file mode 100644
+index 0000000000000000000000000000000000000000..c8076bed2099445f1feb9cdcdc7b1316a66a26d1
+--- /dev/null
++++ b/outbox/.c3ae5761620da90c2503f334cc618389.md.tmp
+@@ -0,0 +1,12 @@
++```json
++{
++  "reviewed_revision": "sha256:835c3916d7bfea00d8e29566c64322d6392f1ba35facfa2c995e805f8ef4bc2e",
++  "lenses": {
++    "evidence": {
++      "request_id": "c3ae5761620da90c2503f334cc618389",
++      "review_digest": "sha256:2813ddb6e38a19ba0643eb3833d86c3e48cacf71c5199301b91249db63cd8925",
++      "decisions": []
++    }
++  }
++}
++```
+
+codex
+The controller acknowledged the evidence decision and issued the next request, `a371ba55064733d10a5ec76b670b9901`, for the `story` lens on the same revision. I’m validating its findings and prior reached-lens history now.
+exec
+/bin/zsh -lc 'rtk proxy find requests/a371ba55064733d10a5ec76b670b9901 -maxdepth 4 -type f -print' in /var/folders/8r/lkx2j8bn15g71gbtr5_c5bpw0000gn/T/write-uuter-agent-001-pm-3875441967
+ succeeded in 1508ms:
+requests/a371ba55064733d10a5ec76b670b9901/result.json
+requests/a371ba55064733d10a5ec76b670b9901/evidence/sources.md
+requests/a371ba55064733d10a5ec76b670b9901/outline.md
+requests/a371ba55064733d10a5ec76b670b9901/report.md
+requests/a371ba55064733d10a5ec76b670b9901/drafts/article-001.md
+requests/a371ba55064733d10a5ec76b670b9901/previous-decision.md
+requests/a371ba55064733d10a5ec76b670b9901/claim-ledger.md
+requests/a371ba55064733d10a5ec76b670b9901/brief.md
+
+diff --git a/outbox/.c3ae5761620da90c2503f334cc618389.md.tmp b/outbox/.c3ae5761620da90c2503f334cc618389.md.tmp
+new file mode 100644
+index 0000000000000000000000000000000000000000..c8076bed2099445f1feb9cdcdc7b1316a66a26d1
+--- /dev/null
++++ b/outbox/.c3ae5761620da90c2503f334cc618389.md.tmp
+@@ -0,0 +1,12 @@
++```json
++{
++  "reviewed_revision": "sha256:835c3916d7bfea00d8e29566c64322d6392f1ba35facfa2c995e805f8ef4bc2e",
++  "lenses": {
++    "evidence": {
++      "request_id": "c3ae5761620da90c2503f334cc618389",
++      "review_digest": "sha256:2813ddb6e38a19ba0643eb3833d86c3e48cacf71c5199301b91249db63cd8925",
++      "decisions": []
++    }
++  }
++}
++```
+
+exec
+/bin/zsh -lc 'rtk cat requests/a371ba55064733d10a5ec76b670b9901/report.md' in /var/folders/8r/lkx2j8bn15g71gbtr5_c5bpw0000gn/T/write-uuter-agent-001-pm-3875441967
+exec
+/bin/zsh -lc 'rtk cat requests/a371ba55064733d10a5ec76b670b9901/result.json' in /var/folders/8r/lkx2j8bn15g71gbtr5_c5bpw0000gn/T/write-uuter-agent-001-pm-3875441967
+exec
+/bin/zsh -lc 'rtk cat requests/a371ba55064733d10a5ec76b670b9901/previous-decision.md' in /var/folders/8r/lkx2j8bn15g71gbtr5_c5bpw0000gn/T/write-uuter-agent-001-pm-3875441967
+ succeeded in 1627ms:
+{
+  "status": "clean",
+  "lens": "story",
+  "reviewed_revision": "sha256:835c3916d7bfea00d8e29566c64322d6392f1ba35facfa2c995e805f8ef4bc2e",
+  "findings": []
+}
+
+ succeeded in 1622ms:
+```json
+{
+  "reviewed_revision": "sha256:835c3916d7bfea00d8e29566c64322d6392f1ba35facfa2c995e805f8ef4bc2e",
+  "lenses": {
+    "evidence": {
+      "request_id": "c3ae5761620da90c2503f334cc618389",
+      "review_digest": "sha256:2813ddb6e38a19ba0643eb3833d86c3e48cacf71c5199301b91249db63cd8925",
+      "decisions": []
+    }
+  }
+}
+```
+
+ succeeded in 1636ms:
+# Review Result
+
+status: clean
+
+lens: story
+
+reviewed_revision: sha256:835c3916d7bfea00d8e29566c64322d6392f1ba35facfa2c995e805f8ef4bc2e
+
+findings: []
+
+diff --git a/outbox/.c3ae5761620da90c2503f334cc618389.md.tmp b/outbox/.c3ae5761620da90c2503f334cc618389.md.tmp
+new file mode 100644
+index 0000000000000000000000000000000000000000..c8076bed2099445f1feb9cdcdc7b1316a66a26d1
+--- /dev/null
++++ b/outbox/.c3ae5761620da90c2503f334cc618389.md.tmp
+@@ -0,0 +1,12 @@
++```json
++{
++  "reviewed_revision": "sha256:835c3916d7bfea00d8e29566c64322d6392f1ba35facfa2c995e805f8ef4bc2e",
++  "lenses": {
++    "evidence": {
++      "request_id": "c3ae5761620da90c2503f334cc618389",
++      "review_digest": "sha256:2813ddb6e38a19ba0643eb3833d86c3e48cacf71c5199301b91249db63cd8925",
++      "decisions": []
++    }
++  }
++}
++```
+
+apply patch
+patch: completed
+/var/folders/8r/lkx2j8bn15g71gbtr5_c5bpw0000gn/T/write-uuter-agent-001-pm-3875441967/outbox/.a371ba55064733d10a5ec76b670b9901.md.tmp
+diff --git a/outbox/.a371ba55064733d10a5ec76b670b9901.md.tmp b/outbox/.a371ba55064733d10a5ec76b670b9901.md.tmp
+new file mode 100644
+index 0000000000000000000000000000000000000000..57e6410899dd5de077206f4543ad610914a749e0
+--- /dev/null
++++ b/outbox/.a371ba55064733d10a5ec76b670b9901.md.tmp
+@@ -0,0 +1,17 @@
++```json
++{
++  "reviewed_revision": "sha256:835c3916d7bfea00d8e29566c64322d6392f1ba35facfa2c995e805f8ef4bc2e",
++  "lenses": {
++    "evidence": {
++      "request_id": "c3ae5761620da90c2503f334cc618389",
++      "review_digest": "sha256:2813ddb6e38a19ba0643eb3833d86c3e48cacf71c5199301b91249db63cd8925",
++      "decisions": []
++    },
++    "story": {
++      "request_id": "a371ba55064733d10a5ec76b670b9901",
++      "review_digest": "sha256:e408671016f10eb64277cafbd5539df4bc38c73ea7b2090943584fc7b60129c9",
++      "decisions": []
++    }
++  }
++}
++```
+diff --git a/outbox/.c3ae5761620da90c2503f334cc618389.md.tmp b/outbox/.c3ae5761620da90c2503f334cc618389.md.tmp
+new file mode 100644
+index 0000000000000000000000000000000000000000..c8076bed2099445f1feb9cdcdc7b1316a66a26d1
+--- /dev/null
++++ b/outbox/.c3ae5761620da90c2503f334cc618389.md.tmp
+@@ -0,0 +1,12 @@
++```json
++{
++  "reviewed_revision": "sha256:835c3916d7bfea00d8e29566c64322d6392f1ba35facfa2c995e805f8ef4bc2e",
++  "lenses": {
++    "evidence": {
++      "request_id": "c3ae5761620da90c2503f334cc618389",
++      "review_digest": "sha256:2813ddb6e38a19ba0643eb3833d86c3e48cacf71c5199301b91249db63cd8925",
++      "decisions": []
++    }
++  }
++}
++```
+
+diff --git a/outbox/.a371ba55064733d10a5ec76b670b9901.md.tmp b/outbox/.a371ba55064733d10a5ec76b670b9901.md.tmp
+new file mode 100644
+index 0000000000000000000000000000000000000000..57e6410899dd5de077206f4543ad610914a749e0
+--- /dev/null
++++ b/outbox/.a371ba55064733d10a5ec76b670b9901.md.tmp
+@@ -0,0 +1,17 @@
++```json
++{
++  "reviewed_revision": "sha256:835c3916d7bfea00d8e29566c64322d6392f1ba35facfa2c995e805f8ef4bc2e",
++  "lenses": {
++    "evidence": {
++      "request_id": "c3ae5761620da90c2503f334cc618389",
++      "review_digest": "sha256:2813ddb6e38a19ba0643eb3833d86c3e48cacf71c5199301b91249db63cd8925",
++      "decisions": []
++    },
++    "story": {
++      "request_id": "a371ba55064733d10a5ec76b670b9901",
++      "review_digest": "sha256:e408671016f10eb64277cafbd5539df4bc38c73ea7b2090943584fc7b60129c9",
++      "decisions": []
++    }
++  }
++}
++```
+diff --git a/outbox/.c3ae5761620da90c2503f334cc618389.md.tmp b/outbox/.c3ae5761620da90c2503f334cc618389.md.tmp
+new file mode 100644
+index 0000000000000000000000000000000000000000..c8076bed2099445f1feb9cdcdc7b1316a66a26d1
+--- /dev/null
++++ b/outbox/.c3ae5761620da90c2503f334cc618389.md.tmp
+@@ -0,0 +1,12 @@
++```json
++{
++  "reviewed_revision": "sha256:835c3916d7bfea00d8e29566c64322d6392f1ba35facfa2c995e805f8ef4bc2e",
++  "lenses": {
++    "evidence": {
++      "request_id": "c3ae5761620da90c2503f334cc618389",
++      "review_digest": "sha256:2813ddb6e38a19ba0643eb3833d86c3e48cacf71c5199301b91249db63cd8925",
++      "decisions": []
++    }
++  }
++}
++```
+
+exec
+/bin/zsh -lc 'rtk mv outbox/.a371ba55064733d10a5ec76b670b9901.md.tmp outbox/a371ba55064733d10a5ec76b670b9901.md' in /var/folders/8r/lkx2j8bn15g71gbtr5_c5bpw0000gn/T/write-uuter-agent-001-pm-3875441967
+ succeeded in 1547ms:
+diff --git a/outbox/.a371ba55064733d10a5ec76b670b9901.md.tmp b/outbox/.a371ba55064733d10a5ec76b670b9901.md.tmp
+new file mode 100644
+index 0000000000000000000000000000000000000000..57e6410899dd5de077206f4543ad610914a749e0
+--- /dev/null
++++ b/outbox/.a371ba55064733d10a5ec76b670b9901.md.tmp
+@@ -0,0 +1,17 @@
++```json
++{
++  "reviewed_revision": "sha256:835c3916d7bfea00d8e29566c64322d6392f1ba35facfa2c995e805f8ef4bc2e",
++  "lenses": {
++    "evidence": {
++      "request_id": "c3ae5761620da90c2503f334cc618389",
++      "review_digest": "sha256:2813ddb6e38a19ba0643eb3833d86c3e48cacf71c5199301b91249db63cd8925",
++      "decisions": []
++    },
++    "story": {
++      "request_id": "a371ba55064733d10a5ec76b670b9901",
++      "review_digest": "sha256:e408671016f10eb64277cafbd5539df4bc38c73ea7b2090943584fc7b60129c9",
++      "decisions": []
++    }
++  }
++}
++```
+diff --git a/outbox/.c3ae5761620da90c2503f334cc618389.md.tmp b/outbox/.c3ae5761620da90c2503f334cc618389.md.tmp
+new file mode 100644
+index 0000000000000000000000000000000000000000..c8076bed2099445f1feb9cdcdc7b1316a66a26d1
+--- /dev/null
++++ b/outbox/.c3ae5761620da90c2503f334cc618389.md.tmp
+@@ -0,0 +1,12 @@
++```json
++{
++  "reviewed_revision": "sha256:835c3916d7bfea00d8e29566c64322d6392f1ba35facfa2c995e805f8ef4bc2e",
++  "lenses": {
++    "evidence": {
++      "request_id": "c3ae5761620da90c2503f334cc618389",
++      "review_digest": "sha256:2813ddb6e38a19ba0643eb3833d86c3e48cacf71c5199301b91249db63cd8925",
++      "decisions": []
++    }
++  }
++}
++```
+
+codex
+The story review is also clean. I preserved the complete evidence-lens record and appended only the active story record with an empty decision list; the request-specific decision has been published atomically.
+exec
+/bin/zsh -lc "rtk proxy zsh -c 'while [[ -e inbox/a371ba55064733d10a5ec76b670b9901.json ]]; do sleep 2; done; print acknowledged'" in /var/folders/8r/lkx2j8bn15g71gbtr5_c5bpw0000gn/T/write-uuter-agent-001-pm-3875441967
+ succeeded in 1959ms:
+acknowledged
+
+diff --git a/outbox/.a371ba55064733d10a5ec76b670b9901.md.tmp b/outbox/.a371ba55064733d10a5ec76b670b9901.md.tmp
+new file mode 100644
+index 0000000000000000000000000000000000000000..57e6410899dd5de077206f4543ad610914a749e0
+--- /dev/null
++++ b/outbox/.a371ba55064733d10a5ec76b670b9901.md.tmp
+@@ -0,0 +1,17 @@
++```json
++{
++  "reviewed_revision": "sha256:835c3916d7bfea00d8e29566c64322d6392f1ba35facfa2c995e805f8ef4bc2e",
++  "lenses": {
++    "evidence": {
++      "request_id": "c3ae5761620da90c2503f334cc618389",
++      "review_digest": "sha256:2813ddb6e38a19ba0643eb3833d86c3e48cacf71c5199301b91249db63cd8925",
++      "decisions": []
++    },
++    "story": {
++      "request_id": "a371ba55064733d10a5ec76b670b9901",
++      "review_digest": "sha256:e408671016f10eb64277cafbd5539df4bc38c73ea7b2090943584fc7b60129c9",
++      "decisions": []
++    }
++  }
++}
++```
+diff --git a/outbox/.c3ae5761620da90c2503f334cc618389.md.tmp b/outbox/.c3ae5761620da90c2503f334cc618389.md.tmp
+new file mode 100644
+index 0000000000000000000000000000000000000000..c8076bed2099445f1feb9cdcdc7b1316a66a26d1
+--- /dev/null
++++ b/outbox/.c3ae5761620da90c2503f334cc618389.md.tmp
+@@ -0,0 +1,12 @@
++```json
++{
++  "reviewed_revision": "sha256:835c3916d7bfea00d8e29566c64322d6392f1ba35facfa2c995e805f8ef4bc2e",
++  "lenses": {
++    "evidence": {
++      "request_id": "c3ae5761620da90c2503f334cc618389",
++      "review_digest": "sha256:2813ddb6e38a19ba0643eb3833d86c3e48cacf71c5199301b91249db63cd8925",
++      "decisions": []
++    }
++  }
++}
++```
+
+exec
+/bin/zsh -lc "rtk proxy zsh -c 'while true; do files=(inbox/*.json(N)); if (( "'${#files[@]} > 0 )); then print -r -- ${files[1]}; exit 0; fi; sleep 2; done'"'" in /var/folders/8r/lkx2j8bn15g71gbtr5_c5bpw0000gn/T/write-uuter-agent-001-pm-3875441967
+diff --git a/outbox/.a371ba55064733d10a5ec76b670b9901.md.tmp b/outbox/.a371ba55064733d10a5ec76b670b9901.md.tmp
+new file mode 100644
+index 0000000000000000000000000000000000000000..57e6410899dd5de077206f4543ad610914a749e0
+--- /dev/null
++++ b/outbox/.a371ba55064733d10a5ec76b670b9901.md.tmp
+@@ -0,0 +1,17 @@
++```json
++{
++  "reviewed_revision": "sha256:835c3916d7bfea00d8e29566c64322d6392f1ba35facfa2c995e805f8ef4bc2e",
++  "lenses": {
++    "evidence": {
++      "request_id": "c3ae5761620da90c2503f334cc618389",
++      "review_digest": "sha256:2813ddb6e38a19ba0643eb3833d86c3e48cacf71c5199301b91249db63cd8925",
++      "decisions": []
++    },
++    "story": {
++      "request_id": "a371ba55064733d10a5ec76b670b9901",
++      "review_digest": "sha256:e408671016f10eb64277cafbd5539df4bc38c73ea7b2090943584fc7b60129c9",
++      "decisions": []
++    }
++  }
++}
++```
+diff --git a/outbox/.c3ae5761620da90c2503f334cc618389.md.tmp b/outbox/.c3ae5761620da90c2503f334cc618389.md.tmp
+new file mode 100644
+index 0000000000000000000000000000000000000000..c8076bed2099445f1feb9cdcdc7b1316a66a26d1
+--- /dev/null
++++ b/outbox/.c3ae5761620da90c2503f334cc618389.md.tmp
+@@ -0,0 +1,12 @@
++```json
++{
++  "reviewed_revision": "sha256:835c3916d7bfea00d8e29566c64322d6392f1ba35facfa2c995e805f8ef4bc2e",
++  "lenses": {
++    "evidence": {
++      "request_id": "c3ae5761620da90c2503f334cc618389",
++      "review_digest": "sha256:2813ddb6e38a19ba0643eb3833d86c3e48cacf71c5199301b91249db63cd8925",
++      "decisions": []
++    }
++  }
++}
++```
+
+ succeeded in 53888ms:
+inbox/054aaf8e24cc595a0fa806d127a015a6.json
+
+diff --git a/outbox/.a371ba55064733d10a5ec76b670b9901.md.tmp b/outbox/.a371ba55064733d10a5ec76b670b9901.md.tmp
+new file mode 100644
+index 0000000000000000000000000000000000000000..57e6410899dd5de077206f4543ad610914a749e0
+--- /dev/null
++++ b/outbox/.a371ba55064733d10a5ec76b670b9901.md.tmp
+@@ -0,0 +1,17 @@
++```json
++{
++  "reviewed_revision": "sha256:835c3916d7bfea00d8e29566c64322d6392f1ba35facfa2c995e805f8ef4bc2e",
++  "lenses": {
++    "evidence": {
++      "request_id": "c3ae5761620da90c2503f334cc618389",
++      "review_digest": "sha256:2813ddb6e38a19ba0643eb3833d86c3e48cacf71c5199301b91249db63cd8925",
++      "decisions": []
++    },
++    "story": {
++      "request_id": "a371ba55064733d10a5ec76b670b9901",
++      "review_digest": "sha256:e408671016f10eb64277cafbd5539df4bc38c73ea7b2090943584fc7b60129c9",
++      "decisions": []
++    }
++  }
++}
++```
+diff --git a/outbox/.c3ae5761620da90c2503f334cc618389.md.tmp b/outbox/.c3ae5761620da90c2503f334cc618389.md.tmp
+new file mode 100644
+index 0000000000000000000000000000000000000000..c8076bed2099445f1feb9cdcdc7b1316a66a26d1
+--- /dev/null
++++ b/outbox/.c3ae5761620da90c2503f334cc618389.md.tmp
+@@ -0,0 +1,12 @@
++```json
++{
++  "reviewed_revision": "sha256:835c3916d7bfea00d8e29566c64322d6392f1ba35facfa2c995e805f8ef4bc2e",
++  "lenses": {
++    "evidence": {
++      "request_id": "c3ae5761620da90c2503f334cc618389",
++      "review_digest": "sha256:2813ddb6e38a19ba0643eb3833d86c3e48cacf71c5199301b91249db63cd8925",
++      "decisions": []
++    }
++  }
++}
++```
+
+exec
+/bin/zsh -lc 'rtk cat inbox/054aaf8e24cc595a0fa806d127a015a6.json' in /var/folders/8r/lkx2j8bn15g71gbtr5_c5bpw0000gn/T/write-uuter-agent-001-pm-3875441967
+ succeeded in 1946ms:
+{
+  "request_id": "054aaf8e24cc595a0fa806d127a015a6",
+  "candidate": 1,
+  "lens": "clarity",
+  "reviewed_revision": "sha256:835c3916d7bfea00d8e29566c64322d6392f1ba35facfa2c995e805f8ef4bc2e",
+  "review_digest": "sha256:0b2448c3e631458f1bc11f521ae784ffff996cfeb4bcd5bb4610b938bc1ea933",
+  "result_path": "requests/054aaf8e24cc595a0fa806d127a015a6/result.json",
+  "report_path": "requests/054aaf8e24cc595a0fa806d127a015a6/report.md",
+  "decision_path": "pm-decisions/article-001.md",
+  "request_path": "inbox/054aaf8e24cc595a0fa806d127a015a6.json",
+  "context_directory": "requests/054aaf8e24cc595a0fa806d127a015a6",
+  "output_path": "outbox/054aaf8e24cc595a0fa806d127a015a6.md"
+}
+
+diff --git a/outbox/.a371ba55064733d10a5ec76b670b9901.md.tmp b/outbox/.a371ba55064733d10a5ec76b670b9901.md.tmp
+new file mode 100644
+index 0000000000000000000000000000000000000000..57e6410899dd5de077206f4543ad610914a749e0
+--- /dev/null
++++ b/outbox/.a371ba55064733d10a5ec76b670b9901.md.tmp
+@@ -0,0 +1,17 @@
++```json
++{
++  "reviewed_revision": "sha256:835c3916d7bfea00d8e29566c64322d6392f1ba35facfa2c995e805f8ef4bc2e",
++  "lenses": {
++    "evidence": {
++      "request_id": "c3ae5761620da90c2503f334cc618389",
++      "review_digest": "sha256:2813ddb6e38a19ba0643eb3833d86c3e48cacf71c5199301b91249db63cd8925",
++      "decisions": []
++    },
++    "story": {
++      "request_id": "a371ba55064733d10a5ec76b670b9901",
++      "review_digest": "sha256:e408671016f10eb64277cafbd5539df4bc38c73ea7b2090943584fc7b60129c9",
++      "decisions": []
++    }
++  }
++}
++```
+diff --git a/outbox/.c3ae5761620da90c2503f334cc618389.md.tmp b/outbox/.c3ae5761620da90c2503f334cc618389.md.tmp
+new file mode 100644
+index 0000000000000000000000000000000000000000..c8076bed2099445f1feb9cdcdc7b1316a66a26d1
+--- /dev/null
++++ b/outbox/.c3ae5761620da90c2503f334cc618389.md.tmp
+@@ -0,0 +1,12 @@
++```json
++{
++  "reviewed_revision": "sha256:835c3916d7bfea00d8e29566c64322d6392f1ba35facfa2c995e805f8ef4bc2e",
++  "lenses": {
++    "evidence": {
++      "request_id": "c3ae5761620da90c2503f334cc618389",
++      "review_digest": "sha256:2813ddb6e38a19ba0643eb3833d86c3e48cacf71c5199301b91249db63cd8925",
++      "decisions": []
++    }
++  }
++}
++```
+
+codex
+The story request was acknowledged. The active request is now `054aaf8e24cc595a0fa806d127a015a6` under the `clarity` lens, still against the same revision.
+exec
+/bin/zsh -lc 'rtk cat requests/054aaf8e24cc595a0fa806d127a015a6/result.json' in /var/folders/8r/lkx2j8bn15g71gbtr5_c5bpw0000gn/T/write-uuter-agent-001-pm-3875441967
+exec
+/bin/zsh -lc 'rtk cat requests/054aaf8e24cc595a0fa806d127a015a6/previous-decision.md' in /var/folders/8r/lkx2j8bn15g71gbtr5_c5bpw0000gn/T/write-uuter-agent-001-pm-3875441967
+exec
+/bin/zsh -lc 'rtk cat requests/054aaf8e24cc595a0fa806d127a015a6/report.md' in /var/folders/8r/lkx2j8bn15g71gbtr5_c5bpw0000gn/T/write-uuter-agent-001-pm-3875441967
+ succeeded in 1843ms:
+{
+  "status": "clean",
+  "lens": "clarity",
+  "reviewed_revision": "sha256:835c3916d7bfea00d8e29566c64322d6392f1ba35facfa2c995e805f8ef4bc2e",
+  "findings": []
+}
+
+ succeeded in 1841ms:
+```json
+{
+  "reviewed_revision": "sha256:835c3916d7bfea00d8e29566c64322d6392f1ba35facfa2c995e805f8ef4bc2e",
+  "lenses": {
+    "evidence": {
+      "request_id": "c3ae5761620da90c2503f334cc618389",
+      "review_digest": "sha256:2813ddb6e38a19ba0643eb3833d86c3e48cacf71c5199301b91249db63cd8925",
+      "decisions": []
+    },
+    "story": {
+      "request_id": "a371ba55064733d10a5ec76b670b9901",
+      "review_digest": "sha256:e408671016f10eb64277cafbd5539df4bc38c73ea7b2090943584fc7b60129c9",
+      "decisions": []
+    }
+  }
+}
+```
+
+ succeeded in 1839ms:
+# Clarity Review
+
+Status: `clean`
+
+Lens: `clarity`
+
+Reviewed revision: `sha256:835c3916d7bfea00d8e29566c64322d6392f1ba35facfa2c995e805f8ef4bc2e`
+
+Findings: `[]`
+
+The stated engineering audience can understand and evaluate the candidate's roles, artifact gates, sequential review loop, candidate budget, and inspectable terminal outcomes within the supplied constraints.
+
+diff --git a/outbox/.a371ba55064733d10a5ec76b670b9901.md.tmp b/outbox/.a371ba55064733d10a5ec76b670b9901.md.tmp
+new file mode 100644
+index 0000000000000000000000000000000000000000..57e6410899dd5de077206f4543ad610914a749e0
+--- /dev/null
++++ b/outbox/.a371ba55064733d10a5ec76b670b9901.md.tmp
+@@ -0,0 +1,17 @@
++```json
++{
++  "reviewed_revision": "sha256:835c3916d7bfea00d8e29566c64322d6392f1ba35facfa2c995e805f8ef4bc2e",
++  "lenses": {
++    "evidence": {
++      "request_id": "c3ae5761620da90c2503f334cc618389",
++      "review_digest": "sha256:2813ddb6e38a19ba0643eb3833d86c3e48cacf71c5199301b91249db63cd8925",
++      "decisions": []
++    },
++    "story": {
++      "request_id": "a371ba55064733d10a5ec76b670b9901",
++      "review_digest": "sha256:e408671016f10eb64277cafbd5539df4bc38c73ea7b2090943584fc7b60129c9",
++      "decisions": []
++    }
++  }
++}
++```
+diff --git a/outbox/.c3ae5761620da90c2503f334cc618389.md.tmp b/outbox/.c3ae5761620da90c2503f334cc618389.md.tmp
+new file mode 100644
+index 0000000000000000000000000000000000000000..c8076bed2099445f1feb9cdcdc7b1316a66a26d1
+--- /dev/null
++++ b/outbox/.c3ae5761620da90c2503f334cc618389.md.tmp
+@@ -0,0 +1,12 @@
++```json
++{
++  "reviewed_revision": "sha256:835c3916d7bfea00d8e29566c64322d6392f1ba35facfa2c995e805f8ef4bc2e",
++  "lenses": {
++    "evidence": {
++      "request_id": "c3ae5761620da90c2503f334cc618389",
++      "review_digest": "sha256:2813ddb6e38a19ba0643eb3833d86c3e48cacf71c5199301b91249db63cd8925",
++      "decisions": []
++    }
++  }
++}
++```
+
+apply patch
+patch: completed
+/var/folders/8r/lkx2j8bn15g71gbtr5_c5bpw0000gn/T/write-uuter-agent-001-pm-3875441967/outbox/.054aaf8e24cc595a0fa806d127a015a6.md.tmp
+diff --git a/outbox/.054aaf8e24cc595a0fa806d127a015a6.md.tmp b/outbox/.054aaf8e24cc595a0fa806d127a015a6.md.tmp
+new file mode 100644
+index 0000000000000000000000000000000000000000..bdf98848d6b892e8729a7b91b08500d3409d315a
+--- /dev/null
++++ b/outbox/.054aaf8e24cc595a0fa806d127a015a6.md.tmp
+@@ -0,0 +1,22 @@
++```json
++{
++  "reviewed_revision": "sha256:835c3916d7bfea00d8e29566c64322d6392f1ba35facfa2c995e805f8ef4bc2e",
++  "lenses": {
++    "evidence": {
++      "request_id": "c3ae5761620da90c2503f334cc618389",
++      "review_digest": "sha256:2813ddb6e38a19ba0643eb3833d86c3e48cacf71c5199301b91249db63cd8925",
++      "decisions": []
++    },
++    "story": {
++      "request_id": "a371ba55064733d10a5ec76b670b9901",
++      "review_digest": "sha256:e408671016f10eb64277cafbd5539df4bc38c73ea7b2090943584fc7b60129c9",
++      "decisions": []
++    },
++    "clarity": {
++      "request_id": "054aaf8e24cc595a0fa806d127a015a6",
++      "review_digest": "sha256:0b2448c3e631458f1bc11f521ae784ffff996cfeb4bcd5bb4610b938bc1ea933",
++      "decisions": []
++    }
++  }
++}
++```
+diff --git a/outbox/.a371ba55064733d10a5ec76b670b9901.md.tmp b/outbox/.a371ba55064733d10a5ec76b670b9901.md.tmp
+new file mode 100644
+index 0000000000000000000000000000000000000000..57e6410899dd5de077206f4543ad610914a749e0
+--- /dev/null
++++ b/outbox/.a371ba55064733d10a5ec76b670b9901.md.tmp
+@@ -0,0 +1,17 @@
++```json
++{
++  "reviewed_revision": "sha256:835c3916d7bfea00d8e29566c64322d6392f1ba35facfa2c995e805f8ef4bc2e",
++  "lenses": {
++    "evidence": {
++      "request_id": "c3ae5761620da90c2503f334cc618389",
++      "review_digest": "sha256:2813ddb6e38a19ba0643eb3833d86c3e48cacf71c5199301b91249db63cd8925",
++      "decisions": []
++    },
++    "story": {
++      "request_id": "a371ba55064733d10a5ec76b670b9901",
++      "review_digest": "sha256:e408671016f10eb64277cafbd5539df4bc38c73ea7b2090943584fc7b60129c9",
++      "decisions": []
++    }
++  }
++}
++```
+diff --git a/outbox/.c3ae5761620da90c2503f334cc618389.md.tmp b/outbox/.c3ae5761620da90c2503f334cc618389.md.tmp
+new file mode 100644
+index 0000000000000000000000000000000000000000..c8076bed2099445f1feb9cdcdc7b1316a66a26d1
+--- /dev/null
++++ b/outbox/.c3ae5761620da90c2503f334cc618389.md.tmp
+@@ -0,0 +1,12 @@
++```json
++{
++  "reviewed_revision": "sha256:835c3916d7bfea00d8e29566c64322d6392f1ba35facfa2c995e805f8ef4bc2e",
++  "lenses": {
++    "evidence": {
++      "request_id": "c3ae5761620da90c2503f334cc618389",
++      "review_digest": "sha256:2813ddb6e38a19ba0643eb3833d86c3e48cacf71c5199301b91249db63cd8925",
++      "decisions": []
++    }
++  }
++}
++```
+
+diff --git a/outbox/.054aaf8e24cc595a0fa806d127a015a6.md.tmp b/outbox/.054aaf8e24cc595a0fa806d127a015a6.md.tmp
+new file mode 100644
+index 0000000000000000000000000000000000000000..bdf98848d6b892e8729a7b91b08500d3409d315a
+--- /dev/null
++++ b/outbox/.054aaf8e24cc595a0fa806d127a015a6.md.tmp
+@@ -0,0 +1,22 @@
++```json
++{
++  "reviewed_revision": "sha256:835c3916d7bfea00d8e29566c64322d6392f1ba35facfa2c995e805f8ef4bc2e",
++  "lenses": {
++    "evidence": {
++      "request_id": "c3ae5761620da90c2503f334cc618389",
++      "review_digest": "sha256:2813ddb6e38a19ba0643eb3833d86c3e48cacf71c5199301b91249db63cd8925",
++      "decisions": []
++    },
++    "story": {
++      "request_id": "a371ba55064733d10a5ec76b670b9901",
++      "review_digest": "sha256:e408671016f10eb64277cafbd5539df4bc38c73ea7b2090943584fc7b60129c9",
++      "decisions": []
++    },
++    "clarity": {
++      "request_id": "054aaf8e24cc595a0fa806d127a015a6",
++      "review_digest": "sha256:0b2448c3e631458f1bc11f521ae784ffff996cfeb4bcd5bb4610b938bc1ea933",
++      "decisions": []
++    }
++  }
++}
++```
+diff --git a/outbox/.a371ba55064733d10a5ec76b670b9901.md.tmp b/outbox/.a371ba55064733d10a5ec76b670b9901.md.tmp
+new file mode 100644
+index 0000000000000000000000000000000000000000..57e6410899dd5de077206f4543ad610914a749e0
+--- /dev/null
++++ b/outbox/.a371ba55064733d10a5ec76b670b9901.md.tmp
+@@ -0,0 +1,17 @@
++```json
++{
++  "reviewed_revision": "sha256:835c3916d7bfea00d8e29566c64322d6392f1ba35facfa2c995e805f8ef4bc2e",
++  "lenses": {
++    "evidence": {
++      "request_id": "c3ae5761620da90c2503f334cc618389",
++      "review_digest": "sha256:2813ddb6e38a19ba0643eb3833d86c3e48cacf71c5199301b91249db63cd8925",
++      "decisions": []
++    },
++    "story": {
++      "request_id": "a371ba55064733d10a5ec76b670b9901",
++      "review_digest": "sha256:e408671016f10eb64277cafbd5539df4bc38c73ea7b2090943584fc7b60129c9",
++      "decisions": []
++    }
++  }
++}
++```
+diff --git a/outbox/.c3ae5761620da90c2503f334cc618389.md.tmp b/outbox/.c3ae5761620da90c2503f334cc618389.md.tmp
+new file mode 100644
+index 0000000000000000000000000000000000000000..c8076bed2099445f1feb9cdcdc7b1316a66a26d1
+--- /dev/null
++++ b/outbox/.c3ae5761620da90c2503f334cc618389.md.tmp
+@@ -0,0 +1,12 @@
++```json
++{
++  "reviewed_revision": "sha256:835c3916d7bfea00d8e29566c64322d6392f1ba35facfa2c995e805f8ef4bc2e",
++  "lenses": {
++    "evidence": {
++      "request_id": "c3ae5761620da90c2503f334cc618389",
++      "review_digest": "sha256:2813ddb6e38a19ba0643eb3833d86c3e48cacf71c5199301b91249db63cd8925",
++      "decisions": []
++    }
++  }
++}
++```
+
+exec
+/bin/zsh -lc 'rtk mv outbox/.054aaf8e24cc595a0fa806d127a015a6.md.tmp outbox/054aaf8e24cc595a0fa806d127a015a6.md' in /var/folders/8r/lkx2j8bn15g71gbtr5_c5bpw0000gn/T/write-uuter-agent-001-pm-3875441967
+ succeeded in 1646ms:
+diff --git a/outbox/.054aaf8e24cc595a0fa806d127a015a6.md.tmp b/outbox/.054aaf8e24cc595a0fa806d127a015a6.md.tmp
+new file mode 100644
+index 0000000000000000000000000000000000000000..bdf98848d6b892e8729a7b91b08500d3409d315a
+--- /dev/null
++++ b/outbox/.054aaf8e24cc595a0fa806d127a015a6.md.tmp
+@@ -0,0 +1,22 @@
++```json
++{
++  "reviewed_revision": "sha256:835c3916d7bfea00d8e29566c64322d6392f1ba35facfa2c995e805f8ef4bc2e",
++  "lenses": {
++    "evidence": {
++      "request_id": "c3ae5761620da90c2503f334cc618389",
++      "review_digest": "sha256:2813ddb6e38a19ba0643eb3833d86c3e48cacf71c5199301b91249db63cd8925",
++      "decisions": []
++    },
++    "story": {
++      "request_id": "a371ba55064733d10a5ec76b670b9901",
++      "review_digest": "sha256:e408671016f10eb64277cafbd5539df4bc38c73ea7b2090943584fc7b60129c9",
++      "decisions": []
++    },
++    "clarity": {
++      "request_id": "054aaf8e24cc595a0fa806d127a015a6",
++      "review_digest": "sha256:0b2448c3e631458f1bc11f521ae784ffff996cfeb4bcd5bb4610b938bc1ea933",
++      "decisions": []
++    }
++  }
++}
++```
+diff --git a/outbox/.a371ba55064733d10a5ec76b670b9901.md.tmp b/outbox/.a371ba55064733d10a5ec76b670b9901.md.tmp
+new file mode 100644
+index 0000000000000000000000000000000000000000..57e6410899dd5de077206f4543ad610914a749e0
+--- /dev/null
++++ b/outbox/.a371ba55064733d10a5ec76b670b9901.md.tmp
+@@ -0,0 +1,17 @@
++```json
++{
++  "reviewed_revision": "sha256:835c3916d7bfea00d8e29566c64322d6392f1ba35facfa2c995e805f8ef4bc2e",
++  "lenses": {
++    "evidence": {
++      "request_id": "c3ae5761620da90c2503f334cc618389",
++      "review_digest": "sha256:2813ddb6e38a19ba0643eb3833d86c3e48cacf71c5199301b91249db63cd8925",
++      "decisions": []
++    },
++    "story": {
++      "request_id": "a371ba55064733d10a5ec76b670b9901",
++      "review_digest": "sha256:e408671016f10eb64277cafbd5539df4bc38c73ea7b2090943584fc7b60129c9",
++      "decisions": []
++    }
++  }
++}
++```
+diff --git a/outbox/.c3ae5761620da90c2503f334cc618389.md.tmp b/outbox/.c3ae5761620da90c2503f334cc618389.md.tmp
+new file mode 100644
+index 0000000000000000000000000000000000000000..c8076bed2099445f1feb9cdcdc7b1316a66a26d1
+--- /dev/null
++++ b/outbox/.c3ae5761620da90c2503f334cc618389.md.tmp
+@@ -0,0 +1,12 @@
++```json
++{
++  "reviewed_revision": "sha256:835c3916d7bfea00d8e29566c64322d6392f1ba35facfa2c995e805f8ef4bc2e",
++  "lenses": {
++    "evidence": {
++      "request_id": "c3ae5761620da90c2503f334cc618389",
++      "review_digest": "sha256:2813ddb6e38a19ba0643eb3833d86c3e48cacf71c5199301b91249db63cd8925",
++      "decisions": []
++    }
++  }
++}
++```
+
+codex
+The clarity review is clean as well. I preserved both earlier lens records and added only the active clarity record with no decisions; its output is published, and I’m waiting for the exact request acknowledgement.
+exec
+/bin/zsh -lc "rtk proxy zsh -c 'while [[ -e inbox/054aaf8e24cc595a0fa806d127a015a6.json ]]; do sleep 2; done; print acknowledged'" in /var/folders/8r/lkx2j8bn15g71gbtr5_c5bpw0000gn/T/write-uuter-agent-001-pm-3875441967
+ succeeded in 2050ms:
+acknowledged
+
+diff --git a/outbox/.054aaf8e24cc595a0fa806d127a015a6.md.tmp b/outbox/.054aaf8e24cc595a0fa806d127a015a6.md.tmp
+new file mode 100644
+index 0000000000000000000000000000000000000000..bdf98848d6b892e8729a7b91b08500d3409d315a
+--- /dev/null
++++ b/outbox/.054aaf8e24cc595a0fa806d127a015a6.md.tmp
+@@ -0,0 +1,22 @@
++```json
++{
++  "reviewed_revision": "sha256:835c3916d7bfea00d8e29566c64322d6392f1ba35facfa2c995e805f8ef4bc2e",
++  "lenses": {
++    "evidence": {
++      "request_id": "c3ae5761620da90c2503f334cc618389",
++      "review_digest": "sha256:2813ddb6e38a19ba0643eb3833d86c3e48cacf71c5199301b91249db63cd8925",
++      "decisions": []
++    },
++    "story": {
++      "request_id": "a371ba55064733d10a5ec76b670b9901",
++      "review_digest": "sha256:e408671016f10eb64277cafbd5539df4bc38c73ea7b2090943584fc7b60129c9",
++      "decisions": []
++    },
++    "clarity": {
++      "request_id": "054aaf8e24cc595a0fa806d127a015a6",
++      "review_digest": "sha256:0b2448c3e631458f1bc11f521ae784ffff996cfeb4bcd5bb4610b938bc1ea933",
++      "decisions": []
++    }
++  }
++}
++```
+diff --git a/outbox/.a371ba55064733d10a5ec76b670b9901.md.tmp b/outbox/.a371ba55064733d10a5ec76b670b9901.md.tmp
+new file mode 100644
+index 0000000000000000000000000000000000000000..57e6410899dd5de077206f4543ad610914a749e0
+--- /dev/null
++++ b/outbox/.a371ba55064733d10a5ec76b670b9901.md.tmp
+@@ -0,0 +1,17 @@
++```json
++{
++  "reviewed_revision": "sha256:835c3916d7bfea00d8e29566c64322d6392f1ba35facfa2c995e805f8ef4bc2e",
++  "lenses": {
++    "evidence": {
++      "request_id": "c3ae5761620da90c2503f334cc618389",
++      "review_digest": "sha256:2813ddb6e38a19ba0643eb3833d86c3e48cacf71c5199301b91249db63cd8925",
++      "decisions": []
++    },
++    "story": {
++      "request_id": "a371ba55064733d10a5ec76b670b9901",
++      "review_digest": "sha256:e408671016f10eb64277cafbd5539df4bc38c73ea7b2090943584fc7b60129c9",
++      "decisions": []
++    }
++  }
++}
++```
+diff --git a/outbox/.c3ae5761620da90c2503f334cc618389.md.tmp b/outbox/.c3ae5761620da90c2503f334cc618389.md.tmp
+new file mode 100644
+index 0000000000000000000000000000000000000000..c8076bed2099445f1feb9cdcdc7b1316a66a26d1
+--- /dev/null
++++ b/outbox/.c3ae5761620da90c2503f334cc618389.md.tmp
+@@ -0,0 +1,12 @@
++```json
++{
++  "reviewed_revision": "sha256:835c3916d7bfea00d8e29566c64322d6392f1ba35facfa2c995e805f8ef4bc2e",
++  "lenses": {
++    "evidence": {
++      "request_id": "c3ae5761620da90c2503f334cc618389",
++      "review_digest": "sha256:2813ddb6e38a19ba0643eb3833d86c3e48cacf71c5199301b91249db63cd8925",
++      "decisions": []
++    }
++  }
++}
++```
+
+exec
+/bin/zsh -lc "rtk proxy zsh -c 'while true; do files=(inbox/*.json(N)); if (( "'${#files[@]} > 0 )); then print -r -- ${files[1]}; exit 0; fi; sleep 2; done'"'" in /var/folders/8r/lkx2j8bn15g71gbtr5_c5bpw0000gn/T/write-uuter-agent-001-pm-3875441967
+diff --git a/outbox/.054aaf8e24cc595a0fa806d127a015a6.md.tmp b/outbox/.054aaf8e24cc595a0fa806d127a015a6.md.tmp
+new file mode 100644
+index 0000000000000000000000000000000000000000..bdf98848d6b892e8729a7b91b08500d3409d315a
+--- /dev/null
++++ b/outbox/.054aaf8e24cc595a0fa806d127a015a6.md.tmp
+@@ -0,0 +1,22 @@
++```json
++{
++  "reviewed_revision": "sha256:835c3916d7bfea00d8e29566c64322d6392f1ba35facfa2c995e805f8ef4bc2e",
++  "lenses": {
++    "evidence": {
++      "request_id": "c3ae5761620da90c2503f334cc618389",
++      "review_digest": "sha256:2813ddb6e38a19ba0643eb3833d86c3e48cacf71c5199301b91249db63cd8925",
++      "decisions": []
++    },
++    "story": {
++      "request_id": "a371ba55064733d10a5ec76b670b9901",
++      "review_digest": "sha256:e408671016f10eb64277cafbd5539df4bc38c73ea7b2090943584fc7b60129c9",
++      "decisions": []
++    },
++    "clarity": {
++      "request_id": "054aaf8e24cc595a0fa806d127a015a6",
++      "review_digest": "sha256:0b2448c3e631458f1bc11f521ae784ffff996cfeb4bcd5bb4610b938bc1ea933",
++      "decisions": []
++    }
++  }
++}
++```
+diff --git a/outbox/.a371ba55064733d10a5ec76b670b9901.md.tmp b/outbox/.a371ba55064733d10a5ec76b670b9901.md.tmp
+new file mode 100644
+index 0000000000000000000000000000000000000000..57e6410899dd5de077206f4543ad610914a749e0
+--- /dev/null
++++ b/outbox/.a371ba55064733d10a5ec76b670b9901.md.tmp
+@@ -0,0 +1,17 @@
++```json
++{
++  "reviewed_revision": "sha256:835c3916d7bfea00d8e29566c64322d6392f1ba35facfa2c995e805f8ef4bc2e",
++  "lenses": {
++    "evidence": {
++      "request_id": "c3ae5761620da90c2503f334cc618389",
++      "review_digest": "sha256:2813ddb6e38a19ba0643eb3833d86c3e48cacf71c5199301b91249db63cd8925",
++      "decisions": []
++    },
++    "story": {
++      "request_id": "a371ba55064733d10a5ec76b670b9901",
++      "review_digest": "sha256:e408671016f10eb64277cafbd5539df4bc38c73ea7b2090943584fc7b60129c9",
++      "decisions": []
++    }
++  }
++}
++```
+diff --git a/outbox/.c3ae5761620da90c2503f334cc618389.md.tmp b/outbox/.c3ae5761620da90c2503f334cc618389.md.tmp
+new file mode 100644
+index 0000000000000000000000000000000000000000..c8076bed2099445f1feb9cdcdc7b1316a66a26d1
+--- /dev/null
++++ b/outbox/.c3ae5761620da90c2503f334cc618389.md.tmp
+@@ -0,0 +1,12 @@
++```json
++{
++  "reviewed_revision": "sha256:835c3916d7bfea00d8e29566c64322d6392f1ba35facfa2c995e805f8ef4bc2e",
++  "lenses": {
++    "evidence": {
++      "request_id": "c3ae5761620da90c2503f334cc618389",
++      "review_digest": "sha256:2813ddb6e38a19ba0643eb3833d86c3e48cacf71c5199301b91249db63cd8925",
++      "decisions": []
++    }
++  }
++}
++```
+
+ succeeded in 45654ms:
+inbox/c759e0c90f3430ea252ba1e87d48309c.json
+
+diff --git a/outbox/.054aaf8e24cc595a0fa806d127a015a6.md.tmp b/outbox/.054aaf8e24cc595a0fa806d127a015a6.md.tmp
+new file mode 100644
+index 0000000000000000000000000000000000000000..bdf98848d6b892e8729a7b91b08500d3409d315a
+--- /dev/null
++++ b/outbox/.054aaf8e24cc595a0fa806d127a015a6.md.tmp
+@@ -0,0 +1,22 @@
++```json
++{
++  "reviewed_revision": "sha256:835c3916d7bfea00d8e29566c64322d6392f1ba35facfa2c995e805f8ef4bc2e",
++  "lenses": {
++    "evidence": {
++      "request_id": "c3ae5761620da90c2503f334cc618389",
++      "review_digest": "sha256:2813ddb6e38a19ba0643eb3833d86c3e48cacf71c5199301b91249db63cd8925",
++      "decisions": []
++    },
++    "story": {
++      "request_id": "a371ba55064733d10a5ec76b670b9901",
++      "review_digest": "sha256:e408671016f10eb64277cafbd5539df4bc38c73ea7b2090943584fc7b60129c9",
++      "decisions": []
++    },
++    "clarity": {
++      "request_id": "054aaf8e24cc595a0fa806d127a015a6",
++      "review_digest": "sha256:0b2448c3e631458f1bc11f521ae784ffff996cfeb4bcd5bb4610b938bc1ea933",
++      "decisions": []
++    }
++  }
++}
++```
+diff --git a/outbox/.a371ba55064733d10a5ec76b670b9901.md.tmp b/outbox/.a371ba55064733d10a5ec76b670b9901.md.tmp
+new file mode 100644
+index 0000000000000000000000000000000000000000..57e6410899dd5de077206f4543ad610914a749e0
+--- /dev/null
++++ b/outbox/.a371ba55064733d10a5ec76b670b9901.md.tmp
+@@ -0,0 +1,17 @@
++```json
++{
++  "reviewed_revision": "sha256:835c3916d7bfea00d8e29566c64322d6392f1ba35facfa2c995e805f8ef4bc2e",
++  "lenses": {
++    "evidence": {
++      "request_id": "c3ae5761620da90c2503f334cc618389",
++      "review_digest": "sha256:2813ddb6e38a19ba0643eb3833d86c3e48cacf71c5199301b91249db63cd8925",
++      "decisions": []
++    },
++    "story": {
++      "request_id": "a371ba55064733d10a5ec76b670b9901",
++      "review_digest": "sha256:e408671016f10eb64277cafbd5539df4bc38c73ea7b2090943584fc7b60129c9",
++      "decisions": []
++    }
++  }
++}
++```
+diff --git a/outbox/.c3ae5761620da90c2503f334cc618389.md.tmp b/outbox/.c3ae5761620da90c2503f334cc618389.md.tmp
+new file mode 100644
+index 0000000000000000000000000000000000000000..c8076bed2099445f1feb9cdcdc7b1316a66a26d1
+--- /dev/null
++++ b/outbox/.c3ae5761620da90c2503f334cc618389.md.tmp
+@@ -0,0 +1,12 @@
++```json
++{
++  "reviewed_revision": "sha256:835c3916d7bfea00d8e29566c64322d6392f1ba35facfa2c995e805f8ef4bc2e",
++  "lenses": {
++    "evidence": {
++      "request_id": "c3ae5761620da90c2503f334cc618389",
++      "review_digest": "sha256:2813ddb6e38a19ba0643eb3833d86c3e48cacf71c5199301b91249db63cd8925",
++      "decisions": []
++    }
++  }
++}
++```
+
+exec
+/bin/zsh -lc 'rtk cat inbox/c759e0c90f3430ea252ba1e87d48309c.json' in /var/folders/8r/lkx2j8bn15g71gbtr5_c5bpw0000gn/T/write-uuter-agent-001-pm-3875441967
+ succeeded in 1702ms:
+{
+  "request_id": "c759e0c90f3430ea252ba1e87d48309c",
+  "candidate": 1,
+  "lens": "copy",
+  "reviewed_revision": "sha256:835c3916d7bfea00d8e29566c64322d6392f1ba35facfa2c995e805f8ef4bc2e",
+  "review_digest": "sha256:722785463cd2838ae8c071d8832450cd95e46fe8eb68c68c47a8354979625766",
+  "result_path": "requests/c759e0c90f3430ea252ba1e87d48309c/result.json",
+  "report_path": "requests/c759e0c90f3430ea252ba1e87d48309c/report.md",
+  "decision_path": "pm-decisions/article-001.md",
+  "request_path": "inbox/c759e0c90f3430ea252ba1e87d48309c.json",
+  "context_directory": "requests/c759e0c90f3430ea252ba1e87d48309c",
+  "output_path": "outbox/c759e0c90f3430ea252ba1e87d48309c.md"
+}
+
+diff --git a/outbox/.054aaf8e24cc595a0fa806d127a015a6.md.tmp b/outbox/.054aaf8e24cc595a0fa806d127a015a6.md.tmp
+new file mode 100644
+index 0000000000000000000000000000000000000000..bdf98848d6b892e8729a7b91b08500d3409d315a
+--- /dev/null
++++ b/outbox/.054aaf8e24cc595a0fa806d127a015a6.md.tmp
+@@ -0,0 +1,22 @@
++```json
++{
++  "reviewed_revision": "sha256:835c3916d7bfea00d8e29566c64322d6392f1ba35facfa2c995e805f8ef4bc2e",
++  "lenses": {
++    "evidence": {
++      "request_id": "c3ae5761620da90c2503f334cc618389",
++      "review_digest": "sha256:2813ddb6e38a19ba0643eb3833d86c3e48cacf71c5199301b91249db63cd8925",
++      "decisions": []
++    },
++    "story": {
++      "request_id": "a371ba55064733d10a5ec76b670b9901",
++      "review_digest": "sha256:e408671016f10eb64277cafbd5539df4bc38c73ea7b2090943584fc7b60129c9",
++      "decisions": []
++    },
++    "clarity": {
++      "request_id": "054aaf8e24cc595a0fa806d127a015a6",
++      "review_digest": "sha256:0b2448c3e631458f1bc11f521ae784ffff996cfeb4bcd5bb4610b938bc1ea933",
++      "decisions": []
++    }
++  }
++}
++```
+diff --git a/outbox/.a371ba55064733d10a5ec76b670b9901.md.tmp b/outbox/.a371ba55064733d10a5ec76b670b9901.md.tmp
+new file mode 100644
+index 0000000000000000000000000000000000000000..57e6410899dd5de077206f4543ad610914a749e0
+--- /dev/null
++++ b/outbox/.a371ba55064733d10a5ec76b670b9901.md.tmp
+@@ -0,0 +1,17 @@
++```json
++{
++  "reviewed_revision": "sha256:835c3916d7bfea00d8e29566c64322d6392f1ba35facfa2c995e805f8ef4bc2e",
++  "lenses": {
++    "evidence": {
++      "request_id": "c3ae5761620da90c2503f334cc618389",
++      "review_digest": "sha256:2813ddb6e38a19ba0643eb3833d86c3e48cacf71c5199301b91249db63cd8925",
++      "decisions": []
++    },
++    "story": {
++      "request_id": "a371ba55064733d10a5ec76b670b9901",
++      "review_digest": "sha256:e408671016f10eb64277cafbd5539df4bc38c73ea7b2090943584fc7b60129c9",
++      "decisions": []
++    }
++  }
++}
++```
+diff --git a/outbox/.c3ae5761620da90c2503f334cc618389.md.tmp b/outbox/.c3ae5761620da90c2503f334cc618389.md.tmp
+new file mode 100644
+index 0000000000000000000000000000000000000000..c8076bed2099445f1feb9cdcdc7b1316a66a26d1
+--- /dev/null
++++ b/outbox/.c3ae5761620da90c2503f334cc618389.md.tmp
+@@ -0,0 +1,12 @@
++```json
++{
++  "reviewed_revision": "sha256:835c3916d7bfea00d8e29566c64322d6392f1ba35facfa2c995e805f8ef4bc2e",
++  "lenses": {
++    "evidence": {
++      "request_id": "c3ae5761620da90c2503f334cc618389",
++      "review_digest": "sha256:2813ddb6e38a19ba0643eb3833d86c3e48cacf71c5199301b91249db63cd8925",
++      "decisions": []
++    }
++  }
++}
++```
+
+codex
+The clarity request was acknowledged. I’m processing request `c759e0c90f3430ea252ba1e87d48309c` for the final `copy` lens and checking its supplied history before publishing.
+exec
+/bin/zsh -lc 'rtk cat requests/c759e0c90f3430ea252ba1e87d48309c/previous-decision.md' in /var/folders/8r/lkx2j8bn15g71gbtr5_c5bpw0000gn/T/write-uuter-agent-001-pm-3875441967
+exec
+/bin/zsh -lc 'rtk cat requests/c759e0c90f3430ea252ba1e87d48309c/report.md' in /var/folders/8r/lkx2j8bn15g71gbtr5_c5bpw0000gn/T/write-uuter-agent-001-pm-3875441967
+exec
+/bin/zsh -lc 'rtk cat requests/c759e0c90f3430ea252ba1e87d48309c/result.json' in /var/folders/8r/lkx2j8bn15g71gbtr5_c5bpw0000gn/T/write-uuter-agent-001-pm-3875441967
+ succeeded in 1760ms:
+{
+  "status": "clean",
+  "lens": "copy",
+  "reviewed_revision": "sha256:835c3916d7bfea00d8e29566c64322d6392f1ba35facfa2c995e805f8ef4bc2e",
+  "findings": []
+}
+
+ succeeded in 1761ms:
+```json
+{
+  "reviewed_revision": "sha256:835c3916d7bfea00d8e29566c64322d6392f1ba35facfa2c995e805f8ef4bc2e",
+  "lenses": {
+    "evidence": {
+      "request_id": "c3ae5761620da90c2503f334cc618389",
+      "review_digest": "sha256:2813ddb6e38a19ba0643eb3833d86c3e48cacf71c5199301b91249db63cd8925",
+      "decisions": []
+    },
+    "story": {
+      "request_id": "a371ba55064733d10a5ec76b670b9901",
+      "review_digest": "sha256:e408671016f10eb64277cafbd5539df4bc38c73ea7b2090943584fc7b60129c9",
+      "decisions": []
+    },
+    "clarity": {
+      "request_id": "054aaf8e24cc595a0fa806d127a015a6",
+      "review_digest": "sha256:0b2448c3e631458f1bc11f521ae784ffff996cfeb4bcd5bb4610b938bc1ea933",
+      "decisions": []
+    }
+  }
+}
+```
+
+ succeeded in 1761ms:
+# Copy Review
+
+- status: `clean`
+- lens: `copy`
+- reviewed_revision: `sha256:835c3916d7bfea00d8e29566c64322d6392f1ba35facfa2c995e805f8ef4bc2e`
+- findings: `[]`
+
+No grammar, spelling, punctuation, or consistency findings.
+
+diff --git a/outbox/.054aaf8e24cc595a0fa806d127a015a6.md.tmp b/outbox/.054aaf8e24cc595a0fa806d127a015a6.md.tmp
+new file mode 100644
+index 0000000000000000000000000000000000000000..bdf98848d6b892e8729a7b91b08500d3409d315a
+--- /dev/null
++++ b/outbox/.054aaf8e24cc595a0fa806d127a015a6.md.tmp
+@@ -0,0 +1,22 @@
++```json
++{
++  "reviewed_revision": "sha256:835c3916d7bfea00d8e29566c64322d6392f1ba35facfa2c995e805f8ef4bc2e",
++  "lenses": {
++    "evidence": {
++      "request_id": "c3ae5761620da90c2503f334cc618389",
++      "review_digest": "sha256:2813ddb6e38a19ba0643eb3833d86c3e48cacf71c5199301b91249db63cd8925",
++      "decisions": []
++    },
++    "story": {
++      "request_id": "a371ba55064733d10a5ec76b670b9901",
++      "review_digest": "sha256:e408671016f10eb64277cafbd5539df4bc38c73ea7b2090943584fc7b60129c9",
++      "decisions": []
++    },
++    "clarity": {
++      "request_id": "054aaf8e24cc595a0fa806d127a015a6",
++      "review_digest": "sha256:0b2448c3e631458f1bc11f521ae784ffff996cfeb4bcd5bb4610b938bc1ea933",
++      "decisions": []
++    }
++  }
++}
++```
+diff --git a/outbox/.a371ba55064733d10a5ec76b670b9901.md.tmp b/outbox/.a371ba55064733d10a5ec76b670b9901.md.tmp
+new file mode 100644
+index 0000000000000000000000000000000000000000..57e6410899dd5de077206f4543ad610914a749e0
+--- /dev/null
++++ b/outbox/.a371ba55064733d10a5ec76b670b9901.md.tmp
+@@ -0,0 +1,17 @@
++```json
++{
++  "reviewed_revision": "sha256:835c3916d7bfea00d8e29566c64322d6392f1ba35facfa2c995e805f8ef4bc2e",
++  "lenses": {
++    "evidence": {
++      "request_id": "c3ae5761620da90c2503f334cc618389",
++      "review_digest": "sha256:2813ddb6e38a19ba0643eb3833d86c3e48cacf71c5199301b91249db63cd8925",
++      "decisions": []
++    },
++    "story": {
++      "request_id": "a371ba55064733d10a5ec76b670b9901",
++      "review_digest": "sha256:e408671016f10eb64277cafbd5539df4bc38c73ea7b2090943584fc7b60129c9",
++      "decisions": []
++    }
++  }
++}
++```
+diff --git a/outbox/.c3ae5761620da90c2503f334cc618389.md.tmp b/outbox/.c3ae5761620da90c2503f334cc618389.md.tmp
+new file mode 100644
+index 0000000000000000000000000000000000000000..c8076bed2099445f1feb9cdcdc7b1316a66a26d1
+--- /dev/null
++++ b/outbox/.c3ae5761620da90c2503f334cc618389.md.tmp
+@@ -0,0 +1,12 @@
++```json
++{
++  "reviewed_revision": "sha256:835c3916d7bfea00d8e29566c64322d6392f1ba35facfa2c995e805f8ef4bc2e",
++  "lenses": {
++    "evidence": {
++      "request_id": "c3ae5761620da90c2503f334cc618389",
++      "review_digest": "sha256:2813ddb6e38a19ba0643eb3833d86c3e48cacf71c5199301b91249db63cd8925",
++      "decisions": []
++    }
++  }
++}
++```
+
+apply patch
+patch: completed
+/var/folders/8r/lkx2j8bn15g71gbtr5_c5bpw0000gn/T/write-uuter-agent-001-pm-3875441967/outbox/.c759e0c90f3430ea252ba1e87d48309c.md.tmp
+diff --git a/outbox/.054aaf8e24cc595a0fa806d127a015a6.md.tmp b/outbox/.054aaf8e24cc595a0fa806d127a015a6.md.tmp
+new file mode 100644
+index 0000000000000000000000000000000000000000..bdf98848d6b892e8729a7b91b08500d3409d315a
+--- /dev/null
++++ b/outbox/.054aaf8e24cc595a0fa806d127a015a6.md.tmp
+@@ -0,0 +1,22 @@
++```json
++{
++  "reviewed_revision": "sha256:835c3916d7bfea00d8e29566c64322d6392f1ba35facfa2c995e805f8ef4bc2e",
++  "lenses": {
++    "evidence": {
++      "request_id": "c3ae5761620da90c2503f334cc618389",
++      "review_digest": "sha256:2813ddb6e38a19ba0643eb3833d86c3e48cacf71c5199301b91249db63cd8925",
++      "decisions": []
++    },
++    "story": {
++      "request_id": "a371ba55064733d10a5ec76b670b9901",
++      "review_digest": "sha256:e408671016f10eb64277cafbd5539df4bc38c73ea7b2090943584fc7b60129c9",
++      "decisions": []
++    },
++    "clarity": {
++      "request_id": "054aaf8e24cc595a0fa806d127a015a6",
++      "review_digest": "sha256:0b2448c3e631458f1bc11f521ae784ffff996cfeb4bcd5bb4610b938bc1ea933",
++      "decisions": []
++    }
++  }
++}
++```
+diff --git a/outbox/.a371ba55064733d10a5ec76b670b9901.md.tmp b/outbox/.a371ba55064733d10a5ec76b670b9901.md.tmp
+new file mode 100644
+index 0000000000000000000000000000000000000000..57e6410899dd5de077206f4543ad610914a749e0
+--- /dev/null
++++ b/outbox/.a371ba55064733d10a5ec76b670b9901.md.tmp
+@@ -0,0 +1,17 @@
++```json
++{
++  "reviewed_revision": "sha256:835c3916d7bfea00d8e29566c64322d6392f1ba35facfa2c995e805f8ef4bc2e",
++  "lenses": {
++    "evidence": {
++      "request_id": "c3ae5761620da90c2503f334cc618389",
++      "review_digest": "sha256:2813ddb6e38a19ba0643eb3833d86c3e48cacf71c5199301b91249db63cd8925",
++      "decisions": []
++    },
++    "story": {
++      "request_id": "a371ba55064733d10a5ec76b670b9901",
++      "review_digest": "sha256:e408671016f10eb64277cafbd5539df4bc38c73ea7b2090943584fc7b60129c9",
++      "decisions": []
++    }
++  }
++}
++```
+diff --git a/outbox/.c3ae5761620da90c2503f334cc618389.md.tmp b/outbox/.c3ae5761620da90c2503f334cc618389.md.tmp
+new file mode 100644
+index 0000000000000000000000000000000000000000..c8076bed2099445f1feb9cdcdc7b1316a66a26d1
+--- /dev/null
++++ b/outbox/.c3ae5761620da90c2503f334cc618389.md.tmp
+@@ -0,0 +1,12 @@
++```json
++{
++  "reviewed_revision": "sha256:835c3916d7bfea00d8e29566c64322d6392f1ba35facfa2c995e805f8ef4bc2e",
++  "lenses": {
++    "evidence": {
++      "request_id": "c3ae5761620da90c2503f334cc618389",
++      "review_digest": "sha256:2813ddb6e38a19ba0643eb3833d86c3e48cacf71c5199301b91249db63cd8925",
++      "decisions": []
++    }
++  }
++}
++```
+diff --git a/outbox/.c759e0c90f3430ea252ba1e87d48309c.md.tmp b/outbox/.c759e0c90f3430ea252ba1e87d48309c.md.tmp
+new file mode 100644
+index 0000000000000000000000000000000000000000..1e583e1fd2e8d6d9f07f8cb45a034ef74310c011
+--- /dev/null
++++ b/outbox/.c759e0c90f3430ea252ba1e87d48309c.md.tmp
+@@ -0,0 +1,27 @@
++```json
++{
++  "reviewed_revision": "sha256:835c3916d7bfea00d8e29566c64322d6392f1ba35facfa2c995e805f8ef4bc2e",
++  "lenses": {
++    "evidence": {
++      "request_id": "c3ae5761620da90c2503f334cc618389",
++      "review_digest": "sha256:2813ddb6e38a19ba0643eb3833d86c3e48cacf71c5199301b91249db63cd8925",
++      "decisions": []
++    },
++    "story": {
++      "request_id": "a371ba55064733d10a5ec76b670b9901",
++      "review_digest": "sha256:e408671016f10eb64277cafbd5539df4bc38c73ea7b2090943584fc7b60129c9",
++      "decisions": []
++    },
++    "clarity": {
++      "request_id": "054aaf8e24cc595a0fa806d127a015a6",
++      "review_digest": "sha256:0b2448c3e631458f1bc11f521ae784ffff996cfeb4bcd5bb4610b938bc1ea933",
++      "decisions": []
++    },
++    "copy": {
++      "request_id": "c759e0c90f3430ea252ba1e87d48309c",
++      "review_digest": "sha256:722785463cd2838ae8c071d8832450cd95e46fe8eb68c68c47a8354979625766",
++      "decisions": []
++    }
++  }
++}
++```
+
+diff --git a/outbox/.054aaf8e24cc595a0fa806d127a015a6.md.tmp b/outbox/.054aaf8e24cc595a0fa806d127a015a6.md.tmp
+new file mode 100644
+index 0000000000000000000000000000000000000000..bdf98848d6b892e8729a7b91b08500d3409d315a
+--- /dev/null
++++ b/outbox/.054aaf8e24cc595a0fa806d127a015a6.md.tmp
+@@ -0,0 +1,22 @@
++```json
++{
++  "reviewed_revision": "sha256:835c3916d7bfea00d8e29566c64322d6392f1ba35facfa2c995e805f8ef4bc2e",
++  "lenses": {
++    "evidence": {
++      "request_id": "c3ae5761620da90c2503f334cc618389",
++      "review_digest": "sha256:2813ddb6e38a19ba0643eb3833d86c3e48cacf71c5199301b91249db63cd8925",
++      "decisions": []
++    },
++    "story": {
++      "request_id": "a371ba55064733d10a5ec76b670b9901",
++      "review_digest": "sha256:e408671016f10eb64277cafbd5539df4bc38c73ea7b2090943584fc7b60129c9",
++      "decisions": []
++    },
++    "clarity": {
++      "request_id": "054aaf8e24cc595a0fa806d127a015a6",
++      "review_digest": "sha256:0b2448c3e631458f1bc11f521ae784ffff996cfeb4bcd5bb4610b938bc1ea933",
++      "decisions": []
++    }
++  }
++}
++```
+diff --git a/outbox/.a371ba55064733d10a5ec76b670b9901.md.tmp b/outbox/.a371ba55064733d10a5ec76b670b9901.md.tmp
+new file mode 100644
+index 0000000000000000000000000000000000000000..57e6410899dd5de077206f4543ad610914a749e0
+--- /dev/null
++++ b/outbox/.a371ba55064733d10a5ec76b670b9901.md.tmp
+@@ -0,0 +1,17 @@
++```json
++{
++  "reviewed_revision": "sha256:835c3916d7bfea00d8e29566c64322d6392f1ba35facfa2c995e805f8ef4bc2e",
++  "lenses": {
++    "evidence": {
++      "request_id": "c3ae5761620da90c2503f334cc618389",
++      "review_digest": "sha256:2813ddb6e38a19ba0643eb3833d86c3e48cacf71c5199301b91249db63cd8925",
++      "decisions": []
++    },
++    "story": {
++      "request_id": "a371ba55064733d10a5ec76b670b9901",
++      "review_digest": "sha256:e408671016f10eb64277cafbd5539df4bc38c73ea7b2090943584fc7b60129c9",
++      "decisions": []
++    }
++  }
++}
++```
+diff --git a/outbox/.c3ae5761620da90c2503f334cc618389.md.tmp b/outbox/.c3ae5761620da90c2503f334cc618389.md.tmp
+new file mode 100644
+index 0000000000000000000000000000000000000000..c8076bed2099445f1feb9cdcdc7b1316a66a26d1
+--- /dev/null
++++ b/outbox/.c3ae5761620da90c2503f334cc618389.md.tmp
+@@ -0,0 +1,12 @@
++```json
++{
++  "reviewed_revision": "sha256:835c3916d7bfea00d8e29566c64322d6392f1ba35facfa2c995e805f8ef4bc2e",
++  "lenses": {
++    "evidence": {
++      "request_id": "c3ae5761620da90c2503f334cc618389",
++      "review_digest": "sha256:2813ddb6e38a19ba0643eb3833d86c3e48cacf71c5199301b91249db63cd8925",
++      "decisions": []
++    }
++  }
++}
++```
+diff --git a/outbox/.c759e0c90f3430ea252ba1e87d48309c.md.tmp b/outbox/.c759e0c90f3430ea252ba1e87d48309c.md.tmp
+new file mode 100644
+index 0000000000000000000000000000000000000000..1e583e1fd2e8d6d9f07f8cb45a034ef74310c011
+--- /dev/null
++++ b/outbox/.c759e0c90f3430ea252ba1e87d48309c.md.tmp
+@@ -0,0 +1,27 @@
++```json
++{
++  "reviewed_revision": "sha256:835c3916d7bfea00d8e29566c64322d6392f1ba35facfa2c995e805f8ef4bc2e",
++  "lenses": {
++    "evidence": {
++      "request_id": "c3ae5761620da90c2503f334cc618389",
++      "review_digest": "sha256:2813ddb6e38a19ba0643eb3833d86c3e48cacf71c5199301b91249db63cd8925",
++      "decisions": []
++    },
++    "story": {
++      "request_id": "a371ba55064733d10a5ec76b670b9901",
++      "review_digest": "sha256:e408671016f10eb64277cafbd5539df4bc38c73ea7b2090943584fc7b60129c9",
++      "decisions": []
++    },
++    "clarity": {
++      "request_id": "054aaf8e24cc595a0fa806d127a015a6",
++      "review_digest": "sha256:0b2448c3e631458f1bc11f521ae784ffff996cfeb4bcd5bb4610b938bc1ea933",
++      "decisions": []
++    },
++    "copy": {
++      "request_id": "c759e0c90f3430ea252ba1e87d48309c",
++      "review_digest": "sha256:722785463cd2838ae8c071d8832450cd95e46fe8eb68c68c47a8354979625766",
++      "decisions": []
++    }
++  }
++}
++```
+
+exec
+/bin/zsh -lc 'rtk mv outbox/.c759e0c90f3430ea252ba1e87d48309c.md.tmp outbox/c759e0c90f3430ea252ba1e87d48309c.md' in /var/folders/8r/lkx2j8bn15g71gbtr5_c5bpw0000gn/T/write-uuter-agent-001-pm-3875441967
+ succeeded in 1809ms:
+diff --git a/outbox/.054aaf8e24cc595a0fa806d127a015a6.md.tmp b/outbox/.054aaf8e24cc595a0fa806d127a015a6.md.tmp
+new file mode 100644
+index 0000000000000000000000000000000000000000..bdf98848d6b892e8729a7b91b08500d3409d315a
+--- /dev/null
++++ b/outbox/.054aaf8e24cc595a0fa806d127a015a6.md.tmp
+@@ -0,0 +1,22 @@
++```json
++{
++  "reviewed_revision": "sha256:835c3916d7bfea00d8e29566c64322d6392f1ba35facfa2c995e805f8ef4bc2e",
++  "lenses": {
++    "evidence": {
++      "request_id": "c3ae5761620da90c2503f334cc618389",
++      "review_digest": "sha256:2813ddb6e38a19ba0643eb3833d86c3e48cacf71c5199301b91249db63cd8925",
++      "decisions": []
++    },
++    "story": {
++      "request_id": "a371ba55064733d10a5ec76b670b9901",
++      "review_digest": "sha256:e408671016f10eb64277cafbd5539df4bc38c73ea7b2090943584fc7b60129c9",
++      "decisions": []
++    },
++    "clarity": {
++      "request_id": "054aaf8e24cc595a0fa806d127a015a6",
++      "review_digest": "sha256:0b2448c3e631458f1bc11f521ae784ffff996cfeb4bcd5bb4610b938bc1ea933",
++      "decisions": []
++    }
++  }
++}
++```
+diff --git a/outbox/.a371ba55064733d10a5ec76b670b9901.md.tmp b/outbox/.a371ba55064733d10a5ec76b670b9901.md.tmp
+new file mode 100644
+index 0000000000000000000000000000000000000000..57e6410899dd5de077206f4543ad610914a749e0
+--- /dev/null
++++ b/outbox/.a371ba55064733d10a5ec76b670b9901.md.tmp
+@@ -0,0 +1,17 @@
++```json
++{
++  "reviewed_revision": "sha256:835c3916d7bfea00d8e29566c64322d6392f1ba35facfa2c995e805f8ef4bc2e",
++  "lenses": {
++    "evidence": {
++      "request_id": "c3ae5761620da90c2503f334cc618389",
++      "review_digest": "sha256:2813ddb6e38a19ba0643eb3833d86c3e48cacf71c5199301b91249db63cd8925",
++      "decisions": []
++    },
++    "story": {
++      "request_id": "a371ba55064733d10a5ec76b670b9901",
++      "review_digest": "sha256:e408671016f10eb64277cafbd5539df4bc38c73ea7b2090943584fc7b60129c9",
++      "decisions": []
++    }
++  }
++}
++```
+diff --git a/outbox/.c3ae5761620da90c2503f334cc618389.md.tmp b/outbox/.c3ae5761620da90c2503f334cc618389.md.tmp
+new file mode 100644
+index 0000000000000000000000000000000000000000..c8076bed2099445f1feb9cdcdc7b1316a66a26d1
+--- /dev/null
++++ b/outbox/.c3ae5761620da90c2503f334cc618389.md.tmp
+@@ -0,0 +1,12 @@
++```json
++{
++  "reviewed_revision": "sha256:835c3916d7bfea00d8e29566c64322d6392f1ba35facfa2c995e805f8ef4bc2e",
++  "lenses": {
++    "evidence": {
++      "request_id": "c3ae5761620da90c2503f334cc618389",
++      "review_digest": "sha256:2813ddb6e38a19ba0643eb3833d86c3e48cacf71c5199301b91249db63cd8925",
++      "decisions": []
++    }
++  }
++}
++```
+diff --git a/outbox/.c759e0c90f3430ea252ba1e87d48309c.md.tmp b/outbox/.c759e0c90f3430ea252ba1e87d48309c.md.tmp
+new file mode 100644
+index 0000000000000000000000000000000000000000..1e583e1fd2e8d6d9f07f8cb45a034ef74310c011
+--- /dev/null
++++ b/outbox/.c759e0c90f3430ea252ba1e87d48309c.md.tmp
+@@ -0,0 +1,27 @@
++```json
++{
++  "reviewed_revision": "sha256:835c3916d7bfea00d8e29566c64322d6392f1ba35facfa2c995e805f8ef4bc2e",
++  "lenses": {
++    "evidence": {
++      "request_id": "c3ae5761620da90c2503f334cc618389",
++      "review_digest": "sha256:2813ddb6e38a19ba0643eb3833d86c3e48cacf71c5199301b91249db63cd8925",
++      "decisions": []
++    },
++    "story": {
++      "request_id": "a371ba55064733d10a5ec76b670b9901",
++      "review_digest": "sha256:e408671016f10eb64277cafbd5539df4bc38c73ea7b2090943584fc7b60129c9",
++      "decisions": []
++    },
++    "clarity": {
++      "request_id": "054aaf8e24cc595a0fa806d127a015a6",
++      "review_digest": "sha256:0b2448c3e631458f1bc11f521ae784ffff996cfeb4bcd5bb4610b938bc1ea933",
++      "decisions": []
++    },
++    "copy": {
++      "request_id": "c759e0c90f3430ea252ba1e87d48309c",
++      "review_digest": "sha256:722785463cd2838ae8c071d8832450cd95e46fe8eb68c68c47a8354979625766",
++      "decisions": []
++    }
++  }
++}
++```

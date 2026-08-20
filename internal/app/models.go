@@ -41,15 +41,26 @@ type PMDecision struct {
 }
 
 type PMDecisionDocument struct {
-	ReviewedRevision string                  `json:"reviewed_revision"`
-	Lenses           map[string][]PMDecision `json:"lenses"`
+	ReviewedRevision string                      `json:"reviewed_revision"`
+	Lenses           map[string]PMDecisionRecord `json:"lenses"`
+}
+
+type PMDecisionRecord struct {
+	RequestID    string       `json:"request_id"`
+	ReviewDigest string       `json:"review_digest"`
+	Decisions    []PMDecision `json:"decisions"`
 }
 
 type pmRequest struct {
+	RequestID        string `json:"request_id"`
 	Candidate        int    `json:"candidate"`
 	Lens             string `json:"lens"`
 	ReviewedRevision string `json:"reviewed_revision"`
+	ReviewDigest     string `json:"review_digest"`
 	ResultPath       string `json:"result_path"`
 	ReportPath       string `json:"report_path"`
 	DecisionPath     string `json:"decision_path"`
+	RequestPath      string `json:"request_path"`
+	ContextDirectory string `json:"context_directory"`
+	OutputPath       string `json:"output_path"`
 }

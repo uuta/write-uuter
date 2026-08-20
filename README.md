@@ -64,9 +64,12 @@ input brief.
 
 Go owns state transitions, validation, revision hashes, timeouts, and process
 cleanup. One long-lived PM Codex process and at most one worker run in a
-dedicated tmux session. Researcher, Story Editor, Writer, then fresh Evidence,
-Story, Clarity, and Copy reviewer processes run sequentially. Reviewers never
-edit candidates. Only PM-validated must-fix findings create a new candidate;
+dedicated tmux session. Each process receives a separate controller-created
+workspace outside the durable run directory; Go copies in only the role's
+contracted context and copies validated regular-file outputs back. Researcher,
+Story Editor, Writer, then fresh Evidence, Story, Clarity, and Copy reviewer
+processes run sequentially. Reviewers never receive the run directory or edit
+candidates. Only PM-validated must-fix findings create a new candidate;
 candidate 003 is the hard limit.
 
 See [workflow](docs/workflow.md), [roles](docs/roles.md), and

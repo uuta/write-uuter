@@ -22,15 +22,22 @@ type Config struct {
 	PromptsDir      string
 }
 
+type decisionBinding struct {
+	RequestID string
+	Digest    string
+}
+
 type controller struct {
-	config     Config
-	brief      briefDocument
-	runDir     string
-	promptsDir string
-	workflow   Workflow
-	runtime    *tmuxRuntime
-	pm         invocation
-	promptSeq  int
+	config           Config
+	brief            briefDocument
+	runDir           string
+	promptsDir       string
+	workflow         Workflow
+	store            *artifactStore
+	runtime          *tmuxRuntime
+	pm               invocation
+	reachedLenses    map[int][]string
+	decisionBindings map[int]map[string]decisionBinding
 }
 
 var jsonFencePattern = regexp.MustCompile("(?s)```json\\s*(\\{.*?\\})\\s*```")
@@ -48,7 +55,6 @@ func Run(config Config) error {
 	if config.TmuxExecutable == "" {
 		config.TmuxExecutable = "tmux"
 	}
-
 	briefData, err := os.ReadFile(config.BriefPath)
 	if err != nil {
 		return fmt.Errorf("read brief: %w", err)
@@ -70,15 +76,15 @@ func Run(config Config) error {
 	} else if !errors.Is(err, os.ErrNotExist) {
 		return fmt.Errorf("inspect run directory: %w", err)
 	}
-
-	control := &controller{config: config, brief: brief, runDir: runDir, promptsDir: promptsDir}
+	control := &controller{
+		config: config, brief: brief, runDir: runDir, promptsDir: promptsDir,
+		reachedLenses: make(map[int][]string), decisionBindings: make(map[int]map[string]decisionBinding),
+	}
 	if err := control.initialize(briefData); err != nil {
 		return err
 	}
-	if err := control.execute(); err != nil {
-		return err
-	}
-	return nil
+	defer control.store.Close()
+	return control.execute()
 }
 
 func (control *controller) initialize(briefData []byte) error {
@@ -96,105 +102,108 @@ func (control *controller) initialize(briefData []byte) error {
 			_ = os.RemoveAll(temporary)
 		}
 	}()
-
-	directories := []string{
-		"evidence/assets",
-		"drafts",
-		"reviews",
-		"pm-decisions",
-		".control/prompts",
-		".control/exits",
-		".control/logs",
+	store, err := openArtifactStore(temporary)
+	if err != nil {
+		return err
 	}
-	for _, relative := range directories {
-		if err := os.MkdirAll(filepath.Join(temporary, relative), 0o755); err != nil {
+	keepStore := false
+	defer func() {
+		if !keepStore {
+			_ = store.Close()
+		}
+	}()
+	for _, relative := range []string{"evidence/assets", "drafts", "reviews", "pm-decisions", ".control/prompts", ".control/exits", ".control/logs"} {
+		if err := store.mkdirAll(relative, 0o755); err != nil {
 			return fmt.Errorf("initialize workspace: %w", err)
 		}
 	}
-	if err := os.WriteFile(filepath.Join(temporary, "brief.md"), briefData, 0o644); err != nil {
+	if err := store.writeAtomic("brief.md", briefData, 0o644); err != nil {
 		return fmt.Errorf("copy brief: %w", err)
-	}
-	launcher := `#!/bin/sh
-set +e
-"$WRITE_UUTER_CODEX" -s workspace-write -a never -C "$WRITE_UUTER_RUN_DIR" exec --ephemeral --skip-git-repo-check - < "$WRITE_UUTER_PROMPT" > "$WRITE_UUTER_LOG_FILE" 2>&1
-status=$?
-printf '%s\n' "$status" > "$WRITE_UUTER_EXIT_FILE"
-exit "$status"
-`
-	if err := os.WriteFile(filepath.Join(temporary, ".control", "launch-agent.sh"), []byte(launcher), 0o755); err != nil {
-		return fmt.Errorf("write agent launcher: %w", err)
 	}
 	now := time.Now().UTC()
 	control.workflow = Workflow{
-		SchemaVersion: workflowSchemaVersion,
-		Status:        "running",
-		Phase:         "initializing",
+		SchemaVersion: workflowSchemaVersion, Status: "running", Phase: "initializing",
 		ArtifactPaths: map[string]string{
-			"brief":        "brief.md",
-			"workflow":     "workflow.json",
-			"sources":      "evidence/sources.md",
-			"firsthand":    "evidence/firsthand.md",
-			"assets":       "evidence/assets",
-			"claim_ledger": "claim-ledger.md",
-			"outline":      "outline.md",
-			"drafts":       "drafts",
-			"reviews":      "reviews",
-			"pm_decisions": "pm-decisions",
-			"article":      "article.md",
+			"brief": "brief.md", "workflow": "workflow.json", "sources": "evidence/sources.md",
+			"firsthand": "evidence/firsthand.md", "assets": "evidence/assets", "claim_ledger": "claim-ledger.md",
+			"outline": "outline.md", "drafts": "drafts", "reviews": "reviews",
+			"pm_decisions": "pm-decisions", "article": "article.md",
 		},
-		StartedAt: now,
-		UpdatedAt: now,
+		StartedAt: now, UpdatedAt: now,
 	}
-	if err := writeJSONAtomic(filepath.Join(temporary, "workflow.json"), control.workflow); err != nil {
+	if err := store.writeJSON("workflow.json", control.workflow); err != nil {
 		return fmt.Errorf("write initial workflow: %w", err)
 	}
-	if _, err := os.Lstat(control.runDir); err == nil {
-		return fmt.Errorf("run directory already exists: %s", control.runDir)
-	} else if !errors.Is(err, os.ErrNotExist) {
-		return fmt.Errorf("inspect run directory before commit: %w", err)
+	if err := waitForCommitBarrier(); err != nil {
+		return err
 	}
-	if err := os.Rename(temporary, control.runDir); err != nil {
-		return fmt.Errorf("atomically commit run workspace: %w", err)
+	if err := renameNoReplace(temporary, control.runDir); err != nil {
+		if _, targetErr := os.Lstat(control.runDir); targetErr == nil {
+			return fmt.Errorf("run directory already exists: %s", control.runDir)
+		}
+		return fmt.Errorf("atomically commit run workspace without replacement: %w", err)
 	}
 	keepTemporary = true
+	keepStore = true
+	control.store = store
 	return nil
 }
 
-func (control *controller) execute() (result error) {
-	runtime, err := newTmuxRuntime(control.config.TmuxExecutable, control.config.CodexExecutable, control.runDir)
+func waitForCommitBarrier() error {
+	barrier := os.Getenv("WRITE_UUTER_TEST_COMMIT_BARRIER")
+	if barrier == "" {
+		return nil
+	}
+	if err := os.WriteFile(barrier+".ready", []byte("ready\n"), 0o600); err != nil {
+		return err
+	}
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		if _, err := os.Stat(barrier + ".continue"); err == nil {
+			return nil
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	return fmt.Errorf("test commit barrier timed out")
+}
+
+func (control *controller) execute() error {
+	runtime, err := newTmuxRuntime(control.config.TmuxExecutable, control.config.CodexExecutable, control.config.AgentTimeout)
 	if err != nil {
 		return control.block(err.Error())
 	}
 	control.runtime = runtime
-	defer func() {
-		if cleanupError := control.runtime.cleanup(); cleanupError != nil && result == nil {
-			result = control.block(cleanupError.Error())
-		}
-	}()
-
 	pmPrompt, err := control.buildPMPrompt()
 	if err != nil {
 		return control.block(err.Error())
 	}
-	pmPromptPath, err := control.writeAssignment("pm", pmPrompt)
+	control.pm, err = control.runtime.prepareInvocation("pm", "", 0, "", pmPrompt)
 	if err != nil {
 		return control.block(err.Error())
 	}
-	control.pm, err = control.runtime.startPM(pmPromptPath)
+	pmStore, err := control.runtime.workspaceStore(control.pm)
 	if err != nil {
 		return control.block(err.Error())
 	}
-
+	if err := pmStore.mkdirAll("inbox", 0o700); err == nil {
+		err = pmStore.mkdirAll("outbox", 0o700)
+	}
+	_ = pmStore.Close()
+	if err != nil {
+		return control.block(err.Error())
+	}
+	if err := control.runtime.startPM(control.pm); err != nil {
+		return control.block(err.Error())
+	}
 	if err := control.runResearcher(); err != nil {
 		return control.block(err.Error())
 	}
 	if err := control.runStoryEditor(); err != nil {
 		return control.block(err.Error())
 	}
-	if err := control.runWriter(1, ""); err != nil {
+	if err := control.runWriter(1); err != nil {
 		return control.block(err.Error())
 	}
-
 	for candidate := 1; candidate <= 3; candidate++ {
 		mustFix, blockReason, err := control.reviewCandidate(candidate)
 		if err != nil {
@@ -204,31 +213,12 @@ func (control *controller) execute() (result error) {
 			return control.block(blockReason)
 		}
 		if !mustFix {
-			if status, exited := exitStatus(control.pm.ExitPath); exited {
-				return control.block(fmt.Sprintf("PM exited unexpectedly with status %d before terminal success", status))
-			}
-			candidatePath := control.draftPath(candidate)
-			if err := copyExact(candidatePath, filepath.Join(control.runDir, "article.md")); err != nil {
-				return control.block(fmt.Sprintf("finalize article: %v", err))
-			}
-			if err := control.runtime.cleanup(); err != nil {
-				return control.block(err.Error())
-			}
-			now := time.Now().UTC()
-			control.workflow.Status = "succeeded"
-			control.workflow.Phase = "complete"
-			control.workflow.ActiveRole = ""
-			control.workflow.CompletedAt = &now
-			control.workflow.BlockReason = ""
-			if err := control.saveWorkflow(); err != nil {
-				return err
-			}
-			return nil
+			return control.succeed(candidate)
 		}
 		if candidate == 3 {
 			return control.block("review budget exhausted: candidate article-003 has validated must-fix findings")
 		}
-		if err := control.runWriter(candidate+1, control.decisionPath(candidate)); err != nil {
+		if err := control.runWriter(candidate + 1); err != nil {
 			return control.block(err.Error())
 		}
 	}
@@ -240,29 +230,47 @@ func (control *controller) runResearcher() error {
 	if err != nil {
 		return err
 	}
-	briefPath, pathErr := filepath.Abs(control.config.BriefPath)
-	if pathErr != nil {
-		return pathErr
+	briefPath, err := filepath.Abs(control.config.BriefPath)
+	if err != nil {
+		return err
 	}
-	prompt := base + fmt.Sprintf("\n\nResolve relative source hints from `%s`.", filepath.Dir(briefPath)) + contextBlock("brief.md", []byte(control.brief.Raw))
-	return control.runWorker("researcher", "", 0, "", "research", prompt, func() error {
-		sources, err := readNonEmpty(filepath.Join(control.runDir, "evidence", "sources.md"))
-		if err != nil {
-			return err
-		}
-		_ = sources
-		ledger, err := readNonEmpty(filepath.Join(control.runDir, "claim-ledger.md"))
-		if err != nil {
-			return err
-		}
-		lower := strings.ToLower(string(ledger))
-		for _, classification := range []string{"fact", "firsthand observation", "inference", "opinion", "unresolved"} {
-			if !strings.Contains(lower, classification) {
-				return fmt.Errorf("claim-ledger.md does not distinguish %s", classification)
+	prompt := base + fmt.Sprintf("\n\nResolve relative source hints from `%s`. Write outputs relative to this isolated workspace.", filepath.Dir(briefPath)) + contextBlock("brief.md", []byte(control.brief.Raw))
+	return control.runWorker("researcher", "", 0, "", "research", prompt,
+		func(workspace *artifactStore) error {
+			return workspace.writeAtomic("context/brief.md", []byte(control.brief.Raw), 0o444)
+		},
+		func(workspace *artifactStore) error {
+			if _, err := workspace.readNonEmpty("evidence/sources.md"); err != nil {
+				return err
 			}
-		}
-		return nil
-	})
+			ledger, err := workspace.readNonEmpty("claim-ledger.md")
+			if err != nil {
+				return err
+			}
+			lower := strings.ToLower(string(ledger))
+			for _, classification := range []string{"fact", "firsthand observation", "inference", "opinion", "unresolved"} {
+				if !strings.Contains(lower, classification) {
+					return fmt.Errorf("claim-ledger.md does not distinguish %s", classification)
+				}
+			}
+			return nil
+		},
+		func(workspace *artifactStore) error {
+			if _, err := control.store.copyRegularFrom(workspace, "evidence/sources.md", "evidence/sources.md", 0o644); err != nil {
+				return err
+			}
+			if _, err := control.store.copyRegularFrom(workspace, "claim-ledger.md", "claim-ledger.md", 0o644); err != nil {
+				return err
+			}
+			if _, err := workspace.readRegular("evidence/firsthand.md"); err == nil {
+				if _, err := control.store.copyRegularFrom(workspace, "evidence/firsthand.md", "evidence/firsthand.md", 0o644); err != nil {
+					return err
+				}
+			} else if !errors.Is(err, os.ErrNotExist) {
+				return err
+			}
+			return control.store.copyTreeFrom(workspace, "evidence/assets", "evidence/assets")
+		})
 }
 
 func (control *controller) runStoryEditor() error {
@@ -271,88 +279,104 @@ func (control *controller) runStoryEditor() error {
 		return err
 	}
 	prompt := base + contextBlock("brief.md", []byte(control.brief.Raw))
-	for _, relative := range []string{"evidence/sources.md", "claim-ledger.md"} {
-		data, readErr := os.ReadFile(filepath.Join(control.runDir, relative))
+	inputs := []string{"evidence/sources.md", "claim-ledger.md"}
+	for _, relative := range inputs {
+		data, readErr := control.store.readRegular(relative)
 		if readErr != nil {
 			return readErr
 		}
 		prompt += contextBlock(relative, data)
 	}
-	if firsthand, readErr := os.ReadFile(filepath.Join(control.runDir, "evidence", "firsthand.md")); readErr == nil {
-		prompt += contextBlock("evidence/firsthand.md", firsthand)
-	} else if !errors.Is(readErr, os.ErrNotExist) {
-		return readErr
-	}
-	return control.runWorker("story_editor", "", 0, "", "story", prompt, func() error {
-		outline, err := readNonEmpty(filepath.Join(control.runDir, "outline.md"))
-		if err != nil {
-			return err
-		}
-		lower := strings.ToLower(string(outline))
-		for _, field := range []string{"purpose", "supporting evidence", "reader takeaway"} {
-			if !strings.Contains(lower, field) {
-				return fmt.Errorf("outline.md is missing section field %q", field)
+	return control.runWorker("story_editor", "", 0, "", "story", prompt,
+		func(workspace *artifactStore) error {
+			if err := workspace.writeAtomic("context/brief.md", []byte(control.brief.Raw), 0o444); err != nil {
+				return err
 			}
-		}
-		return nil
-	})
+			for _, relative := range inputs {
+				data, readErr := control.store.readRegular(relative)
+				if readErr != nil {
+					return readErr
+				}
+				if err := workspace.writeAtomic(filepath.Join("context", relative), data, 0o444); err != nil {
+					return err
+				}
+			}
+			return nil
+		},
+		func(workspace *artifactStore) error {
+			outline, readErr := workspace.readNonEmpty("outline.md")
+			if readErr != nil {
+				return readErr
+			}
+			lower := strings.ToLower(string(outline))
+			for _, field := range []string{"purpose", "supporting evidence", "reader takeaway"} {
+				if !strings.Contains(lower, field) {
+					return fmt.Errorf("outline.md is missing section field %q", field)
+				}
+			}
+			return nil
+		},
+		func(workspace *artifactStore) error {
+			_, err := control.store.copyRegularFrom(workspace, "outline.md", "outline.md", 0o644)
+			return err
+		})
 }
 
-func (control *controller) runWriter(candidate int, decisionPath string) error {
+func (control *controller) runWriter(candidate int) error {
 	base, err := loadPrompt(control.promptsDir, "writer.md")
 	if err != nil {
 		return err
 	}
-	targetRelative := filepath.ToSlash(filepath.Join("drafts", fmt.Sprintf("article-%03d.md", candidate)))
-	prompt := base + fmt.Sprintf("\n\n## Assignment\n\nWrite candidate %03d to `%s`. Do not write or edit any other candidate.", candidate, targetRelative)
-	prompt += contextBlock("brief.md", []byte(control.brief.Raw))
-	for _, relative := range []string{"evidence/sources.md", "claim-ledger.md", "outline.md"} {
-		data, readErr := os.ReadFile(filepath.Join(control.runDir, relative))
+	target := fmt.Sprintf("drafts/article-%03d.md", candidate)
+	prompt := base + fmt.Sprintf("\n\n## Assignment\n\nWrite candidate %03d to `%s` in this isolated workspace.", candidate, target)
+	inputs := []string{"brief.md", "evidence/sources.md", "claim-ledger.md", "outline.md"}
+	if candidate > 1 {
+		inputs = append(inputs, fmt.Sprintf("drafts/article-%03d.md", candidate-1), fmt.Sprintf("pm-decisions/article-%03d.md", candidate-1))
+	}
+	for _, relative := range inputs {
+		data, readErr := control.store.readRegular(relative)
 		if readErr != nil {
 			return readErr
 		}
 		prompt += contextBlock(relative, data)
 	}
-	if candidate > 1 {
-		previous := control.draftPath(candidate - 1)
-		previousData, readErr := os.ReadFile(previous)
-		if readErr != nil {
-			return readErr
-		}
-		decisionData, readErr := os.ReadFile(decisionPath)
-		if readErr != nil {
-			return readErr
-		}
-		prompt += contextBlock(filepath.ToSlash(filepath.Join("drafts", filepath.Base(previous))), previousData)
-		prompt += contextBlock(filepath.ToSlash(filepath.Join("pm-decisions", filepath.Base(decisionPath))), decisionData)
-	}
-	target := control.draftPath(candidate)
-	err = control.runWorker("writer", "", candidate, "", "writing", prompt, func() error {
-		data, readErr := readNonEmpty(target)
-		if readErr != nil {
-			return readErr
-		}
-		if strings.Contains(strings.ToLower(string(data)), "todo") {
-			return fmt.Errorf("candidate contains unresolved TODO placeholder")
-		}
-		return nil
-	})
-	if err != nil {
-		return err
-	}
-	data, err := os.ReadFile(target)
-	if err != nil {
-		return err
-	}
-	control.workflow.CurrentCandidate = candidate
-	control.workflow.CurrentRevision = revisionFor(data)
-	control.workflow.ActiveRole = ""
-	return control.saveWorkflow()
+	err = control.runWorker("writer", "", candidate, "", "writing", prompt,
+		func(workspace *artifactStore) error {
+			for _, relative := range inputs {
+				data, readErr := control.store.readRegular(relative)
+				if readErr != nil {
+					return readErr
+				}
+				if err := workspace.writeAtomic(filepath.Join("context", relative), data, 0o444); err != nil {
+					return err
+				}
+			}
+			return nil
+		},
+		func(workspace *artifactStore) error {
+			data, readErr := workspace.readNonEmpty(target)
+			if readErr != nil {
+				return readErr
+			}
+			if strings.Contains(strings.ToLower(string(data)), "todo") {
+				return fmt.Errorf("candidate contains unresolved TODO placeholder")
+			}
+			return nil
+		},
+		func(workspace *artifactStore) error {
+			data, copyErr := control.store.copyRegularFrom(workspace, target, target, 0o644)
+			if copyErr != nil {
+				return copyErr
+			}
+			control.workflow.CurrentCandidate = candidate
+			control.workflow.CurrentRevision = revisionFor(data)
+			return control.saveWorkflow()
+		})
+	return err
 }
 
 func (control *controller) reviewCandidate(candidate int) (bool, string, error) {
-	lenses := []string{"evidence", "story", "clarity", "copy"}
-	for _, lens := range lenses {
+	for _, lens := range []string{"evidence", "story", "clarity", "copy"} {
 		result, err := control.runReviewer(candidate, lens)
 		if err != nil {
 			return false, "", err
@@ -364,13 +388,18 @@ func (control *controller) reviewCandidate(candidate int) (bool, string, error) 
 		if err != nil {
 			return false, "", err
 		}
-		for _, decision := range decisions {
-			switch decision.Decision {
-			case "needs_human_judgment":
+		var mustFix *PMDecision
+		for index := range decisions {
+			decision := decisions[index]
+			if decision.Decision == "needs_human_judgment" {
 				return false, fmt.Sprintf("human judgment required for finding %s: %s", decision.FindingID, decision.Reason), nil
-			case "valid_must_fix":
-				return true, "", nil
 			}
+			if decision.Decision == "valid_must_fix" && mustFix == nil {
+				mustFix = &decision
+			}
+		}
+		if mustFix != nil {
+			return true, "", nil
 		}
 	}
 	return false, "", nil
@@ -382,8 +411,13 @@ func (control *controller) runReviewer(candidate int, lens string) (ReviewResult
 	if err != nil {
 		return result, err
 	}
-	candidatePath := control.draftPath(candidate)
-	candidateData, err := os.ReadFile(candidatePath)
+	outputContract, err := loadPrompt(control.promptsDir, "reviewer-output.md")
+	if err != nil {
+		return result, err
+	}
+	base += "\n\n" + outputContract
+	candidateRelative := fmt.Sprintf("drafts/article-%03d.md", candidate)
+	candidateData, err := control.store.readRegular(candidateRelative)
 	if err != nil {
 		return result, err
 	}
@@ -391,76 +425,127 @@ func (control *controller) runReviewer(candidate int, lens string) (ReviewResult
 	if revision != control.workflow.CurrentRevision {
 		return result, fmt.Errorf("candidate revision changed outside the controller")
 	}
-	reviewDirectory := filepath.Join(control.runDir, "reviews", fmt.Sprintf("article-%03d", candidate), lens)
-	if err := os.MkdirAll(reviewDirectory, 0o755); err != nil {
+	prompt := base + fmt.Sprintf("\n\n## Assignment\n\nLens: `%s`\nCandidate: `article-%03d`\nRevision: `%s`\nThe `context/` directory contains every permitted input and no other run artifact. Write only `result.json` and `report.md` in this isolated workspace; never edit `context/article.md`.", lens, candidate, revision)
+	contextFiles, err := control.reviewerContext(candidate, lens, candidateData, revision)
+	if err != nil {
 		return result, err
 	}
-	prompt := base + fmt.Sprintf("\n\n## Assignment\n\nLens: `%s`\nCandidate: `article-%03d`\nRevision: `%s`\nWrite only `%s/result.json` and `%s/report.md`; never edit a draft.", lens, candidate, revision, filepath.ToSlash(filepath.Join("reviews", fmt.Sprintf("article-%03d", candidate), lens)), filepath.ToSlash(filepath.Join("reviews", fmt.Sprintf("article-%03d", candidate), lens)))
-	prompt += contextBlock("brief.md", []byte(control.brief.Raw))
-	prompt += contextBlock(fmt.Sprintf("drafts/article-%03d.md", candidate), candidateData)
-	switch lens {
-	case "evidence":
-		for _, relative := range []string{"evidence/sources.md", "claim-ledger.md"} {
-			data, readErr := os.ReadFile(filepath.Join(control.runDir, relative))
-			if readErr != nil {
-				return result, readErr
-			}
-			prompt += contextBlock(relative, data)
-		}
-		if firsthand, readErr := os.ReadFile(filepath.Join(control.runDir, "evidence", "firsthand.md")); readErr == nil {
-			prompt += contextBlock("evidence/firsthand.md", firsthand)
-		} else if !errors.Is(readErr, os.ErrNotExist) {
-			return result, readErr
-		}
-	case "story":
-		outline, readErr := os.ReadFile(filepath.Join(control.runDir, "outline.md"))
-		if readErr != nil {
-			return result, readErr
-		}
-		prompt += contextBlock("outline.md", outline)
-	case "clarity":
-		clarity := fmt.Sprintf("Audience:\n%s\n\nConstraints:\n%s", control.brief.Sections["Audience"], control.brief.Sections["Constraints"])
-		prompt += contextBlock("clarity-fields", []byte(clarity))
-	case "copy":
-		if stylePath := findStyleGuide(control.promptsDir); stylePath != "" {
-			style, readErr := os.ReadFile(stylePath)
-			if readErr != nil {
-				return result, readErr
-			}
-			prompt += contextBlock("style-guide.md", style)
-		}
+	contextNames := make([]string, 0, len(contextFiles))
+	for label := range contextFiles {
+		contextNames = append(contextNames, label)
 	}
-
+	sort.Strings(contextNames)
+	for _, label := range contextNames {
+		data := contextFiles[label]
+		prompt += contextBlock(label, data)
+	}
 	control.workflow.ReviewAttemptCount++
 	if err := control.saveWorkflow(); err != nil {
 		return result, err
 	}
-	resultPath := filepath.Join(reviewDirectory, "result.json")
-	reportPath := filepath.Join(reviewDirectory, "report.md")
-	err = control.runWorker("reviewer_"+lens, lens, candidate, revision, "reviewing", prompt, func() error {
-		if changed, hashErr := os.ReadFile(candidatePath); hashErr != nil {
-			return hashErr
-		} else if revisionFor(changed) != revision {
-			return fmt.Errorf("%s reviewer edited the candidate draft", lens)
-		}
-		validated, validateErr := validateReview(resultPath, reportPath, lens, revision)
-		if validateErr == nil {
-			result = validated
-		}
-		return validateErr
-	})
+	resultData := []byte(nil)
+	reportData := []byte(nil)
+	err = control.runWorker("reviewer_"+lens, lens, candidate, revision, "reviewing", prompt,
+		func(workspace *artifactStore) error {
+			for _, relative := range contextNames {
+				data := contextFiles[relative]
+				target := filepath.Join("context", reviewerContextName(relative))
+				if err := workspace.writeAtomic(target, data, 0o444); err != nil {
+					return err
+				}
+			}
+			return nil
+		},
+		func(workspace *artifactStore) error {
+			stagedCandidate, readErr := workspace.readRegular("context/article.md")
+			if readErr != nil || revisionFor(stagedCandidate) != revision {
+				return fmt.Errorf("%s reviewer edited the candidate input", lens)
+			}
+			resultData, readErr = workspace.readNonEmpty("result.json")
+			if readErr != nil {
+				return readErr
+			}
+			reportData, readErr = workspace.readNonEmpty("report.md")
+			if readErr != nil {
+				return readErr
+			}
+			validated, validateErr := validateReviewData(resultData, reportData, lens, revision)
+			if validateErr == nil {
+				result = validated
+			}
+			return validateErr
+		},
+		func(_ *artifactStore) error {
+			basePath := filepath.Join("reviews", fmt.Sprintf("article-%03d", candidate), lens)
+			if err := control.store.writeAtomic(filepath.Join(basePath, "result.json"), resultData, 0o644); err != nil {
+				return err
+			}
+			return control.store.writeAtomic(filepath.Join(basePath, "report.md"), reportData, 0o644)
+		})
 	return result, err
 }
 
-func validateReview(resultPath, reportPath, lens, revision string) (ReviewResult, error) {
-	var result ReviewResult
-	data, err := readNonEmpty(resultPath)
-	if err != nil {
-		return result, err
+func reviewerContextName(label string) string {
+	switch label {
+	case "brief.md":
+		return "brief.md"
+	default:
+		if strings.HasPrefix(label, "drafts/article-") {
+			return "article.md"
+		}
+		return label
 	}
+}
+
+func (control *controller) reviewerContext(candidate int, lens string, candidateData []byte, revision string) (map[string][]byte, error) {
+	files := map[string][]byte{
+		"brief.md": []byte(control.brief.Raw),
+		fmt.Sprintf("drafts/article-%03d.md", candidate): candidateData,
+		"revision.txt": []byte(revision + "\n"),
+	}
+	read := func(relative string) error {
+		data, err := control.store.readRegular(relative)
+		if err != nil {
+			return err
+		}
+		files[relative] = data
+		return nil
+	}
+	switch lens {
+	case "evidence":
+		for _, relative := range []string{"evidence/sources.md", "claim-ledger.md"} {
+			if err := read(relative); err != nil {
+				return nil, err
+			}
+		}
+		if data, err := control.store.readRegular("evidence/firsthand.md"); err == nil {
+			files["evidence/firsthand.md"] = data
+		} else if !errors.Is(err, os.ErrNotExist) {
+			return nil, err
+		}
+	case "story":
+		if err := read("outline.md"); err != nil {
+			return nil, err
+		}
+	case "clarity":
+		files["clarity-fields.md"] = []byte(fmt.Sprintf("Audience:\n%s\n\nConstraints:\n%s\n", control.brief.Sections["Audience"], control.brief.Sections["Constraints"]))
+	case "copy":
+		if stylePath := findStyleGuide(control.promptsDir); stylePath != "" {
+			data, err := os.ReadFile(stylePath)
+			if err != nil {
+				return nil, err
+			}
+			files["style-guide.md"] = data
+		}
+	}
+	return files, nil
+}
+
+func validateReviewData(resultData, reportData []byte, lens, revision string) (ReviewResult, error) {
+	var result ReviewResult
 	var fields map[string]json.RawMessage
-	if err := json.Unmarshal(data, &fields); err != nil {
-		return result, errNotReady
+	if err := json.Unmarshal(resultData, &fields); err != nil {
+		return result, fmt.Errorf("invalid reviewer JSON: %w", err)
 	}
 	for _, required := range []string{"status", "lens", "reviewed_revision", "findings"} {
 		if _, found := fields[required]; !found {
@@ -470,8 +555,8 @@ func validateReview(resultPath, reportPath, lens, revision string) (ReviewResult
 	if strings.TrimSpace(string(fields["findings"])) == "null" {
 		return result, fmt.Errorf("review findings must be an array")
 	}
-	if err := json.Unmarshal(data, &result); err != nil {
-		return result, errNotReady
+	if err := json.Unmarshal(resultData, &result); err != nil {
+		return result, err
 	}
 	if result.Lens != lens {
 		return result, fmt.Errorf("review lens mismatch: got %q, want %q", result.Lens, lens)
@@ -498,11 +583,7 @@ func validateReview(resultPath, reportPath, lens, revision string) (ReviewResult
 		}
 		seen[finding.ID] = true
 	}
-	report, err := readNonEmpty(reportPath)
-	if err != nil {
-		return result, err
-	}
-	reportText := string(report)
+	reportText := string(reportData)
 	if strings.Count(reportText, "- ID: ") != len(result.Findings) {
 		return result, fmt.Errorf("human report finding count does not match result.json")
 	}
@@ -517,19 +598,40 @@ func validateReview(resultPath, reportPath, lens, revision string) (ReviewResult
 }
 
 func (control *controller) requestPMDecision(candidate int, lens string, result ReviewResult) ([]PMDecision, error) {
-	request := pmRequest{
-		Candidate:        candidate,
-		Lens:             lens,
-		ReviewedRevision: control.workflow.CurrentRevision,
-		ResultPath:       filepath.ToSlash(filepath.Join("reviews", fmt.Sprintf("article-%03d", candidate), lens, "result.json")),
-		ReportPath:       filepath.ToSlash(filepath.Join("reviews", fmt.Sprintf("article-%03d", candidate), lens, "report.md")),
-		DecisionPath:     filepath.ToSlash(filepath.Join("pm-decisions", fmt.Sprintf("article-%03d.md", candidate))),
-	}
-	requestPath := filepath.Join(control.runDir, ".control", "pm-request.json")
-	if err := writeJSONAtomic(requestPath, request); err != nil {
+	resultPath := filepath.Join("reviews", fmt.Sprintf("article-%03d", candidate), lens, "result.json")
+	reportPath := filepath.Join("reviews", fmt.Sprintf("article-%03d", candidate), lens, "report.md")
+	resultData, err := control.store.readRegular(resultPath)
+	if err != nil {
 		return nil, err
 	}
-	defer os.Remove(requestPath)
+	reportData, err := control.store.readRegular(reportPath)
+	if err != nil {
+		return nil, err
+	}
+	requestID := randomToken()
+	requestPath := filepath.Join("inbox", requestID+".json")
+	contextDirectory := filepath.Join("requests", requestID)
+	outputPath := filepath.Join("outbox", requestID+".md")
+	request := pmRequest{
+		RequestID: requestID, Candidate: candidate, Lens: lens,
+		ReviewedRevision: control.workflow.CurrentRevision, ReviewDigest: reviewDigest(resultData, reportData),
+		ResultPath: filepath.Join(contextDirectory, "result.json"), ReportPath: filepath.Join(contextDirectory, "report.md"),
+		DecisionPath:     fmt.Sprintf("pm-decisions/article-%03d.md", candidate),
+		RequestPath:      requestPath,
+		ContextDirectory: contextDirectory, OutputPath: outputPath,
+	}
+	pmStore, err := control.runtime.workspaceStore(control.pm)
+	if err != nil {
+		return nil, err
+	}
+	defer pmStore.Close()
+	if err := control.stagePMContext(pmStore, request, resultData, reportData); err != nil {
+		return nil, err
+	}
+	if err := pmStore.writeJSON(requestPath, request); err != nil {
+		return nil, err
+	}
+	defer pmStore.remove(requestPath)
 	control.workflow.ActiveRole = "pm"
 	if err := control.saveWorkflow(); err != nil {
 		return nil, err
@@ -539,18 +641,31 @@ func (control *controller) requestPMDecision(candidate int, lens string, result 
 	ticker := time.NewTicker(50 * time.Millisecond)
 	defer ticker.Stop()
 	for {
-		decisions, err := control.validatePMDecision(candidate, lens, result)
-		if err == nil {
-			control.workflow.ActiveRole = ""
-			if saveErr := control.saveWorkflow(); saveErr != nil {
-				return nil, saveErr
+		data, readErr := pmStore.readNonEmpty(outputPath)
+		if readErr == nil {
+			decisions, validateErr := control.validatePMDecisionData(data, candidate, lens, result, request)
+			if validateErr == nil {
+				if err := control.store.writeAtomic(fmt.Sprintf("pm-decisions/article-%03d.md", candidate), data, 0o644); err != nil {
+					return nil, err
+				}
+				if control.decisionBindings[candidate] == nil {
+					control.decisionBindings[candidate] = make(map[string]decisionBinding)
+				}
+				control.decisionBindings[candidate][lens] = decisionBinding{RequestID: requestID, Digest: request.ReviewDigest}
+				control.reachedLenses[candidate] = append(control.reachedLenses[candidate], lens)
+				control.workflow.ActiveRole = ""
+				if err := control.saveWorkflow(); err != nil {
+					return nil, err
+				}
+				return decisions, nil
 			}
-			return decisions, nil
+			if !errors.Is(validateErr, errNotReady) {
+				return nil, validateErr
+			}
+		} else if !errors.Is(readErr, errNotReady) {
+			return nil, readErr
 		}
-		if !errors.Is(err, errNotReady) {
-			return nil, err
-		}
-		if status, exited := exitStatus(control.pm.ExitPath); exited {
+		if status, exited := control.runtime.exitStatus(control.pm); exited {
 			return nil, fmt.Errorf("PM exited unexpectedly with status %d before deciding %s review", status, lens)
 		}
 		select {
@@ -561,11 +676,33 @@ func (control *controller) requestPMDecision(candidate int, lens string, result 
 	}
 }
 
-func (control *controller) validatePMDecision(candidate int, lens string, result ReviewResult) ([]PMDecision, error) {
-	data, err := readNonEmpty(control.decisionPath(candidate))
-	if err != nil {
-		return nil, err
+func (control *controller) stagePMContext(pmStore *artifactStore, request pmRequest, resultData, reportData []byte) error {
+	files := map[string][]byte{
+		"result.json": resultData,
+		"report.md":   reportData,
+		"brief.md":    []byte(control.brief.Raw),
 	}
+	for _, relative := range []string{"evidence/sources.md", "claim-ledger.md", "outline.md", fmt.Sprintf("drafts/article-%03d.md", request.Candidate)} {
+		data, err := control.store.readRegular(relative)
+		if err != nil {
+			return err
+		}
+		files[relative] = data
+	}
+	if previous, err := control.store.readRegular(fmt.Sprintf("pm-decisions/article-%03d.md", request.Candidate)); err == nil {
+		files["previous-decision.md"] = previous
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return err
+	}
+	for relative, data := range files {
+		if err := pmStore.writeAtomic(filepath.Join(request.ContextDirectory, relative), data, 0o444); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func (control *controller) validatePMDecisionData(data []byte, candidate int, lens string, result ReviewResult, request pmRequest) ([]PMDecision, error) {
 	match := jsonFencePattern.FindSubmatch(data)
 	if len(match) != 2 {
 		return nil, errNotReady
@@ -577,10 +714,44 @@ func (control *controller) validatePMDecision(candidate int, lens string, result
 	if document.ReviewedRevision != control.workflow.CurrentRevision {
 		return nil, fmt.Errorf("PM decision revision mismatch: got %q, want %q", document.ReviewedRevision, control.workflow.CurrentRevision)
 	}
-	decisions, found := document.Lenses[lens]
-	if !found {
-		return nil, errNotReady
+	expected := append(append([]string{}, control.reachedLenses[candidate]...), lens)
+	if len(document.Lenses) != len(expected) {
+		return nil, fmt.Errorf("PM decision lens history mismatch: got %d entries, want %d", len(document.Lenses), len(expected))
 	}
+	for _, expectedLens := range expected {
+		record, found := document.Lenses[expectedLens]
+		if !found {
+			return nil, fmt.Errorf("PM decision missing reached lens %q", expectedLens)
+		}
+		resultPath := filepath.Join("reviews", fmt.Sprintf("article-%03d", candidate), expectedLens, "result.json")
+		reportPath := filepath.Join("reviews", fmt.Sprintf("article-%03d", candidate), expectedLens, "report.md")
+		resultData, err := control.store.readRegular(resultPath)
+		if err != nil {
+			return nil, err
+		}
+		reportData, err := control.store.readRegular(reportPath)
+		if err != nil {
+			return nil, err
+		}
+		validatedResult, err := validateReviewData(resultData, reportData, expectedLens, control.workflow.CurrentRevision)
+		if err != nil {
+			return nil, err
+		}
+		binding := control.decisionBindings[candidate][expectedLens]
+		if expectedLens == lens {
+			binding = decisionBinding{RequestID: request.RequestID, Digest: request.ReviewDigest}
+		}
+		if record.RequestID != binding.RequestID || record.ReviewDigest != binding.Digest {
+			return nil, fmt.Errorf("PM decision for %s is not bound to the active review request", expectedLens)
+		}
+		if err := validateDecisionList(record.Decisions, validatedResult); err != nil {
+			return nil, err
+		}
+	}
+	return document.Lenses[lens].Decisions, nil
+}
+
+func validateDecisionList(decisions []PMDecision, result ReviewResult) error {
 	findings := make(map[string]Finding, len(result.Findings))
 	for _, finding := range result.Findings {
 		findings[finding.ID] = finding
@@ -588,20 +759,20 @@ func (control *controller) validatePMDecision(candidate int, lens string, result
 	seen := make(map[string]bool)
 	for _, decision := range decisions {
 		if _, exists := findings[decision.FindingID]; !exists {
-			return nil, fmt.Errorf("PM decision references unknown finding %q", decision.FindingID)
+			return fmt.Errorf("PM decision references unknown finding %q", decision.FindingID)
 		}
 		if seen[decision.FindingID] {
-			return nil, fmt.Errorf("PM decision duplicates finding %q", decision.FindingID)
+			return fmt.Errorf("PM decision duplicates finding %q", decision.FindingID)
 		}
 		seen[decision.FindingID] = true
 		switch decision.Decision {
 		case "valid_must_fix", "valid_optional", "needs_human_judgment":
 		case "invalid":
 			if strings.TrimSpace(decision.Reason) == "" {
-				return nil, fmt.Errorf("invalid decision for %s requires a reason", decision.FindingID)
+				return fmt.Errorf("invalid decision for %s requires a reason", decision.FindingID)
 			}
 		default:
-			return nil, fmt.Errorf("invalid PM classification %q", decision.Decision)
+			return fmt.Errorf("invalid PM classification %q", decision.Decision)
 		}
 	}
 	if len(seen) != len(findings) {
@@ -612,14 +783,22 @@ func (control *controller) validatePMDecision(candidate int, lens string, result
 			}
 		}
 		sort.Strings(missing)
-		return nil, fmt.Errorf("PM decision missing findings: %s", strings.Join(missing, ", "))
+		return fmt.Errorf("PM decision missing findings: %s", strings.Join(missing, ", "))
 	}
-	return decisions, nil
+	return nil
 }
 
-func (control *controller) runWorker(role, lens string, candidate int, revision, phase, prompt string, validate func() error) error {
-	promptPath, err := control.writeAssignment(role, prompt)
+func (control *controller) runWorker(role, lens string, candidate int, revision, phase, prompt string, prepare, validate, commit func(*artifactStore) error) error {
+	inv, err := control.runtime.prepareInvocation(role, lens, candidate, revision, prompt)
 	if err != nil {
+		return err
+	}
+	workspace, err := control.runtime.workspaceStore(inv)
+	if err != nil {
+		return err
+	}
+	defer workspace.Close()
+	if err := prepare(workspace); err != nil {
 		return err
 	}
 	control.workflow.Phase = phase
@@ -627,17 +806,105 @@ func (control *controller) runWorker(role, lens string, candidate int, revision,
 	if err := control.saveWorkflow(); err != nil {
 		return err
 	}
-	worker, err := control.runtime.startWorker(role, lens, candidate, revision, promptPath)
-	if err != nil {
+	if err := control.runtime.startWorker(inv); err != nil {
 		return err
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), control.config.AgentTimeout)
 	defer cancel()
-	if err := control.runtime.waitForContract(ctx, control.pm, worker, validate); err != nil {
+	if err := control.runtime.waitForWorker(ctx, control.pm, inv); err != nil {
+		return err
+	}
+	if err := validate(workspace); err != nil {
+		return fmt.Errorf("%s artifact contract failed after process completion: %w", role, err)
+	}
+	if err := commit(workspace); err != nil {
 		return err
 	}
 	control.workflow.ActiveRole = ""
 	return control.saveWorkflow()
+}
+
+func (control *controller) succeed(candidate int) error {
+	if err := control.runtime.cleanup(); err != nil {
+		return control.block(fmt.Sprintf("terminal cleanup failed: %v", err))
+	}
+	if err := control.runtime.archiveAll(control.store); err != nil {
+		return control.block(fmt.Sprintf("archive controller audit files: %v", err))
+	}
+	candidateData, err := control.store.readRegular(fmt.Sprintf("drafts/article-%03d.md", candidate))
+	if err != nil {
+		return control.block(fmt.Sprintf("read accepted candidate: %v", err))
+	}
+	if got := revisionFor(candidateData); got != control.workflow.CurrentRevision {
+		return control.block(fmt.Sprintf("accepted candidate changed before publication: got %s, want %s", got, control.workflow.CurrentRevision))
+	}
+	if err := control.validateFinalAudit(candidate); err != nil {
+		return control.block(fmt.Sprintf("final review audit invalid: %v", err))
+	}
+	if err := control.runtime.closePrivate(); err != nil {
+		return control.block(fmt.Sprintf("private runtime cleanup failed: %v", err))
+	}
+	control.runtime = nil
+	if err := control.store.writeAtomic("article.md", candidateData, 0o644); err != nil {
+		return control.block(fmt.Sprintf("stage final article: %v", err))
+	}
+	now := time.Now().UTC()
+	control.workflow.Status = "succeeded"
+	control.workflow.Phase = "complete"
+	control.workflow.ActiveRole = ""
+	control.workflow.CompletedAt = &now
+	control.workflow.BlockReason = ""
+	if err := control.saveWorkflow(); err != nil {
+		_ = control.store.remove("article.md")
+		return control.block(fmt.Sprintf("persist succeeded workflow: %v", err))
+	}
+	return nil
+}
+
+func (control *controller) validateFinalAudit(candidate int) error {
+	if len(control.reachedLenses[candidate]) != 4 {
+		return fmt.Errorf("final candidate has %d reached lenses, want 4", len(control.reachedLenses[candidate]))
+	}
+	decisionData, err := control.store.readRegular(fmt.Sprintf("pm-decisions/article-%03d.md", candidate))
+	if err != nil {
+		return err
+	}
+	match := jsonFencePattern.FindSubmatch(decisionData)
+	if len(match) != 2 {
+		return fmt.Errorf("PM decision file has no JSON document")
+	}
+	var document PMDecisionDocument
+	if err := json.Unmarshal(match[1], &document); err != nil {
+		return err
+	}
+	if document.ReviewedRevision != control.workflow.CurrentRevision || len(document.Lenses) != 4 {
+		return fmt.Errorf("PM decision final revision/history mismatch")
+	}
+	for _, lens := range []string{"evidence", "story", "clarity", "copy"} {
+		resultPath := filepath.Join("reviews", fmt.Sprintf("article-%03d", candidate), lens, "result.json")
+		reportPath := filepath.Join("reviews", fmt.Sprintf("article-%03d", candidate), lens, "report.md")
+		resultData, err := control.store.readRegular(resultPath)
+		if err != nil {
+			return err
+		}
+		reportData, err := control.store.readRegular(reportPath)
+		if err != nil {
+			return err
+		}
+		result, err := validateReviewData(resultData, reportData, lens, control.workflow.CurrentRevision)
+		if err != nil {
+			return err
+		}
+		record, found := document.Lenses[lens]
+		binding := control.decisionBindings[candidate][lens]
+		if !found || record.RequestID != binding.RequestID || record.ReviewDigest != reviewDigest(resultData, reportData) || record.ReviewDigest != binding.Digest {
+			return fmt.Errorf("PM decision binding mismatch for %s", lens)
+		}
+		if err := validateDecisionList(record.Decisions, result); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func (control *controller) buildPMPrompt() (string, error) {
@@ -645,29 +912,29 @@ func (control *controller) buildPMPrompt() (string, error) {
 	if err != nil {
 		return "", err
 	}
-	return base + fmt.Sprintf("\n\n## Run assignment\n\nThe run directory is `%s`. Monitor `.control/pm-request.json`, validate each requested review, and atomically update the requested `pm-decisions/article-00N.md`. Wait for one request at a time: use a bounded polling command that returns as soon as either a request exists or workflow status is terminal, then return to reasoning before deciding. After writing a decision, wait only until Go removes or replaces that request, then repeat. Do not start one shell loop that waits for the entire run. Continue until `workflow.json` becomes terminal. Do not create or edit drafts or reviewer reports.", control.runDir), nil
-}
-
-func (control *controller) writeAssignment(role, prompt string) (string, error) {
-	control.promptSeq++
-	path := filepath.Join(control.runDir, ".control", "prompts", fmt.Sprintf("%03d-%s.md", control.promptSeq, strings.ReplaceAll(role, "_", "-")))
-	if err := writeFileAtomic(path, []byte(prompt), 0o600); err != nil {
-		return "", err
-	}
-	return path, nil
+	return base + "\n\n## Runtime protocol\n\nThis is an isolated PM workspace. Poll `inbox/` for one request-ID-named JSON file at a time. Record that exact inbox path, read only the request's `context_directory`, and write the complete decision document atomically to its unique `output_path`. Preserve every prior reached-lens record from `previous-decision.md` and add only the active lens with the request's exact request ID and review digest. After writing, wait until that exact request-specific inbox file is removed; a later request uses a different filename and cannot satisfy this acknowledgement. Then poll for the next file. Continue until the process is terminated by the controller.", nil
 }
 
 func (control *controller) saveWorkflow() error {
+	if control.workflow.Status == "succeeded" && os.Getenv("WRITE_UUTER_TEST_FAIL_SUCCESS_SAVE") == "1" {
+		return fmt.Errorf("injected succeeded workflow persistence failure")
+	}
 	control.workflow.UpdatedAt = time.Now().UTC()
-	return writeJSONAtomic(filepath.Join(control.runDir, "workflow.json"), control.workflow)
+	return control.store.writeJSON("workflow.json", control.workflow)
 }
 
 func (control *controller) block(reason string) error {
-	if control.runDir == "" {
-		return errors.New(reason)
-	}
+	cleanupSucceeded := true
 	if control.runtime != nil {
-		_ = control.runtime.cleanup()
+		if cleanupErr := control.runtime.cleanup(); cleanupErr != nil {
+			cleanupSucceeded = false
+			reason += fmt.Sprintf("; cleanup failed: %v", cleanupErr)
+		} else if archiveErr := control.runtime.archiveAll(control.store); archiveErr != nil {
+			reason += fmt.Sprintf("; audit archive failed: %v", archiveErr)
+		}
+	}
+	if removeErr := control.store.remove("article.md"); removeErr != nil {
+		reason += fmt.Sprintf("; failed to remove success-only article: %v", removeErr)
 	}
 	now := time.Now().UTC()
 	control.workflow.Status = "blocked"
@@ -678,15 +945,12 @@ func (control *controller) block(reason string) error {
 	if err := control.saveWorkflow(); err != nil {
 		return fmt.Errorf("%s (also failed to persist blocked workflow: %v)", reason, err)
 	}
+	if cleanupSucceeded && control.runtime != nil {
+		if err := control.runtime.closePrivate(); err != nil {
+			return fmt.Errorf("%s; private runtime cleanup failed: %v", reason, err)
+		}
+	}
 	return errors.New(reason)
-}
-
-func (control *controller) draftPath(candidate int) string {
-	return filepath.Join(control.runDir, "drafts", fmt.Sprintf("article-%03d.md", candidate))
-}
-
-func (control *controller) decisionPath(candidate int) string {
-	return filepath.Join(control.runDir, "pm-decisions", fmt.Sprintf("article-%03d.md", candidate))
 }
 
 func findStyleGuide(promptsDir string) string {

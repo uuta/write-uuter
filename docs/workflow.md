@@ -5,7 +5,9 @@
 The issue-1 implementation is a single-run, non-resumable controller. It first
 parses every required level-two brief section and verifies that the target does
 not exist. It builds the initial workspace in a temporary sibling directory
-and renames that directory into place only after initialization succeeds.
+and commits that directory with an operating-system no-replace rename only
+after initialization succeeds. A concurrently created directory or symlink is
+never replaced.
 
 ```mermaid
 flowchart TD
@@ -43,7 +45,8 @@ findings do not consume a candidate. A human-judgment decision blocks.
 ## Artifact gates
 
 Go does not treat an agent's final message or process exit as completion. A
-worker may advance only when its owned files exist and pass validation:
+worker must exit successfully before Go reads its owned files, and may advance
+only when those files exist and pass validation:
 
 - research has non-empty sources and a claim ledger naming Fact, Firsthand
   observation, Inference, Opinion, and Unresolved;
@@ -60,15 +63,22 @@ or revision metadata is rejected rather than retried into a passing state.
 ## Lifecycle and terminal states
 
 The PM starts before research and remains active while Go starts one worker
-window at a time. Each worker receives a generated assignment composed from a
-version-controlled prompt and is terminated as soon as its artifact contract
-validates. Each lens uses a fresh Codex invocation.
+window at a time. Each role runs in a fresh private workspace outside the run
+directory. Go stages only its allowed inputs, waits for a natural successful
+exit marker and tmux-window disappearance, validates output without following
+symlinks, and then copies regular files into the run. The launcher, live PM
+requests, and other launch-critical state remain in controller-private paths
+that no agent can write. Each lens uses a fresh Codex invocation.
 
-Every agent has the configured timeout. A timeout, premature exit, malformed
-artifact, stale review, human decision, or exhausted candidate budget sets an
-actionable `workflow.json.block_reason`. Go kills the dedicated tmux session
-before returning from either success or blocked execution, leaving no PM or
-worker process for the run.
+Every agent has the configured timeout, and tmux lifecycle commands have their
+own short bound. A timeout, premature exit, malformed artifact, stale review,
+cleanup failure, human decision, or exhausted candidate budget sets an
+actionable `workflow.json.block_reason`. Go verifies that the dedicated tmux
+session is gone before either terminal result. On success it then revalidates
+the candidate hash, every final review, and each PM request binding before
+publishing `article.md` and durably persisting the succeeded state. A failure
+during that terminal transition removes `article.md`, records blocked state,
+and leaves no PM or worker process for the run.
 
 Parallel runs, resume after controller restart, and editing completed runs are
 not implemented.

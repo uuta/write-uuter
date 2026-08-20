@@ -24,7 +24,7 @@
 ├── pm-decisions/
 │   └── article-00N.md
 ├── article.md                        # success only
-└── .control/                         # generated prompts and lifecycle files
+└── .control/                         # post-cleanup audit copies
 ```
 
 Earlier candidates, partial lens sequences, reviews, and PM decisions are kept
@@ -67,20 +67,29 @@ accumulates only the lenses reached for that candidate:
 {
   "reviewed_revision": "sha256:...",
   "lenses": {
-    "evidence": [],
-    "story": [
-      {
-        "finding_id": "story-001",
-        "decision": "invalid",
-        "reason": "The candidate already satisfies the outline."
-      }
-    ]
+    "evidence": {
+      "request_id": "request-token",
+      "review_digest": "sha256:...",
+      "decisions": []
+    },
+    "story": {
+      "request_id": "request-token",
+      "review_digest": "sha256:...",
+      "decisions": [
+        {
+          "finding_id": "story-001",
+          "decision": "invalid",
+          "reason": "The candidate already satisfies the outline."
+        }
+      ]
+    }
   }
 }
 ```
 
 Each reached lens covers every finding exactly once. Unknown, duplicate, or
-missing IDs and stale revisions fail the contract.
+missing IDs, stale revisions, mismatched request IDs or review digests, dropped
+prior lenses, and prepopulated future lenses fail the contract.
 
 ## workflow.json
 
@@ -96,7 +105,11 @@ truth. Schema version 1 records:
 - `started_at`, `updated_at`, and terminal `completed_at` timestamps;
 - terminal `block_reason` when blocked.
 
-The `.control/` directory is controller-owned. It preserves generated prompt
-assignments for audit, per-invocation logs, the launcher, exit markers when
-agents exit naturally, and the transient PM request while one is active.
-Editorial completion never depends on tmux scrollback or chat transcripts.
+The durable `.control/` directory is controller-owned and preserves audit
+copies of generated prompt assignments, per-invocation logs, and natural exit
+markers. Live launchers, PM requests, and agent workspaces exist only in
+controller-private temporary directories outside the durable run; they are
+removed after verified process cleanup and are never copied into `.control/`.
+Controller artifact access rejects symlink path components and non-regular
+files. Editorial completion never depends on tmux scrollback or chat
+transcripts.

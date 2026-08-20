@@ -28,13 +28,15 @@ type workflowState struct {
 }
 
 type invocationRecord struct {
-	PID        int    `json:"pid"`
-	Role       string `json:"role"`
-	Lens       string `json:"lens"`
-	Candidate  int    `json:"candidate"`
-	Revision   string `json:"revision"`
-	Invocation string `json:"invocation"`
-	Prompt     string `json:"prompt"`
+	PID            int      `json:"pid"`
+	Role           string   `json:"role"`
+	Lens           string   `json:"lens"`
+	Candidate      int      `json:"candidate"`
+	Revision       string   `json:"revision"`
+	Invocation     string   `json:"invocation"`
+	Prompt         string   `json:"prompt"`
+	Workspace      string   `json:"workspace"`
+	WorkspaceFiles []string `json:"workspace_files"`
 }
 
 var (
@@ -110,6 +112,10 @@ func TestBlackBoxHappyPathAndReviewerIsolation(t *testing.T) {
 			t.Errorf("reviewer process PID %d was reused", reviewer.PID)
 		}
 		seenPIDs[reviewer.PID] = true
+		if strings.HasPrefix(reviewer.Workspace, run.runDir) {
+			t.Errorf("%s reviewer workspace is inside durable run: %s", reviewer.Lens, reviewer.Workspace)
+		}
+		assertReviewerFilesystem(t, reviewer)
 		for _, required := range []string{"Provided context: brief.md", "CANDIDATE_ONLY_MARKER", reviewer.Revision} {
 			if !strings.Contains(reviewer.Prompt, required) {
 				t.Errorf("%s prompt missing %q", reviewer.Lens, required)
@@ -226,6 +232,312 @@ func TestBlackBoxTimeoutBlocksAndCleansProcesses(t *testing.T) {
 	assertProcessesGone(t, readInvocationRecords(t, run.fixtureDir))
 }
 
+func TestBlackBoxOptionalAndInvalidFindingsDoNotConsumeCandidate(t *testing.T) {
+	run := executeScenario(t, "optional_invalid")
+	if run.err != nil {
+		t.Fatalf("CLI failed: %v\n%s", run.err, run.output)
+	}
+	state := readWorkflow(t, run.runDir)
+	if state.Status != "succeeded" || state.CurrentCandidate != 1 || state.ReviewAttemptCount != 4 {
+		t.Fatalf("unexpected workflow: %+v", state)
+	}
+	if _, err := os.Stat(filepath.Join(run.runDir, "drafts", "article-002.md")); !errors.Is(err, os.ErrNotExist) {
+		t.Fatal("optional/invalid decisions consumed a candidate")
+	}
+	decisionData, err := os.ReadFile(filepath.Join(run.runDir, "pm-decisions", "article-001.md"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, expected := range []string{"valid_optional", "invalid", "The claimed problem is not present", "request_id", "review_digest"} {
+		if !strings.Contains(string(decisionData), expected) {
+			t.Errorf("decision audit missing %q", expected)
+		}
+	}
+}
+
+func TestBlackBoxInvalidDecisionWithoutReasonBlocks(t *testing.T) {
+	run := executeScenario(t, "invalid_no_reason")
+	if run.err == nil {
+		t.Fatal("CLI unexpectedly succeeded")
+	}
+	state := readWorkflow(t, run.runDir)
+	if state.Status != "blocked" || !strings.Contains(state.BlockReason, "requires a reason") {
+		t.Fatalf("unexpected workflow: %+v", state)
+	}
+	assertNoArticle(t, run.runDir)
+}
+
+func TestBlackBoxMixedHumanAndMustFixAlwaysBlocks(t *testing.T) {
+	run := executeScenario(t, "mixed")
+	if run.err == nil {
+		t.Fatal("CLI unexpectedly succeeded")
+	}
+	state := readWorkflow(t, run.runDir)
+	if state.Status != "blocked" || state.CurrentCandidate != 1 || !strings.Contains(state.BlockReason, "human judgment required") {
+		t.Fatalf("unexpected workflow: %+v", state)
+	}
+	if _, err := os.Stat(filepath.Join(run.runDir, "drafts", "article-002.md")); !errors.Is(err, os.ErrNotExist) {
+		t.Fatal("mixed decision incorrectly created a revision")
+	}
+	assertNoArticle(t, run.runDir)
+}
+
+func TestBlackBoxInvalidReviewerAndMutationAndSymlinkBlock(t *testing.T) {
+	for _, testCase := range []struct {
+		scenario string
+		reason   string
+	}{
+		{"invalid_review", "review lens mismatch"},
+		{"mutate", "reviewer edited the candidate input"},
+		{"symlink_output", "no-follow"},
+	} {
+		t.Run(testCase.scenario, func(t *testing.T) {
+			run := executeScenario(t, testCase.scenario)
+			if run.err == nil {
+				t.Fatal("CLI unexpectedly succeeded")
+			}
+			state := readWorkflow(t, run.runDir)
+			if state.Status != "blocked" || !strings.Contains(state.BlockReason, testCase.reason) {
+				t.Fatalf("unexpected workflow: %+v", state)
+			}
+			assertNoArticle(t, run.runDir)
+			assertProcessesGone(t, readInvocationRecords(t, run.fixtureDir))
+		})
+	}
+}
+
+func TestBlackBoxWorkerMustExitBeforeArtifactsAdvance(t *testing.T) {
+	start := time.Now()
+	run := executeScenario(t, "partial")
+	if run.err != nil {
+		t.Fatalf("CLI failed: %v\n%s", run.err, run.output)
+	}
+	if time.Since(start) < 300*time.Millisecond {
+		t.Fatal("controller advanced from transient worker output before process exit")
+	}
+	article, err := os.ReadFile(filepath.Join(run.runDir, "article.md"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(article), "COMPLETE_MARKER") {
+		t.Fatal("published truncated writer output")
+	}
+}
+
+func TestBlackBoxPMHistoryCannotBePrepopulatedOrDropped(t *testing.T) {
+	for _, scenario := range []string{"prepopulate", "drop_history"} {
+		t.Run(scenario, func(t *testing.T) {
+			run := executeScenario(t, scenario)
+			if run.err == nil {
+				t.Fatal("CLI unexpectedly succeeded")
+			}
+			state := readWorkflow(t, run.runDir)
+			if state.Status != "blocked" || !strings.Contains(state.BlockReason, "lens history") && !strings.Contains(state.BlockReason, "missing reached lens") {
+				t.Fatalf("unexpected workflow: %+v", state)
+			}
+			assertNoArticle(t, run.runDir)
+		})
+	}
+}
+
+func TestBlackBoxFinalCandidateMutationCannotPublish(t *testing.T) {
+	binary, fake, runDir, fixtureDir := prepareScenario(t, "slow_final")
+	command := newRunCommand(t, binary, fake, runDir, "5s", filepath.Join(repositoryRoot(t), "examples", "brief.md"))
+	if err := command.Start(); err != nil {
+		t.Fatal(err)
+	}
+	copyResult := filepath.Join(runDir, "reviews", "article-001", "copy", "result.json")
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		if _, err := os.Stat(copyResult); err == nil {
+			break
+		}
+		if time.Now().After(deadline) {
+			_ = command.Process.Kill()
+			t.Fatal("copy review did not appear")
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	if err := os.WriteFile(filepath.Join(runDir, "drafts", "article-001.md"), []byte("late mutation\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	err := command.Wait()
+	if err == nil {
+		t.Fatal("CLI unexpectedly published mutated candidate")
+	}
+	state := readWorkflow(t, runDir)
+	if state.Status != "blocked" || !strings.Contains(state.BlockReason, "changed before publication") {
+		t.Fatalf("unexpected workflow: %+v", state)
+	}
+	assertNoArticle(t, runDir)
+	assertProcessesGone(t, readInvocationRecords(t, fixtureDir))
+}
+
+func TestBlackBoxAtomicCommitDoesNotReplaceCompetingTarget(t *testing.T) {
+	binary, fake, runDir, _ := prepareScenario(t, "happy")
+	barrier := filepath.Join(t.TempDir(), "commit")
+	command := newRunCommand(t, binary, fake, runDir, "5s", filepath.Join(repositoryRoot(t), "examples", "brief.md"))
+	command.Env = append(os.Environ(), "WRITE_UUTER_TEST_COMMIT_BARRIER="+barrier)
+	if err := command.Start(); err != nil {
+		t.Fatal(err)
+	}
+	waitForPath(t, barrier+".ready")
+	if err := os.Mkdir(runDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	marker := filepath.Join(runDir, "competitor.txt")
+	if err := os.WriteFile(marker, []byte("preserve"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(barrier+".continue", []byte("continue\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := command.Wait(); err == nil {
+		t.Fatal("CLI unexpectedly replaced competing target")
+	}
+	data, err := os.ReadFile(marker)
+	if err != nil || string(data) != "preserve" {
+		t.Fatalf("competing target changed: %q, %v", data, err)
+	}
+	entries, _ := os.ReadDir(runDir)
+	if len(entries) != 1 || entries[0].Name() != "competitor.txt" {
+		t.Fatalf("competing target contents changed: %v", entries)
+	}
+}
+
+func TestBlackBoxHappyPathWithIsolatedTmuxServer(t *testing.T) {
+	tmuxDirectory, err := os.MkdirTemp("/tmp", "wu-tmux-*")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(tmuxDirectory) })
+	t.Setenv("TMUX", "")
+	t.Setenv("TMUX_TMPDIR", tmuxDirectory)
+	run := executeScenario(t, "happy")
+	if run.err != nil {
+		t.Fatalf("isolated tmux CLI failed: %v\n%s", run.err, run.output)
+	}
+	if state := readWorkflow(t, run.runDir); state.Status != "succeeded" {
+		t.Fatalf("unexpected workflow: %+v", state)
+	}
+	assertProcessesGone(t, readInvocationRecords(t, run.fixtureDir))
+}
+
+func TestBlackBoxAgentWorkspaceCannotReplaceHostLauncher(t *testing.T) {
+	run := executeScenario(t, "launcher_attack")
+	if run.err != nil {
+		t.Fatalf("workspace launcher attack affected later invocations: %v\n%s", run.err, run.output)
+	}
+	if _, err := os.Stat(filepath.Join(run.runDir, ".control", "launch-agent.sh")); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("launch-critical script was exposed in durable agent-visible run: %v", err)
+	}
+	if state := readWorkflow(t, run.runDir); state.Status != "succeeded" {
+		t.Fatalf("unexpected workflow: %+v", state)
+	}
+}
+
+func TestBlackBoxHungTmuxCommandIsBoundedAndPersistsBlock(t *testing.T) {
+	binary, fake, runDir, _ := prepareScenario(t, "happy")
+	hangingTmux := filepath.Join(t.TempDir(), "hanging-tmux")
+	if err := os.WriteFile(hangingTmux, []byte("#!/bin/sh\nexec sleep 60\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	command := newRunCommand(t, binary, fake, runDir, "150ms", filepath.Join(repositoryRoot(t), "examples", "brief.md"))
+	command.Args = append(command.Args, "--tmux", hangingTmux)
+	start := time.Now()
+	output, err := command.CombinedOutput()
+	if err == nil {
+		t.Fatalf("CLI unexpectedly succeeded: %s", output)
+	}
+	if time.Since(start) > 2*time.Second {
+		t.Fatalf("hung tmux command exceeded bounded lifecycle timeout: %s", time.Since(start))
+	}
+	state := readWorkflow(t, runDir)
+	if state.Status != "blocked" || !strings.Contains(state.BlockReason, "tmux command timed out") {
+		t.Fatalf("unexpected workflow: %+v", state)
+	}
+	assertNoArticle(t, runDir)
+}
+
+func TestBlackBoxWorkerTerminationErrorStopsWorkflowAndSession(t *testing.T) {
+	realTmux, err := exec.LookPath("tmux")
+	if err != nil {
+		t.Skip("tmux unavailable")
+	}
+	binary, fake, runDir, fixtureDir := prepareScenario(t, "timeout")
+	wrapper := filepath.Join(t.TempDir(), "tmux-wrapper")
+	script := fmt.Sprintf("#!/bin/sh\nif [ \"$1\" = \"kill-window\" ]; then exit 42; fi\nexec %q \"$@\"\n", realTmux)
+	if err := os.WriteFile(wrapper, []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	command := newRunCommand(t, binary, fake, runDir, "1s", filepath.Join(repositoryRoot(t), "examples", "brief.md"))
+	command.Args = append(command.Args, "--tmux", wrapper)
+	output, err := command.CombinedOutput()
+	if err == nil {
+		t.Fatalf("CLI unexpectedly succeeded: %s", output)
+	}
+	state := readWorkflow(t, runDir)
+	if state.Status != "blocked" || !strings.Contains(state.BlockReason, "termination failed") {
+		t.Fatalf("unexpected workflow: %+v", state)
+	}
+	records := readInvocationRecords(t, fixtureDir)
+	for _, record := range records {
+		if record.Role == "story_editor" {
+			t.Fatal("controller started another worker after termination failure")
+		}
+	}
+	assertProcessesGone(t, records)
+	assertNoArticle(t, runDir)
+}
+
+func TestBlackBoxControllerRejectsSymlinkedDurableArtifactDirectory(t *testing.T) {
+	binary, fake, runDir, fixtureDir := prepareScenario(t, "slow_evidence")
+	command := newRunCommand(t, binary, fake, runDir, "5s", filepath.Join(repositoryRoot(t), "examples", "brief.md"))
+	if err := command.Start(); err != nil {
+		t.Fatal(err)
+	}
+	waitForPath(t, filepath.Join(runDir, "drafts", "article-001.md"))
+	victim := filepath.Join(t.TempDir(), "victim")
+	if err := os.Mkdir(victim, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Remove(filepath.Join(runDir, "reviews")); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(victim, filepath.Join(runDir, "reviews")); err != nil {
+		t.Fatal(err)
+	}
+	if err := command.Wait(); err == nil {
+		t.Fatal("CLI unexpectedly followed symlinked durable path")
+	}
+	state := readWorkflow(t, runDir)
+	if state.Status != "blocked" || !strings.Contains(state.BlockReason, "symlink") {
+		t.Fatalf("unexpected workflow: %+v", state)
+	}
+	entries, err := os.ReadDir(victim)
+	if err != nil || len(entries) != 0 {
+		t.Fatalf("controller wrote outside run through symlink: %v, %v", entries, err)
+	}
+	assertProcessesGone(t, readInvocationRecords(t, fixtureDir))
+	assertNoArticle(t, runDir)
+}
+
+func TestBlackBoxPublicationRollsBackWhenSucceededStateCannotPersist(t *testing.T) {
+	binary, fake, runDir, fixtureDir := prepareScenario(t, "happy")
+	command := newRunCommand(t, binary, fake, runDir, "5s", filepath.Join(repositoryRoot(t), "examples", "brief.md"))
+	command.Env = append(os.Environ(), "WRITE_UUTER_TEST_FAIL_SUCCESS_SAVE=1")
+	output, err := command.CombinedOutput()
+	if err == nil {
+		t.Fatalf("CLI unexpectedly succeeded: %s", output)
+	}
+	state := readWorkflow(t, runDir)
+	if state.Status != "blocked" || !strings.Contains(state.BlockReason, "persist succeeded workflow") {
+		t.Fatalf("unexpected workflow: %+v", state)
+	}
+	assertNoArticle(t, runDir)
+	assertProcessesGone(t, readInvocationRecords(t, fixtureDir))
+}
+
 func TestBlackBoxInvalidBriefReportsAllProblemsWithoutRun(t *testing.T) {
 	binary, _ := buildBinaries(t)
 	temporary := t.TempDir()
@@ -327,18 +639,30 @@ func executeScenarioWithTimeout(t *testing.T, scenario, timeout string) scenario
 
 func executeScenarioWithBrief(t *testing.T, scenario, timeout, briefPath string) scenarioRun {
 	t.Helper()
+	binary, fake, runDir, fixtureDir := prepareScenario(t, scenario)
+	command := newRunCommand(t, binary, fake, runDir, timeout, briefPath)
+	output, err := command.CombinedOutput()
+	return scenarioRun{runDir: runDir, fixtureDir: fixtureDir, output: string(output), err: err}
+}
+
+func prepareScenario(t *testing.T, scenario string) (binary, fake, runDir, fixtureDir string) {
+	t.Helper()
 	binary, fakeTemplate := buildBinaries(t)
 	temporary := t.TempDir()
-	fixtureDir := filepath.Join(temporary, "fake")
+	fixtureDir = filepath.Join(temporary, "fake")
 	if err := os.MkdirAll(filepath.Join(fixtureDir, "logs"), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	fake := filepath.Join(fixtureDir, "fake-codex")
+	fake = filepath.Join(fixtureDir, "fake-codex")
 	copyFile(t, fakeTemplate, fake, 0o755)
 	if err := os.WriteFile(filepath.Join(fixtureDir, "scenario"), []byte(scenario), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	runDir := filepath.Join(temporary, "run")
+	return binary, fake, filepath.Join(temporary, "run"), fixtureDir
+}
+
+func newRunCommand(t *testing.T, binary, fake, runDir, timeout, briefPath string) *exec.Cmd {
+	t.Helper()
 	command := exec.Command(binary, "run",
 		"--brief", briefPath,
 		"--run-dir", runDir,
@@ -347,8 +671,7 @@ func executeScenarioWithBrief(t *testing.T, scenario, timeout, briefPath string)
 		"--prompts-dir", filepath.Join(repositoryRoot(t), "prompts"),
 	)
 	command.Dir = repositoryRoot(t)
-	output, err := command.CombinedOutput()
-	return scenarioRun{runDir: runDir, fixtureDir: fixtureDir, output: string(output), err: err}
+	return command
 }
 
 func buildBinaries(t *testing.T) (string, string) {
@@ -435,6 +758,64 @@ func assertPromptMarkers(t *testing.T, record invocationRecord, present, absent 
 			t.Errorf("%s prompt leaked marker %q", record.Lens, marker)
 		}
 	}
+}
+
+func assertReviewerFilesystem(t *testing.T, record invocationRecord) {
+	t.Helper()
+	files := make(map[string]bool, len(record.WorkspaceFiles))
+	for _, name := range record.WorkspaceFiles {
+		files[name] = true
+		for _, forbidden := range []string{"reviews/", "pm-decisions/", ".control/", "workflow.json"} {
+			if strings.Contains(name, forbidden) {
+				t.Errorf("%s reviewer filesystem leaked %s", record.Lens, name)
+			}
+		}
+	}
+	for _, common := range []string{"context/", "context/brief.md", "context/article.md", "context/revision.txt", "result.json", "report.md"} {
+		if !files[common] {
+			t.Errorf("%s reviewer workspace missing %s: %v", record.Lens, common, record.WorkspaceFiles)
+		}
+	}
+	want := map[string][]string{
+		"evidence": {"context/evidence/", "context/evidence/sources.md", "context/claim-ledger.md"},
+		"story":    {"context/outline.md"},
+		"clarity":  {"context/clarity-fields.md"},
+		"copy":     {},
+	}
+	for _, expected := range want[record.Lens] {
+		if !files[expected] {
+			t.Errorf("%s reviewer workspace missing lens input %s", record.Lens, expected)
+		}
+	}
+	for lens, lensFiles := range want {
+		if lens == record.Lens {
+			continue
+		}
+		for _, forbidden := range lensFiles {
+			if files[forbidden] {
+				t.Errorf("%s reviewer workspace leaked %s input %s", record.Lens, lens, forbidden)
+			}
+		}
+	}
+}
+
+func assertNoArticle(t *testing.T, runDir string) {
+	t.Helper()
+	if _, err := os.Stat(filepath.Join(runDir, "article.md")); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("blocked run contains success-only article.md: %v", err)
+	}
+}
+
+func waitForPath(t *testing.T, path string) {
+	t.Helper()
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		if _, err := os.Stat(path); err == nil {
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	t.Fatalf("timed out waiting for %s", path)
 }
 
 func assertProcessesGone(t *testing.T, records []invocationRecord) {

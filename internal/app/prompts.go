@@ -12,6 +12,7 @@ var requiredPromptFiles = []string{
 	"researcher.md",
 	"story-editor.md",
 	"writer.md",
+	"reviewer-output.md",
 	"reviewer-evidence.md",
 	"reviewer-story.md",
 	"reviewer-clarity.md",
