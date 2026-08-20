@@ -55,7 +55,8 @@ only when those files exist and pass validation:
 - reviewer JSON has an allowed status, exact lens and SHA-256 revision, unique
   complete findings, plus a report with the same finding fields;
 - PM decisions cover every finding, use allowed classifications, match the
-  current revision, and explain every invalid classification.
+  current revision, explain every invalid classification, and preserve the
+  exact accepted classifications and routing outcome of every earlier lens.
 
 A reviewer changing its candidate is an artifact-contract failure. Stale lens
 or revision metadata is rejected rather than retried into a passing state.
@@ -66,19 +67,29 @@ The PM starts before research and remains active while Go starts one worker
 window at a time. Each role runs in a fresh private workspace outside the run
 directory. Go stages only its allowed inputs, waits for a natural successful
 exit marker and tmux-window disappearance, validates output without following
-symlinks, and then copies regular files into the run. The launcher, live PM
-requests, and other launch-critical state remain in controller-private paths
-that no agent can write. Each lens uses a fresh Codex invocation.
+symlinks, and then copies regular files into the run. The marker is published
+by a same-directory temporary-file rename only after the Codex process and its
+descendants are gone. The controller-private runner, process-group records,
+live PM requests, and other launch-critical state are siblings of—not children
+of—agent workspaces. The macOS native sandbox denies agents access to those
+paths, the durable run, other role workspaces, and host files outside the
+active workspace. Each lens uses a fresh Codex invocation.
 
 Every agent has the configured timeout, and tmux lifecycle commands have their
-own short bound. A timeout, premature exit, malformed artifact, stale review,
+own short bound. The controller enforces both a context timer and an absolute
+wall-clock deadline, so host sleep or a missing runner completion marker cannot
+extend an invocation past its contract. A timeout, premature exit, malformed
+artifact, stale review,
 cleanup failure, human decision, or exhausted candidate budget sets an
 actionable `workflow.json.block_reason`. Go verifies that the dedicated tmux
-session is gone before either terminal result. On success it then revalidates
-the candidate hash, every final review, and each PM request binding before
-publishing `article.md` and durably persisting the succeeded state. A failure
-during that terminal transition removes `article.md`, records blocked state,
-and leaves no PM or worker process for the run.
+session and every recorded invocation process group are gone before either
+terminal result. On success it requires the persistent PM to still be live,
+then revalidates the candidate hash, every final review, each PM request
+binding, and each accepted classification list before publishing `article.md`
+and durably persisting the succeeded state. A failure during that terminal
+transition removes `article.md`, records blocked state, attempts private-state
+cleanup even if blocked-state persistence fails, and leaves no PM, worker, or
+detached descendant process for the run.
 
 Parallel runs, resume after controller restart, and editing completed runs are
 not implemented.

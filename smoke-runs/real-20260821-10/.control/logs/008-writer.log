@@ -1,0 +1,722 @@
+2026-08-20T16:49:53.751468Z ERROR codex_core::agents_md: error trying to find AGENTS.md docs: Operation not permitted (os error 1) environment_id="local"
+2026-08-20T16:49:53.752879Z ERROR codex_skills_extension::loader::host: failed to walk skills root file:///Users/yutaaoki/.agents/skills: Operation not permitted (os error 1)
+OpenAI Codex v0.148.0
+--------
+workdir: /Users/yutaaoki/write-uuter/.worktrees/1/smoke-runs/.write-uuter-private-386119021/workspaces/008-writer-4266138033
+model: gpt-5.6-sol
+provider: openai
+approval: never
+sandbox: danger-full-access
+reasoning effort: none
+reasoning summaries: none
+session id: 01a02014-4254-7d61-9438-8f87744c24b5
+--------
+user
+# Writer role contract
+
+Write only the assigned versioned candidate under `drafts/`. Expand the
+supplied outline into publishable prose supported by the supplied evidence and
+brief. Do not leave TODOs or unresolved placeholders.
+
+For a revision, apply every PM-validated must-fix decision using the prior
+candidate and the reached review result/report as input. Use the matching
+finding's problem, location, and suggested direction to make the correction,
+then verify that the revised wording actually resolves it. Do not accept or
+reject findings yourself. Never edit a review result, PM decision, earlier
+draft, or final `article.md`. Finish only after the assigned candidate is
+complete on disk.
+
+
+## Assignment
+
+Write candidate 002 to `drafts/article-002.md` in this isolated workspace.
+
+## Provided context: brief.md
+
+<write-uuter-context name="brief.md">
+# Brief
+
+## Question
+
+How does write-uuter turn a brief into an inspectable reviewed article?
+
+## Audience
+
+Engineers evaluating a small, artifact-driven editorial workflow.
+
+## Provisional takeaway
+
+A deterministic Go controller can coordinate isolated Codex roles while
+leaving evidence, drafts, reviews, and decisions available for inspection.
+
+## Scope
+
+Describe the workflow implemented by this repository and the reason its
+durable artifact gates matter.
+
+## Out of scope
+
+Publishing integrations, web interfaces, and claims about workflows outside
+this repository.
+
+## Publication target
+
+A concise repository article for technical readers.
+
+## Constraints
+
+Use only facts supported by README.md and docs/. Keep the article under 900
+words and explain terms in plain language.
+
+## Done when
+
+The article accurately explains the roles, sequential review loop, candidate
+budget, and inspectable terminal artifacts.
+
+## Source hints
+
+- ../README.md
+- ../docs/workflow.md
+- ../docs/roles.md
+- ../docs/artifacts.md
+
+</write-uuter-context>
+
+## Provided context: evidence/sources.md
+
+<write-uuter-context name="evidence/sources.md">
+# Sources
+
+Accessed 2026-08-21. These are the controller-staged copies of the brief's local source hints; research used the staged copies rather than the source repository. No network or firsthand research was performed.
+
+## README.md
+
+- Location: `context/source-hints/001-README.md` (brief hint: `../README.md`)
+- Useful summary: Defines write-uuter as a Go CLI that turns a Markdown brief into a reviewed article while preserving the evidence, outline, candidates, reviews, and PM decisions. Describes the runtime division of responsibility: Go owns transitions, validation, revision hashes, timeouts, and cleanup; isolated Codex roles do editorial work. Gives the sequential role order, says only PM-validated must-fix findings trigger revision, establishes candidate 003 as the hard limit, and states success/block outcomes.
+- Particularly useful support: overview and requirements; run behavior; required brief headings; runtime model.
+
+## docs/workflow.md
+
+- Location: `context/source-hints/002-workflow.md` (brief hint: `../docs/workflow.md`)
+- Useful summary: Gives the controller sequence from brief validation and atomic run initialization through Researcher, Story Editor, Writer, four fresh sequential review lenses, PM classification, revision, and publication. Explains that a must-fix stops later lenses and restarts the next candidate at Evidence, optional/invalid findings do not consume a candidate, and human judgment blocks. Specifies artifact gates, isolation/lifecycle behavior, final revalidation, and supported terminal states.
+- Particularly useful support: controller flowchart; artifact validation requirements; timeout and cleanup behavior; non-resumable and non-parallel limitations.
+
+## docs/roles.md
+
+- Location: `context/source-hints/003-roles.md` (brief hint: `../docs/roles.md`)
+- Useful summary: Defines ownership and prohibitions for the Human Editor, persistent PM, Researcher, Story Editor, Writer, and four reviewers. Records the PM classification vocabulary, Writer revision inputs, per-lens reviewer context, reviewer output ownership, and the rule that reviewers neither inherit prior-lens conversations nor edit candidates.
+- Particularly useful support: role-to-artifact ownership; PM request binding and accumulated decisions; fresh isolated reviewer assignments.
+
+## docs/artifacts.md
+
+- Location: `context/source-hints/004-artifacts.md` (brief hint: `../docs/artifacts.md`)
+- Useful summary: Documents the durable run tree and validation contracts for review results, PM decisions, and `workflow.json`. States that prior candidates, partial review sequences, reviews, and PM decisions remain when a run revises or blocks; `article.md` exists only on success and exactly matches the accepted candidate. Explains the post-cleanup `.control/` audit material and which live private state is deliberately not retained.
+- Particularly useful support: inspectable terminal layout; exact candidate/article relationship; review and PM-decision integrity checks; atomic state and marker handling.
+
+## Source-use boundaries
+
+- The supplied brief limits factual support to README.md and `docs/`; every factual claim in the ledger below traces to one or more of the four staged sources above.
+- No claims were derived from repository implementation files, tests, external sources, or workflows outside this repository.
+- Documentation describes the shipped issue-1 workflow; it does not establish comparative effectiveness, editorial quality, or applicability to other systems.
+
+</write-uuter-context>
+
+## Provided context: claim-ledger.md
+
+<write-uuter-context name="claim-ledger.md">
+# Claim Ledger
+
+Classifications used explicitly in this ledger: **Fact**, **Firsthand observation**, **Inference**, **Opinion**, and **Unresolved**.
+
+## Fact
+
+| ID | Claim | Support |
+| --- | --- | --- |
+| F01 | write-uuter is a Go CLI that turns a Markdown brief into a reviewed article and preserves the evidence, outline, candidates, reviews, and PM decisions that produced it. | `context/source-hints/001-README.md`, opening description |
+| F02 | The issue-1 controller is single-run and non-resumable; it validates required brief sections and a new target, initializes the run atomically, and does not implement parallel runs, restart resume, or editing completed runs. | `002-workflow.md`, “Controller sequence” and “Lifecycle and terminal states” |
+| F03 | Go, rather than an agent, owns workflow transitions, validation, revision hashes, timeouts, routing, process cleanup, and final publication. | `001-README.md`, “Runtime model”; `002-workflow.md`, “Artifact gates” and “Lifecycle and terminal states”; `003-roles.md`, introduction and PM section |
+| F04 | The editorial roles run in this order: Researcher, Story Editor, Writer, then fresh Evidence, Story, Clarity, and Copy reviewers; the review lenses are sequential, not parallel. | `001-README.md`, “Runtime model”; `002-workflow.md`, flowchart and text below it; `003-roles.md`, “Reviewers” |
+| F05 | The Researcher owns `evidence/sources.md`, optional firsthand evidence/assets, and `claim-ledger.md`; the Story Editor owns `outline.md`; the Writer owns one assigned candidate; reviewers own lens-specific `result.json` and `report.md`; the PM owns recorded classifications but never writes a candidate or review. | `003-roles.md`, role sections |
+| F06 | Roles work in controller-created private workspaces. Go stages only allowed context, validates successful outputs, and copies validated regular files into the durable run; the macOS sandbox blocks access to the durable run, other role workspaces, controller-private state, and unrelated host files. | `001-README.md`, “Runtime model”; `002-workflow.md`, “Lifecycle and terminal states”; `003-roles.md`, introduction and “Reviewers” |
+| F07 | A worker's message or exit alone does not advance the workflow: its owned files must exist and satisfy role-specific validation gates after successful exit. | `002-workflow.md`, “Artifact gates” |
+| F08 | Candidate review begins at Evidence and proceeds through Story, Clarity, and Copy. After each reached lens, the persistent PM classifies every finding as `valid_must_fix`, `valid_optional`, `invalid` with a reason, or `needs_human_judgment`. | `002-workflow.md`, flowchart; `003-roles.md`, “PM” and “Reviewers” |
+| F09 | A PM-validated must-fix stops the remaining lenses for that candidate. If the candidate number is below 003, the Writer creates the next candidate and review restarts at Evidence. Optional and invalid findings do not consume a candidate. | `001-README.md`, “Runtime model”; `002-workflow.md`, text below flowchart |
+| F10 | Candidate 003 is the hard limit. An exhausted third candidate, human-judgment decision, timeout, malformed/stale artifact, premature exit, or cleanup failure blocks the run with an actionable `workflow.json.block_reason`. | `001-README.md`, “Run” and “Runtime model”; `002-workflow.md`, flowchart and “Lifecycle and terminal states” |
+| F11 | A reviewer cannot edit its candidate. Review metadata must bind to the exact lens and SHA-256 candidate revision, and stale or mismatched artifacts are rejected. | `001-README.md`, “Runtime model”; `002-workflow.md`, “Artifact gates”; `004-artifacts.md`, “Review result” |
+| F12 | PM decisions bind to the active request, review digest, and candidate revision; accumulated decisions must retain every earlier reached lens without changing its accepted classifications or routing outcome. | `002-workflow.md`, “Artifact gates”; `003-roles.md`, “PM”; `004-artifacts.md`, “PM decision” |
+| F13 | On success, the controller revalidates the candidate hash, final reviews, PM request bindings, and accepted classification lists before writing `article.md`; the file is byte-for-byte identical to the candidate accepted through all four lenses. | `001-README.md`, “Run”; `002-workflow.md`, “Lifecycle and terminal states”; `004-artifacts.md`, “Run layout” |
+| F14 | Earlier candidates, partial lens sequences, reviews, and PM decisions remain available after revision or blocking; `workflow.json` records status, phase, current candidate/revision, active role, artifact paths, review count, timestamps, and any terminal block reason. | `004-artifacts.md`, “Run layout” and “workflow.json” |
+| F15 | After verified cleanup, `.control/` preserves audit copies of generated assignments, per-invocation logs, and natural exit markers, but not live runner executables, sandbox profiles, process-group records, PM requests, or agent workspaces. | `003-roles.md`, introduction; `004-artifacts.md`, “workflow.json” |
+| F16 | Editorial completion does not depend on tmux scrollback or chat transcripts. | `004-artifacts.md`, final sentence |
+
+## Firsthand observation
+
+| ID | Claim | Support |
+| --- | --- | --- |
+| H01 | None. No firsthand run, code inspection, experiment, interview, or direct product observation was performed for this assignment. | Research method recorded in `evidence/sources.md` |
+
+## Inference
+
+| ID | Claim | Basis and caution |
+| --- | --- | --- |
+| I01 | The workflow is inspectable because its important handoffs and decisions are represented by retained, validated files rather than only transient agent conversation. | Inferred from F05, F07, F12, F14–F16. “Inspectable” is a synthesis of the documented artifact design, not a measured usability result. |
+| I02 | Artifact gates reduce the chance that a stale review, incomplete decision, or silently changed candidate is treated as approval. | Inferred from F07, F11–F13. The docs specify rejection checks; no empirical error-rate claim is supported. |
+| I03 | Restarting every revised candidate at Evidence ensures later review lenses never stand in for evidence review of changed text. | Inferred from F04 and F09. This describes the structural consequence of the sequence, not proof that all factual errors will be found. |
+| I04 | The three-candidate cap converts an otherwise potentially open-ended revision loop into a bounded controller outcome. | Inferred from F09–F10. “Bounded” refers to candidate count, not total duration, which also depends on configured timeouts and cleanup. |
+| I05 | Separating Go's control duties from Codex's editorial duties makes the workflow more deterministic at its transitions than if agents controlled their own advancement. | Inferred from F03, F07, F11–F13. This is architectural reasoning; no comparative implementation was studied. |
+
+## Opinion
+
+| ID | Claim | Basis and caution |
+| --- | --- | --- |
+| O01 | The durable artifact gates are a sensible design for engineers who value auditability over conversational continuity. | Evaluative judgment based on F07, F14–F16; not stated as fact by the sources. |
+| O02 | The candidate cap is a pragmatic safety valve, though teams may differ on whether three candidates are enough. | Evaluation prompted by F10; adequacy is not established by the documentation. |
+
+## Unresolved
+
+| ID | Question or unsupported claim | Why unresolved |
+| --- | --- | --- |
+| U01 | How often do the validation gates catch real defects, and how often do runs block? | The allowed sources provide contracts and behavior, not production metrics or run data. |
+| U02 | Does the four-lens sequence improve article quality compared with another workflow? | No comparative evaluation is present; such a claim would exceed repository-specific documentation. |
+| U03 | How easy is it for an engineer to inspect a large or blocked run in practice? | The artifact layout is documented, but no usability study or firsthand inspection was performed. |
+| U04 | Will Linux execution gain an equivalent native read-isolation backend, resume support, parallel runs, publishing integrations, or a web interface? | The sources identify current omissions or out-of-scope features but give no supported delivery commitments. |
+| U05 | What should a human do after `needs_human_judgment` blocks a run beyond inspecting artifacts and retrying in a new run directory? | `003-roles.md` says issue 1 does not resume and supports a later inspected retry, but does not specify a broader operational process. |
+
+## Guardrails for downstream use
+
+- Treat F01–F16 as documentation-supported facts, with the cited source locations retained nearby.
+- Attribute I01–I05 as explanations or architectural inferences, not measured outcomes.
+- Do not present O01–O02 as repository claims.
+- Do not resolve U01–U05 without new allowed evidence.
+- Avoid claims about publishing, web interfaces, workflows outside this repository, editorial quality gains, or real-world reliability.
+
+</write-uuter-context>
+
+## Provided context: outline.md
+
+<write-uuter-context name="outline.md">
+# Outline: From Brief to Inspectable Reviewed Article
+
+Target length: under 900 words. Use plain language and keep all claims within the supplied README/docs evidence. Treat statements about inspectability, determinism, and boundedness as architectural explanations, not measured outcomes.
+
+## 1. The workflow in one view
+
+- **Purpose:** Answer the article's question up front: write-uuter is a Go CLI that turns a Markdown brief into a reviewed article while preserving the files that show how the result was produced. Establish the central division between deterministic controller work and editorial role work.
+- **Supporting evidence:** F01 (CLI, input, output, and preserved artifacts); F03 (Go owns transitions, validation, hashes, timeouts, routing, cleanup, and publication); I05 (carefully labeled inference that this separation makes transitions more deterministic).
+- **Reader takeaway:** This is a small, repository-specific workflow in which Go controls advancement and isolated Codex roles perform editorial tasks; the result is inspectable through files rather than agent conversation alone.
+
+## 2. From validated brief to the first candidate
+
+- **Purpose:** Explain the opening sequence and role ownership: the controller validates the brief and initializes a new run, then invokes Researcher, Story Editor, and Writer in order. Show how each role hands off a concrete artifact.
+- **Supporting evidence:** F02 (brief validation, atomic initialization, single-run and non-resumable scope); F04 (role order); F05 (Researcher owns sources and claim ledger, Story Editor owns the outline, Writer owns its assigned candidate); F06 (private workspaces and staged context).
+- **Reader takeaway:** The article emerges through explicit file handoffs—evidence, claim ledger, outline, and candidate—while each role sees only the context staged for its assignment.
+
+## 3. Four sequential review lenses and one decision-maker
+
+- **Purpose:** Describe review as a fixed Evidence → Story → Clarity → Copy sequence. Distinguish fresh reviewers, who report findings without editing the candidate, from the persistent PM, who classifies every finding and determines routing.
+- **Supporting evidence:** F04 (fresh, sequential review lenses); F05 (reviewer and PM ownership boundaries); F08 (lens order and the four PM classifications); F11 (reviewers cannot edit candidates and reviews bind to lens and revision); F12 (PM decisions bind to request, review digest, and revision and accumulate without rewriting earlier outcomes).
+- **Reader takeaway:** Review is not a parallel vote or an informal chat: each lens examines an exact candidate revision, and the PM records a classification for every reached finding before the controller advances.
+
+## 4. Revision routing and the three-candidate budget
+
+- **Purpose:** Explain exactly what causes revision, what does not, where review restarts, and how the candidate limit produces a terminal outcome. Make clear that only PM-validated must-fix findings consume another candidate.
+- **Supporting evidence:** F09 (must-fix stops later lenses, next candidate restarts at Evidence, optional/invalid findings do not consume a candidate); F10 (candidate 003 hard limit and blocking conditions); I03 (labeled inference about why revisions restart at Evidence); I04 (labeled inference that the cap bounds candidate count, not total duration).
+- **Reader takeaway:** A validated must-fix triggers a new candidate and a full review restart; the workflow permits at most candidates 001–003, then succeeds or blocks instead of revising indefinitely.
+
+## 5. Artifact gates make advancement inspectable
+
+- **Purpose:** Explain why a successful process exit or reassuring message is insufficient. Describe the controller's validation of owned files, revision hashes, review metadata, and PM bindings, and connect those checks to the workflow's inspectability without claiming measured reliability.
+- **Supporting evidence:** F07 (valid owned files are required after successful exit); F11 (exact lens and SHA-256 revision binding; stale/mismatched artifacts rejected); F12 (decision integrity and accumulated history); F13 (final revalidation before publication); I01 and I02 (explicit architectural inferences about file-based inspectability and rejection of stale, incomplete, or changed inputs).
+- **Reader takeaway:** Every transition depends on validated artifacts tied to the active candidate and request, so readers can inspect the same evidence the controller used; the documentation does not establish defect rates or quality gains.
+
+## 6. What remains at success or failure
+
+- **Purpose:** Close by walking through the durable terminal record. Contrast successful publication with a blocked run, while emphasizing that both retain useful history and that `article.md` is created only after final validation.
+- **Supporting evidence:** F10 (`workflow.json.block_reason` for blocked outcomes); F13 (`article.md` is byte-for-byte identical to the accepted candidate); F14 (earlier candidates, partial reviews, decisions, status, paths, timestamps, and block reason remain); F15 (`.control/` audit material retained after cleanup and private live state omitted); F16 (completion does not depend on tmux scrollback or chat transcripts); I01 (inspectability as a documented-design inference).
+- **Reader takeaway:** Success leaves the accepted article plus its evidence and decision trail; failure leaves an actionable status and the partial history. In either case, the durable run directory—not transient conversation—is the record to inspect.
+
+## Boundaries for the writer
+
+- Do not claim that the workflow improves editorial quality, catches defects at any measured rate, or is easier to audit in practice; U01–U03 remain unresolved.
+- Do not speculate about resume support, parallel runs, Linux isolation, publishing, or web interfaces; these are unsupported, omitted, or outside scope (U04–U05 and the brief).
+- Avoid presenting O01 or O02 as repository claims. If evaluative language is needed, attribute it as a judgment rather than a documented fact.
+
+</write-uuter-context>
+
+## Provided context: drafts/article-001.md
+
+<write-uuter-context name="drafts/article-001.md">
+# From Brief to Inspectable Reviewed Article
+
+write-uuter is a Go command-line tool that turns a Markdown brief into a reviewed article while preserving the evidence, outline, candidates, reviews, and product-manager decisions behind it. Its central design choice is a division of responsibility: isolated Codex roles do the editorial work, while Go controls transitions, validation, revision hashes, routing, timeouts, cleanup, and final publication. Architecturally, that makes advancement more deterministic than leaving agents to decide when their own work is complete.
+
+## From brief to candidate
+
+A run starts only after the controller validates the brief's required sections and confirms that the target is new. It then initializes the run atomically. The issue-1 workflow handles one run at a time and does not resume an interrupted run or edit a completed one.
+
+The editorial sequence begins with three explicit handoffs. The Researcher produces `evidence/sources.md` and `claim-ledger.md`, along with any optional firsthand evidence or assets. The Story Editor turns that material into `outline.md`. The Writer then expands the outline into one assigned candidate, beginning with `drafts/article-001.md`.
+
+Each role works in a private workspace created by the controller. Go stages only the context allowed for that assignment, validates the role's output after a successful exit, and copies validated regular files into the durable run. On macOS, sandboxing also prevents a role from reading the durable run, other roles' workspaces, controller-private state, or unrelated host files. The resulting article therefore moves between roles through concrete files, not a shared conversation.
+
+## Four reviews, in order
+
+Every candidate enters four fresh review lenses in a fixed sequence: Evidence, Story, Clarity, then Copy. They are deliberately sequential rather than parallel. Each reviewer receives the context for its own lens, writes a lens-specific `result.json` and `report.md`, and cannot edit the candidate.
+
+After every reached lens, a persistent PM classifies each finding as `valid_must_fix`, `valid_optional`, `invalid` with a reason, or `needs_human_judgment`. The PM records decisions but does not write candidates or reviews. Those decisions are tied to the active request, the review digest, and the exact candidate revision. As review progresses, the accumulated decision record must retain earlier lenses without changing their classifications or routing outcomes.
+
+This is not a parallel vote or an informal approval exchange. Each reviewer examines a specific revision, and the controller advances only after the PM has classified every finding from the reached lens.
+
+## Revision has a hard budget
+
+Only a PM-validated must-fix finding triggers revision. It stops the remaining review lenses for that candidate. If the current candidate is earlier than 003, the Writer produces the next numbered candidate and review starts again at Evidence. Restarting there ensures, by construction, that changed text does not bypass evidence review on the strength of later reviews of an older revision.
+
+Optional and invalid findings do not consume another candidate. A `needs_human_judgment` decision blocks the run. Candidate 003 is the hard limit: if it still receives a validated must-fix, the run blocks instead of opening an indefinite revision loop. The cap bounds the number of candidates, although total duration also depends on timeouts and cleanup.
+
+Other failures can also block a run, including a timeout, malformed or stale artifacts, premature process exit, or cleanup failure. The controller records an actionable reason in `workflow.json`.
+
+## Files are the gates
+
+A worker's reassuring message—or even a successful process exit—is not enough to move the workflow forward. The files owned by that role must exist and pass their specific validation rules. Review metadata must name the correct lens and include the SHA-256 hash of the exact candidate revision. Stale or mismatched artifacts are rejected. PM records must match the active request, review digest, and revision while preserving all earlier reached decisions.
+
+Before publication, the controller revalidates the candidate hash, final reviews, PM request bindings, and accepted classification lists. Only then does it write `article.md`, which is byte-for-byte identical to the candidate accepted through all four lenses.
+
+These gates make the workflow inspectable in an architectural sense: important handoffs and decisions survive as validated files rather than existing only in transient agent conversation. They also provide checks against treating stale reviews, incomplete decisions, or silently changed candidates as approval. The repository documentation specifies those checks; it does not establish defect rates or comparative improvements in editorial quality.
+
+## The terminal record
+
+Success leaves the accepted article and the trail that produced it. Revision or failure does not erase earlier candidates, partial lens sequences, reviews, or PM decisions. `workflow.json` records the status, phase, current candidate and revision, active role, artifact paths, review count, timestamps, and any terminal block reason.
+
+After verified cleanup, `.control/` retains audit copies of generated assignments, per-invocation logs, and natural exit markers. It deliberately omits live runner executables, sandbox profiles, process-group records, PM requests, and agent workspaces.
+
+The durable run directory is therefore the record of both outcomes: on success, it contains `article.md` and its evidence and decision trail; on failure, it preserves the partial history and the reason the controller stopped. Inspecting the workflow does not depend on tmux scrollback or chat transcripts.
+
+</write-uuter-context>
+
+## Provided context: pm-decisions/article-001.md
+
+<write-uuter-context name="pm-decisions/article-001.md">
+```json
+{
+  "reviewed_revision": "sha256:ea1d076018910c4f9e768f5878beb399a5c2b3fa7b5f17af2068d9680113bb17",
+  "lenses": {
+    "evidence": {
+      "request_id": "03c382f15d37f9a1fd0b3888af99c3f6",
+      "review_digest": "sha256:9384c723411ee19caa87f51f0c6a3990106052fb7e9344a5141cee0ba025b550",
+      "decisions": []
+    },
+    "story": {
+      "request_id": "691d7076a295e0d25cff6c68ee3d6a3d",
+      "review_digest": "sha256:1e1c0ad779bd28aec99538edaec12b79f86a01f7bfc9980b2aa6471ff6816921",
+      "decisions": []
+    },
+    "clarity": {
+      "request_id": "f05fdc7435df1105121e0e5c6d9fbffb",
+      "review_digest": "sha256:07a8e686528034bab84636c25d98507441930b208ef6a13d4036b7b103c6e647",
+      "decisions": [
+        {
+          "finding_id": "clarity-001",
+          "decision": "valid_must_fix",
+          "reason": "The unexplained internal label makes the stated operating limits ambiguous and conflicts with the brief's plain-language requirement."
+        },
+        {
+          "finding_id": "clarity-002",
+          "decision": "valid_must_fix",
+          "reason": "The undefined identifiers obscure the central decision-binding and publication-validation mechanism, so a plain-language explanation is required."
+        }
+      ]
+    }
+  }
+}
+```
+
+</write-uuter-context>
+
+## Provided context: reviews/article-001/evidence/result.json
+
+<write-uuter-context name="reviews/article-001/evidence/result.json">
+{
+  "status": "clean",
+  "lens": "evidence",
+  "reviewed_revision": "sha256:ea1d076018910c4f9e768f5878beb399a5c2b3fa7b5f17af2068d9680113bb17",
+  "findings": []
+}
+
+</write-uuter-context>
+
+## Provided context: reviews/article-001/evidence/report.md
+
+<write-uuter-context name="reviews/article-001/evidence/report.md">
+# Evidence Review
+
+status: clean
+
+lens: evidence
+
+reviewed_revision: sha256:ea1d076018910c4f9e768f5878beb399a5c2b3fa7b5f17af2068d9680113bb17
+
+No findings.
+
+</write-uuter-context>
+
+## Provided context: reviews/article-001/story/result.json
+
+<write-uuter-context name="reviews/article-001/story/result.json">
+{
+  "status": "clean",
+  "lens": "story",
+  "reviewed_revision": "sha256:ea1d076018910c4f9e768f5878beb399a5c2b3fa7b5f17af2068d9680113bb17",
+  "findings": []
+}
+
+</write-uuter-context>
+
+## Provided context: reviews/article-001/story/report.md
+
+<write-uuter-context name="reviews/article-001/story/report.md">
+# Story review
+
+status: clean
+
+lens: story
+
+reviewed_revision: sha256:ea1d076018910c4f9e768f5878beb399a5c2b3fa7b5f17af2068d9680113bb17
+
+findings: []
+
+</write-uuter-context>
+
+## Provided context: reviews/article-001/clarity/result.json
+
+<write-uuter-context name="reviews/article-001/clarity/result.json">
+{
+  "status": "fix_required",
+  "lens": "clarity",
+  "reviewed_revision": "sha256:ea1d076018910c4f9e768f5878beb399a5c2b3fa7b5f17af2068d9680113bb17",
+  "findings": [
+    {
+      "id": "clarity-001",
+      "severity": "minor",
+      "location": "From brief to candidate, first paragraph",
+      "problem": "The phrase “issue-1 workflow” is an unexplained internal label, so readers cannot tell whether the one-run and no-resume limits apply to the tool as described, only to a development milestone, or to a particular configuration.",
+      "suggested_direction": "Replace the internal label with a plain description of the implementation scope, or briefly define what “issue-1” means and which stated limits belong to it."
+    },
+    {
+      "id": "clarity-002",
+      "severity": "minor",
+      "location": "Four reviews, in order, second paragraph; Files are the gates, second paragraph",
+      "problem": "Terms such as “active request,” “review digest,” “PM request bindings,” and “accepted classification lists” appear without definitions or a concrete relationship among them, making the final validation gate difficult to follow even though it is central to the workflow.",
+      "suggested_direction": "Explain in one plain-language sentence that these identifiers bind each PM decision to the specific review and candidate it evaluated, then use that explanation consistently when describing pre-publication validation."
+    }
+  ]
+}
+
+</write-uuter-context>
+
+## Provided context: reviews/article-001/clarity/report.md
+
+<write-uuter-context name="reviews/article-001/clarity/report.md">
+# Clarity review
+
+id: clarity-001
+
+severity: minor
+
+location: From brief to candidate, first paragraph
+
+problem: The phrase “issue-1 workflow” is an unexplained internal label, so readers cannot tell whether the one-run and no-resume limits apply to the tool as described, only to a development milestone, or to a particular configuration.
+
+suggested_direction: Replace the internal label with a plain description of the implementation scope, or briefly define what “issue-1” means and which stated limits belong to it.
+
+id: clarity-002
+
+severity: minor
+
+location: Four reviews, in order, second paragraph; Files are the gates, second paragraph
+
+problem: Terms such as “active request,” “review digest,” “PM request bindings,” and “accepted classification lists” appear without definitions or a concrete relationship among them, making the final validation gate difficult to follow even though it is central to the workflow.
+
+suggested_direction: Explain in one plain-language sentence that these identifiers bind each PM decision to the specific review and candidate it evaluated, then use that explanation consistently when describing pre-publication validation.
+
+</write-uuter-context>
+codex
+I’ll revise candidate 001 only where the PM-validated clarity findings require it, then verify candidate 002 is complete and under the word limit.
+exec
+/bin/zsh -lc 'ls drafts && wc -w drafts/article-001.md' in /Users/yutaaoki/write-uuter/.worktrees/1/smoke-runs/.write-uuter-private-386119021/workspaces/008-writer-4266138033
+ exited 1 in 0ms:
+ls: drafts: No such file or directory
+
+codex
+The isolated workspace does not yet contain `drafts/`; the prior candidate is supplied in the assignment context rather than on disk. I’ll create only the assigned `drafts/article-002.md` from that reviewed text.
+apply patch
+patch: completed
+/Users/yutaaoki/write-uuter/.worktrees/1/smoke-runs/.write-uuter-private-386119021/workspaces/008-writer-4266138033/drafts/article-002.md
+diff --git a/drafts/article-002.md b/drafts/article-002.md
+new file mode 100644
+index 0000000000000000000000000000000000000000..be1921b85ff7bbe0b0c5ee1baa0bb71a4986b2ad
+--- /dev/null
++++ b/drafts/article-002.md
+@@ -0,0 +1,43 @@
++# From Brief to Inspectable Reviewed Article
++
++write-uuter is a Go command-line tool that turns a Markdown brief into a reviewed article while preserving the evidence, outline, candidates, reviews, and product-manager decisions behind it. Its central design choice is a division of responsibility: isolated Codex roles do the editorial work, while Go controls transitions, validation, revision hashes, routing, timeouts, cleanup, and final publication. Architecturally, that makes advancement more deterministic than leaving agents to decide when their own work is complete.
++
++## From brief to candidate
++
++A run starts only after the controller validates the brief's required sections and confirms that the target is new. It then initializes the run atomically. The workflow described in this repository handles one run at a time; it does not resume an interrupted run or edit a completed one.
++
++The editorial sequence begins with three explicit handoffs. The Researcher produces `evidence/sources.md` and `claim-ledger.md`, along with any optional firsthand evidence or assets. The Story Editor turns that material into `outline.md`. The Writer then expands the outline into one assigned candidate, beginning with `drafts/article-001.md`.
++
++Each role works in a private workspace created by the controller. Go stages only the context allowed for that assignment, validates the role's output after a successful exit, and copies validated regular files into the durable run. On macOS, sandboxing also prevents a role from reading the durable run, other roles' workspaces, controller-private state, or unrelated host files. The resulting article therefore moves between roles through concrete files, not a shared conversation.
++
++## Four reviews, in order
++
++Every candidate enters four fresh review lenses in a fixed sequence: Evidence, Story, Clarity, then Copy. They are deliberately sequential rather than parallel. Each reviewer receives the context for its own lens, writes a lens-specific `result.json` and `report.md`, and cannot edit the candidate.
++
++After every reached lens, a persistent PM classifies each finding as `valid_must_fix`, `valid_optional`, `invalid` with a reason, or `needs_human_judgment`. The PM records decisions but does not write candidates or reviews. Identifiers in each decision record tie it to the specific controller request, review contents, and candidate revision that the PM evaluated. As review progresses, the accumulated record must retain earlier lenses without changing their classifications or routing outcomes.
++
++This is not a parallel vote or an informal approval exchange. Each reviewer examines a specific revision, and the controller advances only after the PM has classified every finding from the reached lens.
++
++## Revision has a hard budget
++
++Only a PM-validated must-fix finding triggers revision. It stops the remaining review lenses for that candidate. If the current candidate is earlier than 003, the Writer produces the next numbered candidate and review starts again at Evidence. Restarting there ensures, by construction, that changed text does not bypass evidence review on the strength of later reviews of an older revision.
++
++Optional and invalid findings do not consume another candidate. A `needs_human_judgment` decision blocks the run. Candidate 003 is the hard limit: if it still receives a validated must-fix, the run blocks instead of opening an indefinite revision loop. The cap bounds the number of candidates, although total duration also depends on timeouts and cleanup.
++
++Other failures can also block a run, including a timeout, malformed or stale artifacts, premature process exit, or cleanup failure. The controller records an actionable reason in `workflow.json`.
++
++## Files are the gates
++
++A worker's reassuring message—or even a successful process exit—is not enough to move the workflow forward. The files owned by that role must exist and pass their specific validation rules. Review metadata must name the correct lens and include the SHA-256 hash of the exact candidate revision. Stale or mismatched artifacts are rejected. PM records must identify the specific controller request, review contents, and candidate revision they cover while preserving all earlier reached decisions.
++
++Before publication, the controller checks those links again: it verifies the candidate hash, final reviews, the identifiers connecting each PM decision to its request and review, and the recorded classifications. Only then does it write `article.md`, which is byte-for-byte identical to the candidate accepted through all four lenses.
++
++These gates make the workflow inspectable in an architectural sense: important handoffs and decisions survive as validated files rather than existing only in transient agent conversation. They also provide checks against treating stale reviews, incomplete decisions, or silently changed candidates as approval. The repository documentation specifies those checks; it does not establish defect rates or comparative improvements in editorial quality.
++
++## The terminal record
++
++Success leaves the accepted article and the trail that produced it. Revision or failure does not erase earlier candidates, partial lens sequences, reviews, or PM decisions. `workflow.json` records the status, phase, current candidate and revision, active role, artifact paths, review count, timestamps, and any terminal block reason.
++
++After verified cleanup, `.control/` retains audit copies of generated assignments, per-invocation logs, and natural exit markers. It deliberately omits live runner executables, sandbox profiles, process-group records, PM requests, and agent workspaces.
++
++The durable run directory is therefore the record of both outcomes: on success, it contains `article.md` and its evidence and decision trail; on failure, it preserves the partial history and the reason the controller stopped. Inspecting the workflow does not depend on tmux scrollback or chat transcripts.
+
+diff --git a/drafts/article-002.md b/drafts/article-002.md
+new file mode 100644
+index 0000000000000000000000000000000000000000..be1921b85ff7bbe0b0c5ee1baa0bb71a4986b2ad
+--- /dev/null
++++ b/drafts/article-002.md
+@@ -0,0 +1,43 @@
++# From Brief to Inspectable Reviewed Article
++
++write-uuter is a Go command-line tool that turns a Markdown brief into a reviewed article while preserving the evidence, outline, candidates, reviews, and product-manager decisions behind it. Its central design choice is a division of responsibility: isolated Codex roles do the editorial work, while Go controls transitions, validation, revision hashes, routing, timeouts, cleanup, and final publication. Architecturally, that makes advancement more deterministic than leaving agents to decide when their own work is complete.
++
++## From brief to candidate
++
++A run starts only after the controller validates the brief's required sections and confirms that the target is new. It then initializes the run atomically. The workflow described in this repository handles one run at a time; it does not resume an interrupted run or edit a completed one.
++
++The editorial sequence begins with three explicit handoffs. The Researcher produces `evidence/sources.md` and `claim-ledger.md`, along with any optional firsthand evidence or assets. The Story Editor turns that material into `outline.md`. The Writer then expands the outline into one assigned candidate, beginning with `drafts/article-001.md`.
++
++Each role works in a private workspace created by the controller. Go stages only the context allowed for that assignment, validates the role's output after a successful exit, and copies validated regular files into the durable run. On macOS, sandboxing also prevents a role from reading the durable run, other roles' workspaces, controller-private state, or unrelated host files. The resulting article therefore moves between roles through concrete files, not a shared conversation.
++
++## Four reviews, in order
++
++Every candidate enters four fresh review lenses in a fixed sequence: Evidence, Story, Clarity, then Copy. They are deliberately sequential rather than parallel. Each reviewer receives the context for its own lens, writes a lens-specific `result.json` and `report.md`, and cannot edit the candidate.
++
++After every reached lens, a persistent PM classifies each finding as `valid_must_fix`, `valid_optional`, `invalid` with a reason, or `needs_human_judgment`. The PM records decisions but does not write candidates or reviews. Identifiers in each decision record tie it to the specific controller request, review contents, and candidate revision that the PM evaluated. As review progresses, the accumulated record must retain earlier lenses without changing their classifications or routing outcomes.
++
++This is not a parallel vote or an informal approval exchange. Each reviewer examines a specific revision, and the controller advances only after the PM has classified every finding from the reached lens.
++
++## Revision has a hard budget
++
++Only a PM-validated must-fix finding triggers revision. It stops the remaining review lenses for that candidate. If the current candidate is earlier than 003, the Writer produces the next numbered candidate and review starts again at Evidence. Restarting there ensures, by construction, that changed text does not bypass evidence review on the strength of later reviews of an older revision.
++
++Optional and invalid findings do not consume another candidate. A `needs_human_judgment` decision blocks the run. Candidate 003 is the hard limit: if it still receives a validated must-fix, the run blocks instead of opening an indefinite revision loop. The cap bounds the number of candidates, although total duration also depends on timeouts and cleanup.
++
++Other failures can also block a run, including a timeout, malformed or stale artifacts, premature process exit, or cleanup failure. The controller records an actionable reason in `workflow.json`.
++
++## Files are the gates
++
++A worker's reassuring message—or even a successful process exit—is not enough to move the workflow forward. The files owned by that role must exist and pass their specific validation rules. Review metadata must name the correct lens and include the SHA-256 hash of the exact candidate revision. Stale or mismatched artifacts are rejected. PM records must identify the specific controller request, review contents, and candidate revision they cover while preserving all earlier reached decisions.
++
++Before publication, the controller checks those links again: it verifies the candidate hash, final reviews, the identifiers connecting each PM decision to its request and review, and the recorded classifications. Only then does it write `article.md`, which is byte-for-byte identical to the candidate accepted through all four lenses.
++
++These gates make the workflow inspectable in an architectural sense: important handoffs and decisions survive as validated files rather than existing only in transient agent conversation. They also provide checks against treating stale reviews, incomplete decisions, or silently changed candidates as approval. The repository documentation specifies those checks; it does not establish defect rates or comparative improvements in editorial quality.
++
++## The terminal record
++
++Success leaves the accepted article and the trail that produced it. Revision or failure does not erase earlier candidates, partial lens sequences, reviews, or PM decisions. `workflow.json` records the status, phase, current candidate and revision, active role, artifact paths, review count, timestamps, and any terminal block reason.
++
++After verified cleanup, `.control/` retains audit copies of generated assignments, per-invocation logs, and natural exit markers. It deliberately omits live runner executables, sandbox profiles, process-group records, PM requests, and agent workspaces.
++
++The durable run directory is therefore the record of both outcomes: on success, it contains `article.md` and its evidence and decision trail; on failure, it preserves the partial history and the reason the controller stopped. Inspecting the workflow does not depend on tmux scrollback or chat transcripts.
+
+exec
+/bin/zsh -lc 'wc -w drafts/article-002.md && rg -n "issue-1|active request|review digest|PM request bindings|accepted classification lists|TODO|TBD" drafts/article-002.md || true && git status --short' in /Users/yutaaoki/write-uuter/.worktrees/1/smoke-runs/.write-uuter-private-386119021/workspaces/008-writer-4266138033
+ exited 128 in 0ms:
+     862 drafts/article-002.md
+fatal: unable to access '/Users/yutaaoki/.config/git/config': Operation not permitted
+
+diff --git a/drafts/article-002.md b/drafts/article-002.md
+new file mode 100644
+index 0000000000000000000000000000000000000000..be1921b85ff7bbe0b0c5ee1baa0bb71a4986b2ad
+--- /dev/null
++++ b/drafts/article-002.md
+@@ -0,0 +1,43 @@
++# From Brief to Inspectable Reviewed Article
++
++write-uuter is a Go command-line tool that turns a Markdown brief into a reviewed article while preserving the evidence, outline, candidates, reviews, and product-manager decisions behind it. Its central design choice is a division of responsibility: isolated Codex roles do the editorial work, while Go controls transitions, validation, revision hashes, routing, timeouts, cleanup, and final publication. Architecturally, that makes advancement more deterministic than leaving agents to decide when their own work is complete.
++
++## From brief to candidate
++
++A run starts only after the controller validates the brief's required sections and confirms that the target is new. It then initializes the run atomically. The workflow described in this repository handles one run at a time; it does not resume an interrupted run or edit a completed one.
++
++The editorial sequence begins with three explicit handoffs. The Researcher produces `evidence/sources.md` and `claim-ledger.md`, along with any optional firsthand evidence or assets. The Story Editor turns that material into `outline.md`. The Writer then expands the outline into one assigned candidate, beginning with `drafts/article-001.md`.
++
++Each role works in a private workspace created by the controller. Go stages only the context allowed for that assignment, validates the role's output after a successful exit, and copies validated regular files into the durable run. On macOS, sandboxing also prevents a role from reading the durable run, other roles' workspaces, controller-private state, or unrelated host files. The resulting article therefore moves between roles through concrete files, not a shared conversation.
++
++## Four reviews, in order
++
++Every candidate enters four fresh review lenses in a fixed sequence: Evidence, Story, Clarity, then Copy. They are deliberately sequential rather than parallel. Each reviewer receives the context for its own lens, writes a lens-specific `result.json` and `report.md`, and cannot edit the candidate.
++
++After every reached lens, a persistent PM classifies each finding as `valid_must_fix`, `valid_optional`, `invalid` with a reason, or `needs_human_judgment`. The PM records decisions but does not write candidates or reviews. Identifiers in each decision record tie it to the specific controller request, review contents, and candidate revision that the PM evaluated. As review progresses, the accumulated record must retain earlier lenses without changing their classifications or routing outcomes.
++
++This is not a parallel vote or an informal approval exchange. Each reviewer examines a specific revision, and the controller advances only after the PM has classified every finding from the reached lens.
++
++## Revision has a hard budget
++
++Only a PM-validated must-fix finding triggers revision. It stops the remaining review lenses for that candidate. If the current candidate is earlier than 003, the Writer produces the next numbered candidate and review starts again at Evidence. Restarting there ensures, by construction, that changed text does not bypass evidence review on the strength of later reviews of an older revision.
++
++Optional and invalid findings do not consume another candidate. A `needs_human_judgment` decision blocks the run. Candidate 003 is the hard limit: if it still receives a validated must-fix, the run blocks instead of opening an indefinite revision loop. The cap bounds the number of candidates, although total duration also depends on timeouts and cleanup.
++
++Other failures can also block a run, including a timeout, malformed or stale artifacts, premature process exit, or cleanup failure. The controller records an actionable reason in `workflow.json`.
++
++## Files are the gates
++
++A worker's reassuring message—or even a successful process exit—is not enough to move the workflow forward. The files owned by that role must exist and pass their specific validation rules. Review metadata must name the correct lens and include the SHA-256 hash of the exact candidate revision. Stale or mismatched artifacts are rejected. PM records must identify the specific controller request, review contents, and candidate revision they cover while preserving all earlier reached decisions.
++
++Before publication, the controller checks those links again: it verifies the candidate hash, final reviews, the identifiers connecting each PM decision to its request and review, and the recorded classifications. Only then does it write `article.md`, which is byte-for-byte identical to the candidate accepted through all four lenses.
++
++These gates make the workflow inspectable in an architectural sense: important handoffs and decisions survive as validated files rather than existing only in transient agent conversation. They also provide checks against treating stale reviews, incomplete decisions, or silently changed candidates as approval. The repository documentation specifies those checks; it does not establish defect rates or comparative improvements in editorial quality.
++
++## The terminal record
++
++Success leaves the accepted article and the trail that produced it. Revision or failure does not erase earlier candidates, partial lens sequences, reviews, or PM decisions. `workflow.json` records the status, phase, current candidate and revision, active role, artifact paths, review count, timestamps, and any terminal block reason.
++
++After verified cleanup, `.control/` retains audit copies of generated assignments, per-invocation logs, and natural exit markers. It deliberately omits live runner executables, sandbox profiles, process-group records, PM requests, and agent workspaces.
++
++The durable run directory is therefore the record of both outcomes: on success, it contains `article.md` and its evidence and decision trail; on failure, it preserves the partial history and the reason the controller stopped. Inspecting the workflow does not depend on tmux scrollback or chat transcripts.
+
+exec
+/bin/zsh -lc 'find drafts -maxdepth 1 -type f -print && test -s drafts/article-002.md' in /Users/yutaaoki/write-uuter/.worktrees/1/smoke-runs/.write-uuter-private-386119021/workspaces/008-writer-4266138033
+ succeeded in 0ms:
+drafts/article-002.md
+
+diff --git a/drafts/article-002.md b/drafts/article-002.md
+new file mode 100644
+index 0000000000000000000000000000000000000000..be1921b85ff7bbe0b0c5ee1baa0bb71a4986b2ad
+--- /dev/null
++++ b/drafts/article-002.md
+@@ -0,0 +1,43 @@
++# From Brief to Inspectable Reviewed Article
++
++write-uuter is a Go command-line tool that turns a Markdown brief into a reviewed article while preserving the evidence, outline, candidates, reviews, and product-manager decisions behind it. Its central design choice is a division of responsibility: isolated Codex roles do the editorial work, while Go controls transitions, validation, revision hashes, routing, timeouts, cleanup, and final publication. Architecturally, that makes advancement more deterministic than leaving agents to decide when their own work is complete.
++
++## From brief to candidate
++
++A run starts only after the controller validates the brief's required sections and confirms that the target is new. It then initializes the run atomically. The workflow described in this repository handles one run at a time; it does not resume an interrupted run or edit a completed one.
++
++The editorial sequence begins with three explicit handoffs. The Researcher produces `evidence/sources.md` and `claim-ledger.md`, along with any optional firsthand evidence or assets. The Story Editor turns that material into `outline.md`. The Writer then expands the outline into one assigned candidate, beginning with `drafts/article-001.md`.
++
++Each role works in a private workspace created by the controller. Go stages only the context allowed for that assignment, validates the role's output after a successful exit, and copies validated regular files into the durable run. On macOS, sandboxing also prevents a role from reading the durable run, other roles' workspaces, controller-private state, or unrelated host files. The resulting article therefore moves between roles through concrete files, not a shared conversation.
++
++## Four reviews, in order
++
++Every candidate enters four fresh review lenses in a fixed sequence: Evidence, Story, Clarity, then Copy. They are deliberately sequential rather than parallel. Each reviewer receives the context for its own lens, writes a lens-specific `result.json` and `report.md`, and cannot edit the candidate.
++
++After every reached lens, a persistent PM classifies each finding as `valid_must_fix`, `valid_optional`, `invalid` with a reason, or `needs_human_judgment`. The PM records decisions but does not write candidates or reviews. Identifiers in each decision record tie it to the specific controller request, review contents, and candidate revision that the PM evaluated. As review progresses, the accumulated record must retain earlier lenses without changing their classifications or routing outcomes.
++
++This is not a parallel vote or an informal approval exchange. Each reviewer examines a specific revision, and the controller advances only after the PM has classified every finding from the reached lens.
++
++## Revision has a hard budget
++
++Only a PM-validated must-fix finding triggers revision. It stops the remaining review lenses for that candidate. If the current candidate is earlier than 003, the Writer produces the next numbered candidate and review starts again at Evidence. Restarting there ensures, by construction, that changed text does not bypass evidence review on the strength of later reviews of an older revision.
++
++Optional and invalid findings do not consume another candidate. A `needs_human_judgment` decision blocks the run. Candidate 003 is the hard limit: if it still receives a validated must-fix, the run blocks instead of opening an indefinite revision loop. The cap bounds the number of candidates, although total duration also depends on timeouts and cleanup.
++
++Other failures can also block a run, including a timeout, malformed or stale artifacts, premature process exit, or cleanup failure. The controller records an actionable reason in `workflow.json`.
++
++## Files are the gates
++
++A worker's reassuring message—or even a successful process exit—is not enough to move the workflow forward. The files owned by that role must exist and pass their specific validation rules. Review metadata must name the correct lens and include the SHA-256 hash of the exact candidate revision. Stale or mismatched artifacts are rejected. PM records must identify the specific controller request, review contents, and candidate revision they cover while preserving all earlier reached decisions.
++
++Before publication, the controller checks those links again: it verifies the candidate hash, final reviews, the identifiers connecting each PM decision to its request and review, and the recorded classifications. Only then does it write `article.md`, which is byte-for-byte identical to the candidate accepted through all four lenses.
++
++These gates make the workflow inspectable in an architectural sense: important handoffs and decisions survive as validated files rather than existing only in transient agent conversation. They also provide checks against treating stale reviews, incomplete decisions, or silently changed candidates as approval. The repository documentation specifies those checks; it does not establish defect rates or comparative improvements in editorial quality.
++
++## The terminal record
++
++Success leaves the accepted article and the trail that produced it. Revision or failure does not erase earlier candidates, partial lens sequences, reviews, or PM decisions. `workflow.json` records the status, phase, current candidate and revision, active role, artifact paths, review count, timestamps, and any terminal block reason.
++
++After verified cleanup, `.control/` retains audit copies of generated assignments, per-invocation logs, and natural exit markers. It deliberately omits live runner executables, sandbox profiles, process-group records, PM requests, and agent workspaces.
++
++The durable run directory is therefore the record of both outcomes: on success, it contains `article.md` and its evidence and decision trail; on failure, it preserves the partial history and the reason the controller stopped. Inspecting the workflow does not depend on tmux scrollback or chat transcripts.
+
+codex
+Completed [drafts/article-002.md](/Users/yutaaoki/write-uuter/.worktrees/1/smoke-runs/.write-uuter-private-386119021/workspaces/008-writer-4266138033/drafts/article-002.md).
+
+Both PM-validated clarity fixes are applied. Final length: 862 words.
+diff --git a/drafts/article-002.md b/drafts/article-002.md
+new file mode 100644
+index 0000000000000000000000000000000000000000..be1921b85ff7bbe0b0c5ee1baa0bb71a4986b2ad
+--- /dev/null
++++ b/drafts/article-002.md
+@@ -0,0 +1,43 @@
++# From Brief to Inspectable Reviewed Article
++
++write-uuter is a Go command-line tool that turns a Markdown brief into a reviewed article while preserving the evidence, outline, candidates, reviews, and product-manager decisions behind it. Its central design choice is a division of responsibility: isolated Codex roles do the editorial work, while Go controls transitions, validation, revision hashes, routing, timeouts, cleanup, and final publication. Architecturally, that makes advancement more deterministic than leaving agents to decide when their own work is complete.
++
++## From brief to candidate
++
++A run starts only after the controller validates the brief's required sections and confirms that the target is new. It then initializes the run atomically. The workflow described in this repository handles one run at a time; it does not resume an interrupted run or edit a completed one.
++
++The editorial sequence begins with three explicit handoffs. The Researcher produces `evidence/sources.md` and `claim-ledger.md`, along with any optional firsthand evidence or assets. The Story Editor turns that material into `outline.md`. The Writer then expands the outline into one assigned candidate, beginning with `drafts/article-001.md`.
++
++Each role works in a private workspace created by the controller. Go stages only the context allowed for that assignment, validates the role's output after a successful exit, and copies validated regular files into the durable run. On macOS, sandboxing also prevents a role from reading the durable run, other roles' workspaces, controller-private state, or unrelated host files. The resulting article therefore moves between roles through concrete files, not a shared conversation.
++
++## Four reviews, in order
++
++Every candidate enters four fresh review lenses in a fixed sequence: Evidence, Story, Clarity, then Copy. They are deliberately sequential rather than parallel. Each reviewer receives the context for its own lens, writes a lens-specific `result.json` and `report.md`, and cannot edit the candidate.
++
++After every reached lens, a persistent PM classifies each finding as `valid_must_fix`, `valid_optional`, `invalid` with a reason, or `needs_human_judgment`. The PM records decisions but does not write candidates or reviews. Identifiers in each decision record tie it to the specific controller request, review contents, and candidate revision that the PM evaluated. As review progresses, the accumulated record must retain earlier lenses without changing their classifications or routing outcomes.
++
++This is not a parallel vote or an informal approval exchange. Each reviewer examines a specific revision, and the controller advances only after the PM has classified every finding from the reached lens.
++
++## Revision has a hard budget
++
++Only a PM-validated must-fix finding triggers revision. It stops the remaining review lenses for that candidate. If the current candidate is earlier than 003, the Writer produces the next numbered candidate and review starts again at Evidence. Restarting there ensures, by construction, that changed text does not bypass evidence review on the strength of later reviews of an older revision.
++
++Optional and invalid findings do not consume another candidate. A `needs_human_judgment` decision blocks the run. Candidate 003 is the hard limit: if it still receives a validated must-fix, the run blocks instead of opening an indefinite revision loop. The cap bounds the number of candidates, although total duration also depends on timeouts and cleanup.
++
++Other failures can also block a run, including a timeout, malformed or stale artifacts, premature process exit, or cleanup failure. The controller records an actionable reason in `workflow.json`.
++
++## Files are the gates
++
++A worker's reassuring message—or even a successful process exit—is not enough to move the workflow forward. The files owned by that role must exist and pass their specific validation rules. Review metadata must name the correct lens and include the SHA-256 hash of the exact candidate revision. Stale or mismatched artifacts are rejected. PM records must identify the specific controller request, review contents, and candidate revision they cover while preserving all earlier reached decisions.
++
++Before publication, the controller checks those links again: it verifies the candidate hash, final reviews, the identifiers connecting each PM decision to its request and review, and the recorded classifications. Only then does it write `article.md`, which is byte-for-byte identical to the candidate accepted through all four lenses.
++
++These gates make the workflow inspectable in an architectural sense: important handoffs and decisions survive as validated files rather than existing only in transient agent conversation. They also provide checks against treating stale reviews, incomplete decisions, or silently changed candidates as approval. The repository documentation specifies those checks; it does not establish defect rates or comparative improvements in editorial quality.
++
++## The terminal record
++
++Success leaves the accepted article and the trail that produced it. Revision or failure does not erase earlier candidates, partial lens sequences, reviews, or PM decisions. `workflow.json` records the status, phase, current candidate and revision, active role, artifact paths, review count, timestamps, and any terminal block reason.
++
++After verified cleanup, `.control/` retains audit copies of generated assignments, per-invocation logs, and natural exit markers. It deliberately omits live runner executables, sandbox profiles, process-group records, PM requests, and agent workspaces.
++
++The durable run directory is therefore the record of both outcomes: on success, it contains `article.md` and its evidence and decision trail; on failure, it preserves the partial history and the reason the controller stopped. Inspecting the workflow does not depend on tmux scrollback or chat transcripts.
+
+tokens used
+17,734
+Completed [drafts/article-002.md](/Users/yutaaoki/write-uuter/.worktrees/1/smoke-runs/.write-uuter-private-386119021/workspaces/008-writer-4266138033/drafts/article-002.md).
+
+Both PM-validated clarity fixes are applied. Final length: 862 words.

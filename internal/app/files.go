@@ -161,6 +161,20 @@ func (store *artifactStore) remove(name string) error {
 	return err
 }
 
+func (store *artifactStore) removeAll(name string) error {
+	name, err := cleanLocalPath(name)
+	if err != nil {
+		return err
+	}
+	if err := store.validateParents(name); err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return nil
+		}
+		return err
+	}
+	return store.root.RemoveAll(name)
+}
+
 func (store *artifactStore) copyRegularFrom(source *artifactStore, sourceName, targetName string, mode os.FileMode) ([]byte, error) {
 	data, err := source.readRegular(sourceName)
 	if err != nil {
@@ -173,10 +187,24 @@ func (store *artifactStore) copyRegularFrom(source *artifactStore, sourceName, t
 }
 
 func (store *artifactStore) copyTreeFrom(source *artifactStore, sourceName, targetName string) error {
-	entries, err := fs.ReadDir(source.root.FS(), sourceName)
+	sourceName, err := cleanLocalPath(sourceName)
+	if err != nil {
+		return err
+	}
+	if err := source.validateParents(sourceName); err != nil {
+		return err
+	}
+	rootInfo, err := source.root.Lstat(sourceName)
 	if errors.Is(err, os.ErrNotExist) {
 		return nil
 	}
+	if err != nil {
+		return err
+	}
+	if rootInfo.Mode()&os.ModeSymlink != 0 || !rootInfo.IsDir() {
+		return fmt.Errorf("refuse non-directory or symlink tree root: %s", sourceName)
+	}
+	entries, err := fs.ReadDir(source.root.FS(), sourceName)
 	if err != nil {
 		return err
 	}

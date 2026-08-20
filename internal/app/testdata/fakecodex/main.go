@@ -6,6 +6,7 @@ import (
 	"io"
 	"io/fs"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -56,15 +57,16 @@ type decisionDocument struct {
 }
 
 type invocationLog struct {
-	PID            int      `json:"pid"`
-	Role           string   `json:"role"`
-	Lens           string   `json:"lens"`
-	Candidate      int      `json:"candidate"`
-	Revision       string   `json:"revision"`
-	Invocation     string   `json:"invocation"`
-	Prompt         string   `json:"prompt"`
-	Workspace      string   `json:"workspace"`
-	WorkspaceFiles []string `json:"workspace_files"`
+	PID            int               `json:"pid"`
+	Role           string            `json:"role"`
+	Lens           string            `json:"lens"`
+	Candidate      int               `json:"candidate"`
+	Revision       string            `json:"revision"`
+	Invocation     string            `json:"invocation"`
+	Prompt         string            `json:"prompt"`
+	Workspace      string            `json:"workspace"`
+	WorkspaceFiles []string          `json:"workspace_files"`
+	Isolation      map[string]string `json:"isolation"`
 }
 
 func main() {
@@ -79,14 +81,18 @@ func main() {
 	fixtureDir := filepath.Dir(executable)
 	scenarioBytes, _ := os.ReadFile(filepath.Join(fixtureDir, "scenario"))
 	scenario := strings.TrimSpace(string(scenarioBytes))
-	logDir := filepath.Join(fixtureDir, "logs")
+	logDir := os.Getenv("WRITE_UUTER_FAKE_LOG_DIR")
+	if logDir == "" {
+		logDir = filepath.Join(fixtureDir, "logs")
+	}
 	_ = os.MkdirAll(logDir, 0o755)
 	logPath := filepath.Join(logDir, fmt.Sprintf("%s-%d.json", invocation, os.Getpid()))
+	isolation := map[string]string{}
 	writeLog := func() {
 		writeJSON(logPath, invocationLog{
 			PID: os.Getpid(), Role: role, Lens: lens, Candidate: candidate,
 			Revision: revision, Invocation: invocation, Prompt: string(prompt),
-			Workspace: workDir, WorkspaceFiles: workspaceFiles(workDir),
+			Workspace: workDir, WorkspaceFiles: workspaceFiles(workDir), Isolation: isolation,
 		})
 	}
 	writeLog()
@@ -96,13 +102,40 @@ func main() {
 	case "pm":
 		runPM(workDir, scenario)
 	case "researcher":
-		if scenario == "timeout" {
+		if scenario == "detached_child_success" || scenario == "detached_child_block" || scenario == "timeout_detached" {
+			startDetachedChild()
+		}
+		if scenario == "timeout" || scenario == "timeout_detached" {
 			time.Sleep(time.Minute)
 		}
 		mustWrite(filepath.Join(workDir, "evidence", "sources.md"), "# Sources\n\nEVIDENCE_ONLY_MARKER\n\n- Local repository documentation, accessed 2026-08-20.\n")
 		mustWrite(filepath.Join(workDir, "claim-ledger.md"), "# Claim ledger\n\n- Fact: supported.\n- Firsthand observation: none.\n- Inference: labeled.\n- Opinion: labeled.\n- Unresolved: none.\n")
 		if scenario == "launcher_attack" {
-			mustWrite(filepath.Join(workDir, "launch-agent.sh"), "#!/bin/sh\nexit 99\n")
+			privateRoot := filepath.Dir(filepath.Dir(workDir))
+			attackPath := filepath.Join(privateRoot, "control", "agent-runner")
+			if err := os.WriteFile(attackPath, []byte("replaced\n"), 0o500); err == nil {
+				os.Exit(91)
+			} else {
+				isolation["actual_launcher_write"] = err.Error()
+			}
+		}
+		if scenario == "asset_root_symlink" {
+			mustWrite(filepath.Join(workDir, "empty-assets", ".keep"), "keep\n")
+			_ = os.Remove(filepath.Join(workDir, "empty-assets", ".keep"))
+			if err := os.Symlink("../empty-assets", filepath.Join(workDir, "evidence", "assets")); err != nil {
+				panic(err)
+			}
+		}
+		if scenario == "asset_nested_symlink" {
+			if err := os.MkdirAll(filepath.Join(workDir, "evidence", "assets"), 0o755); err != nil {
+				panic(err)
+			}
+			if err := os.MkdirAll(filepath.Join(workDir, "empty-nested"), 0o755); err != nil {
+				panic(err)
+			}
+			if err := os.Symlink("../../empty-nested", filepath.Join(workDir, "evidence", "assets", "nested")); err != nil {
+				panic(err)
+			}
 		}
 	case "story_editor":
 		mustWrite(filepath.Join(workDir, "outline.md"), "# Outline\n\n## Workflow STORY_ONLY_MARKER\n\n- Purpose: Explain the workflow.\n- Supporting evidence: Repository docs.\n- Reader takeaway: Durable gates make runs inspectable.\n")
@@ -123,6 +156,9 @@ func main() {
 }
 
 func runReviewer(workDir, scenario string, candidate int, lens, revision string) {
+	if scenario == "filesystem_isolation" {
+		probeIsolation(workDir)
+	}
 	if scenario == "slow_evidence" && candidate == 1 && lens == "evidence" {
 		time.Sleep(500 * time.Millisecond)
 	}
@@ -141,12 +177,20 @@ func runReviewer(workDir, scenario string, candidate int, lens, revision string)
 		(scenario == "human" && candidate == 1 && lens == "evidence") ||
 		(scenario == "optional_invalid" && candidate == 1 && lens == "evidence") ||
 		(scenario == "invalid_no_reason" && candidate == 1 && lens == "evidence") ||
-		(scenario == "mixed" && candidate == 1 && lens == "evidence")
+		(scenario == "mixed" && candidate == 1 && lens == "evidence") ||
+		(scenario == "rewrite_history" && candidate == 1 && lens == "evidence") ||
+		(scenario == "detached_child_block" && candidate == 1 && lens == "evidence") ||
+		(scenario == "unbulleted_report" && candidate == 1 && lens == "evidence") ||
+		(scenario == "whitespace_finding" && candidate == 1 && lens == "evidence") ||
+		(scenario == "incomplete_report" && candidate == 1 && lens == "evidence")
 	if needsFinding {
 		result.Status = "fix_required"
 		result.Findings = []finding{standardFinding(lens + "-001")}
-		if scenario == "optional_invalid" || scenario == "mixed" {
+		if scenario == "optional_invalid" || scenario == "mixed" || scenario == "incomplete_report" {
 			result.Findings = append(result.Findings, standardFinding(lens+"-002"))
+		}
+		if scenario == "whitespace_finding" {
+			result.Findings[0].Problem = "   "
 		}
 	}
 	var report strings.Builder
@@ -156,6 +200,18 @@ func runReviewer(workDir, scenario string, candidate int, lens, revision string)
 	}
 	for _, item := range result.Findings {
 		fmt.Fprintf(&report, "- ID: %s\n- Severity: %s\n- Location: %s\n- Problem: %s\n- Suggested direction: %s\n", item.ID, item.Severity, item.Location, item.Problem, item.SuggestedDirection)
+	}
+	if scenario == "incomplete_report" {
+		report.Reset()
+		report.WriteString("# Review report\n\n")
+		fmt.Fprintf(&report, "- ID: %s\n- Severity: %s\n- Location: %s\n- Problem: %s\n- Suggested direction: %s\n", result.Findings[0].ID, result.Findings[0].Severity, result.Findings[0].Location, result.Findings[0].Problem, result.Findings[0].SuggestedDirection)
+		fmt.Fprintf(&report, "- ID: %s\n", result.Findings[1].ID)
+	}
+	if scenario == "unbulleted_report" && candidate == 1 && lens == "evidence" {
+		report.Reset()
+		report.WriteString("# Review report\n\n")
+		item := result.Findings[0]
+		fmt.Fprintf(&report, "id: %s\n\nseverity: %s\n\nlocation: %s\n\nproblem: %s\n\nsuggested_direction: %s\n", item.ID, item.Severity, item.Location, item.Problem, item.SuggestedDirection)
 	}
 	mustWrite(filepath.Join(workDir, "report.md"), report.String())
 	if scenario == "symlink_output" && candidate == 1 && lens == "evidence" {
@@ -207,7 +263,7 @@ func runPM(workDir, scenario string) {
 			case "mustfix_once", "budget":
 				classification = "valid_must_fix"
 				reason = "The supported correction is required."
-			case "human":
+			case "human", "detached_child_block":
 				classification = "needs_human_judgment"
 				reason = "Editorial intent must be chosen by a human."
 			case "optional_invalid":
@@ -232,14 +288,68 @@ func runPM(workDir, scenario string) {
 		if scenario == "prepopulate" && current.Lens == "evidence" {
 			document.Lenses["story"] = decisionRecord{RequestID: "future", ReviewDigest: "sha256:future", Decisions: []decision{}}
 		}
+		if scenario == "rewrite_history" && current.Lens == "story" {
+			record := document.Lenses["evidence"]
+			record.Decisions[0].Decision = "valid_must_fix"
+			record.Decisions[0].Reason = "Rewritten after acceptance."
+			document.Lenses["evidence"] = record
+		}
 		if scenario == "slow_final" && current.Lens == "copy" {
 			time.Sleep(500 * time.Millisecond)
 		}
 		jsonData, _ := json.MarshalIndent(document, "", "  ")
-		mustWrite(filepath.Join(workDir, current.OutputPath), "# PM decisions\n\n```json\n"+string(jsonData)+"\n```\n")
+		payload := "```json\n" + string(jsonData) + "\n```\n"
+		if scenario == "multiple_pm_documents" && current.Lens == "evidence" {
+			payload += "```json\n{}\n```\n"
+		}
+		mustWrite(filepath.Join(workDir, current.OutputPath), payload)
+		if scenario == "final_pm_exit" && current.Lens == "copy" {
+			os.Exit(9)
+		}
 		for fileExists(requestPath) {
 			time.Sleep(10 * time.Millisecond)
 		}
+	}
+}
+
+func probeIsolation(workDir string) {
+	privateRoot := filepath.Dir(filepath.Dir(workDir))
+	runDir := filepath.Join(filepath.Dir(privateRoot), "run")
+	paths := map[string]string{
+		"durable":    filepath.Join(runDir, "brief.md"),
+		"prior_lens": filepath.Join(runDir, "reviews", "article-001", "evidence", "report.md"),
+		"host":       filepath.Join(os.Getenv("HOME"), ".codex", "RTK.md"),
+	}
+	result := map[string]string{}
+	for label, path := range paths {
+		if _, err := os.ReadFile(path); err == nil {
+			result[label] = "READ_SUCCEEDED"
+		} else {
+			result[label] = err.Error()
+		}
+	}
+	for label, path := range map[string]string{
+		"pm_workspace_parent": filepath.Join(privateRoot, "workspaces"),
+		"controller":          filepath.Join(privateRoot, "control"),
+	} {
+		if _, err := os.ReadDir(path); err == nil {
+			result[label] = "READ_SUCCEEDED"
+		} else {
+			result[label] = err.Error()
+		}
+	}
+	data, _ := json.MarshalIndent(result, "", "  ")
+	mustWrite(filepath.Join(os.Getenv("WRITE_UUTER_FAKE_LOG_DIR"), "isolation-"+os.Getenv("WRITE_UUTER_INVOCATION")+".probe"), string(data)+"\n")
+}
+
+func startDetachedChild() {
+	command := exec.Command("/bin/sh", "-c", "exec sleep 60")
+	if err := command.Start(); err != nil {
+		panic(err)
+	}
+	directory := os.Getenv("WRITE_UUTER_TEST_DETACHED_PID_DIR")
+	if directory != "" {
+		mustWrite(filepath.Join(directory, fmt.Sprintf("%d.pid", command.Process.Pid)), fmt.Sprintf("%d\n", command.Process.Pid))
 	}
 }
 

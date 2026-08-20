@@ -10,6 +10,13 @@ import (
 )
 
 func main() {
+	if len(os.Args) >= 2 && os.Args[1] == "__agent" {
+		if err := app.RunAgent(os.Args[2:]); err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			os.Exit(1)
+		}
+		return
+	}
 	if len(os.Args) < 2 || os.Args[1] != "run" {
 		fmt.Fprintln(os.Stderr, "usage: write-uuter run --brief <path> --run-dir <new-directory>")
 		os.Exit(2)

@@ -18,13 +18,22 @@ Write one Markdown file containing exactly one fenced JSON object:
     "evidence": {
       "request_id": "controller-issued-id",
       "review_digest": "sha256:...",
-      "decisions": []
+      "decisions": [
+        {
+          "finding_id": "evidence-001",
+          "decision": "valid_must_fix",
+          "reason": "The supported correction is required."
+        }
+      ]
     }
   }
 }
 ```
 
 Use the active request's exact request ID, review digest, revision, and lens.
+The classification field is named exactly `decision`, never `classification`.
+Each decision object uses `finding_id`, `decision`, and a non-empty `reason`
+when the decision is `invalid`.
 Treat `request_path` as the acknowledgement identity: after publishing the
 decision, wait for that exact request-specific file to disappear before
 polling for another request. Never write a candidate or reviewer artifact.

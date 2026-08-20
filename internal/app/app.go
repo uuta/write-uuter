@@ -7,8 +7,8 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"regexp"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -23,8 +23,9 @@ type Config struct {
 }
 
 type decisionBinding struct {
-	RequestID string
-	Digest    string
+	RequestID      string
+	Digest         string
+	DecisionDigest string
 }
 
 type controller struct {
@@ -39,8 +40,6 @@ type controller struct {
 	reachedLenses    map[int][]string
 	decisionBindings map[int]map[string]decisionBinding
 }
-
-var jsonFencePattern = regexp.MustCompile("(?s)```json\\s*(\\{.*?\\})\\s*```")
 
 func Run(config Config) error {
 	if strings.TrimSpace(config.BriefPath) == "" || strings.TrimSpace(config.RunDir) == "" {
@@ -168,7 +167,7 @@ func waitForCommitBarrier() error {
 }
 
 func (control *controller) execute() error {
-	runtime, err := newTmuxRuntime(control.config.TmuxExecutable, control.config.CodexExecutable, control.config.AgentTimeout)
+	runtime, err := newTmuxRuntime(control.config.TmuxExecutable, control.config.CodexExecutable, control.config.AgentTimeout, control.runDir)
 	if err != nil {
 		return control.block(err.Error())
 	}
@@ -230,14 +229,22 @@ func (control *controller) runResearcher() error {
 	if err != nil {
 		return err
 	}
-	briefPath, err := filepath.Abs(control.config.BriefPath)
+	sourceHints, err := control.localSourceHints()
 	if err != nil {
 		return err
 	}
-	prompt := base + fmt.Sprintf("\n\nResolve relative source hints from `%s`. Write outputs relative to this isolated workspace.", filepath.Dir(briefPath)) + contextBlock("brief.md", []byte(control.brief.Raw))
+	prompt := base + contextBlock("brief.md", []byte(control.brief.Raw))
 	return control.runWorker("researcher", "", 0, "", "research", prompt,
 		func(workspace *artifactStore) error {
-			return workspace.writeAtomic("context/brief.md", []byte(control.brief.Raw), 0o444)
+			if err := workspace.writeAtomic("context/brief.md", []byte(control.brief.Raw), 0o444); err != nil {
+				return err
+			}
+			for relative, data := range sourceHints {
+				if err := workspace.writeAtomic(filepath.Join("context", "source-hints", relative), data, 0o444); err != nil {
+					return err
+				}
+			}
+			return nil
 		},
 		func(workspace *artifactStore) error {
 			if _, err := workspace.readNonEmpty("evidence/sources.md"); err != nil {
@@ -271,6 +278,53 @@ func (control *controller) runResearcher() error {
 			}
 			return control.store.copyTreeFrom(workspace, "evidence/assets", "evidence/assets")
 		})
+}
+
+func (control *controller) localSourceHints() (map[string][]byte, error) {
+	briefPath, err := filepath.Abs(control.config.BriefPath)
+	if err != nil {
+		return nil, err
+	}
+	hints := make(map[string][]byte)
+	index := 0
+	for _, line := range strings.Split(control.brief.Sections["Source hints"], "\n") {
+		value := sourceHintValue(line)
+		value = strings.Trim(value, "`<>")
+		if value == "" || strings.Contains(value, "://") {
+			continue
+		}
+		path := value
+		if !filepath.IsAbs(path) {
+			path = filepath.Join(filepath.Dir(briefPath), path)
+		}
+		info, statErr := os.Lstat(path)
+		if statErr != nil || !info.Mode().IsRegular() {
+			continue
+		}
+		data, readErr := os.ReadFile(path)
+		if readErr != nil {
+			return nil, fmt.Errorf("stage source hint %s: %w", value, readErr)
+		}
+		index++
+		name := fmt.Sprintf("%03d-%s", index, filepath.Base(path))
+		hints[name] = data
+	}
+	return hints, nil
+}
+
+func sourceHintValue(line string) string {
+	value := strings.TrimSpace(line)
+	for _, marker := range []string{"- ", "* ", "+ "} {
+		if strings.HasPrefix(value, marker) {
+			return strings.TrimSpace(strings.TrimPrefix(value, marker))
+		}
+	}
+	if separator := strings.Index(value, ". "); separator > 0 {
+		if _, err := strconv.Atoi(value[:separator]); err == nil {
+			return strings.TrimSpace(value[separator+2:])
+		}
+	}
+	return value
 }
 
 func (control *controller) runStoryEditor() error {
@@ -331,7 +385,14 @@ func (control *controller) runWriter(candidate int) error {
 	prompt := base + fmt.Sprintf("\n\n## Assignment\n\nWrite candidate %03d to `%s` in this isolated workspace.", candidate, target)
 	inputs := []string{"brief.md", "evidence/sources.md", "claim-ledger.md", "outline.md"}
 	if candidate > 1 {
-		inputs = append(inputs, fmt.Sprintf("drafts/article-%03d.md", candidate-1), fmt.Sprintf("pm-decisions/article-%03d.md", candidate-1))
+		previous := candidate - 1
+		inputs = append(inputs, fmt.Sprintf("drafts/article-%03d.md", previous), fmt.Sprintf("pm-decisions/article-%03d.md", previous))
+		for _, lens := range control.reachedLenses[previous] {
+			inputs = append(inputs,
+				filepath.Join("reviews", fmt.Sprintf("article-%03d", previous), lens, "result.json"),
+				filepath.Join("reviews", fmt.Sprintf("article-%03d", previous), lens, "report.md"),
+			)
+		}
 	}
 	for _, relative := range inputs {
 		data, readErr := control.store.readRegular(relative)
@@ -388,21 +449,29 @@ func (control *controller) reviewCandidate(candidate int) (bool, string, error) 
 		if err != nil {
 			return false, "", err
 		}
-		var mustFix *PMDecision
-		for index := range decisions {
-			decision := decisions[index]
-			if decision.Decision == "needs_human_judgment" {
-				return false, fmt.Sprintf("human judgment required for finding %s: %s", decision.FindingID, decision.Reason), nil
-			}
-			if decision.Decision == "valid_must_fix" && mustFix == nil {
-				mustFix = &decision
-			}
+		mustFix, human := decisionOutcome(decisions)
+		if human != nil {
+			return false, fmt.Sprintf("human judgment required for finding %s: %s", human.FindingID, human.Reason), nil
 		}
-		if mustFix != nil {
+		if mustFix {
 			return true, "", nil
 		}
 	}
 	return false, "", nil
+}
+
+func decisionOutcome(decisions []PMDecision) (bool, *PMDecision) {
+	mustFix := false
+	for index := range decisions {
+		decision := &decisions[index]
+		if decision.Decision == "needs_human_judgment" {
+			return mustFix, decision
+		}
+		if decision.Decision == "valid_must_fix" {
+			mustFix = true
+		}
+	}
+	return mustFix, nil
 }
 
 func (control *controller) runReviewer(candidate int, lens string) (ReviewResult, error) {
@@ -425,7 +494,7 @@ func (control *controller) runReviewer(candidate int, lens string) (ReviewResult
 	if revision != control.workflow.CurrentRevision {
 		return result, fmt.Errorf("candidate revision changed outside the controller")
 	}
-	prompt := base + fmt.Sprintf("\n\n## Assignment\n\nLens: `%s`\nCandidate: `article-%03d`\nRevision: `%s`\nThe `context/` directory contains every permitted input and no other run artifact. Write only `result.json` and `report.md` in this isolated workspace; never edit `context/article.md`.", lens, candidate, revision)
+	prompt := base + fmt.Sprintf("\n\n## Assignment\n\nLens: `%s`\nCandidate: `article-%03d`\nRevision: `%s`", lens, candidate, revision)
 	contextFiles, err := control.reviewerContext(candidate, lens, candidateData, revision)
 	if err != nil {
 		return result, err
@@ -438,10 +507,6 @@ func (control *controller) runReviewer(candidate int, lens string) (ReviewResult
 	for _, label := range contextNames {
 		data := contextFiles[label]
 		prompt += contextBlock(label, data)
-	}
-	control.workflow.ReviewAttemptCount++
-	if err := control.saveWorkflow(); err != nil {
-		return result, err
 	}
 	resultData := []byte(nil)
 	reportData := []byte(nil)
@@ -575,7 +640,7 @@ func validateReviewData(resultData, reportData []byte, lens, revision string) (R
 	}
 	seen := make(map[string]bool)
 	for _, finding := range result.Findings {
-		if finding.ID == "" || finding.Severity == "" || finding.Location == "" || finding.Problem == "" || finding.SuggestedDirection == "" {
+		if strings.TrimSpace(finding.ID) == "" || strings.TrimSpace(finding.Severity) == "" || strings.TrimSpace(finding.Location) == "" || strings.TrimSpace(finding.Problem) == "" || strings.TrimSpace(finding.SuggestedDirection) == "" {
 			return result, fmt.Errorf("review finding fields must be non-empty")
 		}
 		if seen[finding.ID] {
@@ -583,18 +648,81 @@ func validateReviewData(resultData, reportData []byte, lens, revision string) (R
 		}
 		seen[finding.ID] = true
 	}
-	reportText := string(reportData)
-	if strings.Count(reportText, "- ID: ") != len(result.Findings) {
+	reportFindings, err := parseReportFindings(string(reportData))
+	if err != nil {
+		return result, err
+	}
+	if len(reportFindings) != len(result.Findings) {
 		return result, fmt.Errorf("human report finding count does not match result.json")
 	}
-	for _, finding := range result.Findings {
-		for _, expected := range []string{finding.ID, finding.Severity, finding.Location, finding.Problem, finding.SuggestedDirection} {
-			if !strings.Contains(reportText, expected) {
-				return result, fmt.Errorf("human report does not match finding %s", finding.ID)
-			}
+	for index, finding := range result.Findings {
+		if reportFindings[index] != finding {
+			return result, fmt.Errorf("human report entry does not match finding %s", finding.ID)
 		}
 	}
 	return result, nil
+}
+
+func parseReportFindings(report string) ([]Finding, error) {
+	lines := strings.Split(strings.ReplaceAll(report, "\r\n", "\n"), "\n")
+	labels := []string{"id", "severity", "location", "problem", "suggested direction"}
+	var findings []Finding
+	for index := 0; index < len(lines); index++ {
+		label, _, isField := reportField(lines[index])
+		if !isField || label != labels[0] {
+			if isField {
+				for _, expected := range labels[1:] {
+					if label == expected {
+						return nil, fmt.Errorf("human report contains an incomplete finding entry")
+					}
+				}
+			}
+			continue
+		}
+		if index+len(labels) > len(lines) {
+			return nil, fmt.Errorf("human report contains a truncated finding entry")
+		}
+		values := make([]string, len(labels))
+		cursor := index
+		for offset, expected := range labels {
+			for cursor < len(lines) && strings.TrimSpace(lines[cursor]) == "" {
+				cursor++
+			}
+			if cursor >= len(lines) {
+				return nil, fmt.Errorf("human report contains a truncated finding entry")
+			}
+			actual, value, found := reportField(lines[cursor])
+			if !found || actual != expected {
+				return nil, fmt.Errorf("human report finding entry is missing %s", expected)
+			}
+			values[offset] = value
+			cursor++
+		}
+		findings = append(findings, Finding{
+			ID: values[0], Severity: values[1], Location: values[2], Problem: values[3], SuggestedDirection: values[4],
+		})
+		index = cursor - 1
+	}
+	return findings, nil
+}
+
+func reportField(line string) (string, string, bool) {
+	line = strings.TrimSpace(line)
+	if strings.HasPrefix(line, "- ") {
+		line = strings.TrimPrefix(line, "- ")
+	}
+	parts := strings.SplitN(line, ":", 2)
+	if len(parts) != 2 {
+		return "", "", false
+	}
+	label := strings.ToLower(strings.TrimSpace(parts[0]))
+	label = strings.ReplaceAll(label, "_", " ")
+	switch label {
+	case "id", "severity", "location", "problem", "suggested direction":
+		return label, strings.TrimSpace(parts[1]), true
+	default:
+		return "", "", false
+	}
 }
 
 func (control *controller) requestPMDecision(candidate int, lens string, result ReviewResult) ([]PMDecision, error) {
@@ -632,26 +760,39 @@ func (control *controller) requestPMDecision(candidate int, lens string, result 
 		return nil, err
 	}
 	defer pmStore.remove(requestPath)
+	defer pmStore.remove(outputPath)
+	defer pmStore.removeAll(contextDirectory)
 	control.workflow.ActiveRole = "pm"
 	if err := control.saveWorkflow(); err != nil {
 		return nil, err
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), control.config.AgentTimeout)
 	defer cancel()
+	deadlineUnixNano := time.Now().UnixNano() + control.config.AgentTimeout.Nanoseconds()
 	ticker := time.NewTicker(50 * time.Millisecond)
 	defer ticker.Stop()
 	for {
+		if time.Now().UnixNano() >= deadlineUnixNano {
+			return nil, fmt.Errorf("PM timed out deciding %s review: wall-clock deadline exceeded", lens)
+		}
 		data, readErr := pmStore.readNonEmpty(outputPath)
 		if readErr == nil {
 			decisions, validateErr := control.validatePMDecisionData(data, candidate, lens, result, request)
 			if validateErr == nil {
+				live, liveErr := control.runtime.invocationLive(control.pm)
+				if liveErr != nil {
+					return nil, fmt.Errorf("verify persistent PM at decision acceptance: %w", liveErr)
+				}
+				if !live {
+					return nil, fmt.Errorf("PM exited before %s decision acceptance", lens)
+				}
 				if err := control.store.writeAtomic(fmt.Sprintf("pm-decisions/article-%03d.md", candidate), data, 0o644); err != nil {
 					return nil, err
 				}
 				if control.decisionBindings[candidate] == nil {
 					control.decisionBindings[candidate] = make(map[string]decisionBinding)
 				}
-				control.decisionBindings[candidate][lens] = decisionBinding{RequestID: requestID, Digest: request.ReviewDigest}
+				control.decisionBindings[candidate][lens] = decisionBinding{RequestID: requestID, Digest: request.ReviewDigest, DecisionDigest: decisionListDigest(decisions)}
 				control.reachedLenses[candidate] = append(control.reachedLenses[candidate], lens)
 				control.workflow.ActiveRole = ""
 				if err := control.saveWorkflow(); err != nil {
@@ -665,7 +806,9 @@ func (control *controller) requestPMDecision(candidate int, lens string, result 
 		} else if !errors.Is(readErr, errNotReady) {
 			return nil, readErr
 		}
-		if status, exited := control.runtime.exitStatus(control.pm); exited {
+		if status, exited, statusErr := control.runtime.exitStatus(control.pm); statusErr != nil {
+			return nil, fmt.Errorf("read PM completion: %w", statusErr)
+		} else if exited {
 			return nil, fmt.Errorf("PM exited unexpectedly with status %d before deciding %s review", status, lens)
 		}
 		select {
@@ -703,13 +846,9 @@ func (control *controller) stagePMContext(pmStore *artifactStore, request pmRequ
 }
 
 func (control *controller) validatePMDecisionData(data []byte, candidate int, lens string, result ReviewResult, request pmRequest) ([]PMDecision, error) {
-	match := jsonFencePattern.FindSubmatch(data)
-	if len(match) != 2 {
-		return nil, errNotReady
-	}
-	var document PMDecisionDocument
-	if err := json.Unmarshal(match[1], &document); err != nil {
-		return nil, errNotReady
+	document, err := parsePMDecisionDocument(data)
+	if err != nil {
+		return nil, err
 	}
 	if document.ReviewedRevision != control.workflow.CurrentRevision {
 		return nil, fmt.Errorf("PM decision revision mismatch: got %q, want %q", document.ReviewedRevision, control.workflow.CurrentRevision)
@@ -739,7 +878,7 @@ func (control *controller) validatePMDecisionData(data []byte, candidate int, le
 		}
 		binding := control.decisionBindings[candidate][expectedLens]
 		if expectedLens == lens {
-			binding = decisionBinding{RequestID: request.RequestID, Digest: request.ReviewDigest}
+			binding = decisionBinding{RequestID: request.RequestID, Digest: request.ReviewDigest, DecisionDigest: decisionListDigest(record.Decisions)}
 		}
 		if record.RequestID != binding.RequestID || record.ReviewDigest != binding.Digest {
 			return nil, fmt.Errorf("PM decision for %s is not bound to the active review request", expectedLens)
@@ -747,8 +886,38 @@ func (control *controller) validatePMDecisionData(data []byte, candidate int, le
 		if err := validateDecisionList(record.Decisions, validatedResult); err != nil {
 			return nil, err
 		}
+		if decisionListDigest(record.Decisions) != binding.DecisionDigest {
+			return nil, fmt.Errorf("PM decision history changed accepted classifications for %s", expectedLens)
+		}
 	}
 	return document.Lenses[lens].Decisions, nil
+}
+
+func parsePMDecisionDocument(data []byte) (PMDecisionDocument, error) {
+	var document PMDecisionDocument
+	trimmed := strings.TrimSpace(string(data))
+	if !strings.HasSuffix(trimmed, "```") {
+		return document, errNotReady
+	}
+	if strings.Count(trimmed, "```") != 2 || !strings.HasPrefix(trimmed, "```json") {
+		return document, fmt.Errorf("PM decision must contain exactly one complete fenced JSON document")
+	}
+	payload := strings.TrimSpace(strings.TrimSuffix(strings.TrimPrefix(trimmed, "```json"), "```"))
+	if !strings.HasPrefix(payload, "{") || !strings.HasSuffix(payload, "}") {
+		return document, fmt.Errorf("PM decision must contain exactly one complete fenced JSON document")
+	}
+	if err := json.Unmarshal([]byte(payload), &document); err != nil {
+		return document, fmt.Errorf("invalid PM decision JSON: %w", err)
+	}
+	return document, nil
+}
+
+func decisionListDigest(decisions []PMDecision) string {
+	data, err := json.Marshal(decisions)
+	if err != nil {
+		panic(fmt.Sprintf("marshal PM decisions: %v", err))
+	}
+	return revisionFor(data)
 }
 
 func validateDecisionList(decisions []PMDecision, result ReviewResult) error {
@@ -809,9 +978,16 @@ func (control *controller) runWorker(role, lens string, candidate int, revision,
 	if err := control.runtime.startWorker(inv); err != nil {
 		return err
 	}
+	if strings.HasPrefix(role, "reviewer_") {
+		control.workflow.ReviewAttemptCount++
+		if err := control.saveWorkflow(); err != nil {
+			return err
+		}
+	}
 	ctx, cancel := context.WithTimeout(context.Background(), control.config.AgentTimeout)
 	defer cancel()
-	if err := control.runtime.waitForWorker(ctx, control.pm, inv); err != nil {
+	deadlineUnixNano := time.Now().UnixNano() + control.config.AgentTimeout.Nanoseconds()
+	if err := control.runtime.waitForWorker(ctx, deadlineUnixNano, control.pm, inv); err != nil {
 		return err
 	}
 	if err := validate(workspace); err != nil {
@@ -825,7 +1001,7 @@ func (control *controller) runWorker(role, lens string, candidate int, revision,
 }
 
 func (control *controller) succeed(candidate int) error {
-	if err := control.runtime.cleanup(); err != nil {
+	if err := control.runtime.cleanup(true, control.pm); err != nil {
 		return control.block(fmt.Sprintf("terminal cleanup failed: %v", err))
 	}
 	if err := control.runtime.archiveAll(control.store); err != nil {
@@ -869,12 +1045,8 @@ func (control *controller) validateFinalAudit(candidate int) error {
 	if err != nil {
 		return err
 	}
-	match := jsonFencePattern.FindSubmatch(decisionData)
-	if len(match) != 2 {
-		return fmt.Errorf("PM decision file has no JSON document")
-	}
-	var document PMDecisionDocument
-	if err := json.Unmarshal(match[1], &document); err != nil {
+	document, err := parsePMDecisionDocument(decisionData)
+	if err != nil {
 		return err
 	}
 	if document.ReviewedRevision != control.workflow.CurrentRevision || len(document.Lenses) != 4 {
@@ -897,11 +1069,18 @@ func (control *controller) validateFinalAudit(candidate int) error {
 		}
 		record, found := document.Lenses[lens]
 		binding := control.decisionBindings[candidate][lens]
-		if !found || record.RequestID != binding.RequestID || record.ReviewDigest != reviewDigest(resultData, reportData) || record.ReviewDigest != binding.Digest {
+		if !found || record.RequestID != binding.RequestID || record.ReviewDigest != reviewDigest(resultData, reportData) || record.ReviewDigest != binding.Digest || decisionListDigest(record.Decisions) != binding.DecisionDigest {
 			return fmt.Errorf("PM decision binding mismatch for %s", lens)
 		}
 		if err := validateDecisionList(record.Decisions, result); err != nil {
 			return err
+		}
+		mustFix, human := decisionOutcome(record.Decisions)
+		if human != nil {
+			return fmt.Errorf("final PM audit requires human judgment for %s", human.FindingID)
+		}
+		if mustFix {
+			return fmt.Errorf("final PM audit contains must-fix routing for %s", lens)
 		}
 	}
 	return nil
@@ -912,12 +1091,19 @@ func (control *controller) buildPMPrompt() (string, error) {
 	if err != nil {
 		return "", err
 	}
-	return base + "\n\n## Runtime protocol\n\nThis is an isolated PM workspace. Poll `inbox/` for one request-ID-named JSON file at a time. Record that exact inbox path, read only the request's `context_directory`, and write the complete decision document atomically to its unique `output_path`. Preserve every prior reached-lens record from `previous-decision.md` and add only the active lens with the request's exact request ID and review digest. After writing, wait until that exact request-specific inbox file is removed; a later request uses a different filename and cannot satisfy this acknowledgement. Then poll for the next file. Continue until the process is terminated by the controller.", nil
+	runtimeProtocol, err := loadPrompt(control.promptsDir, "pm-runtime.md")
+	if err != nil {
+		return "", err
+	}
+	return base + "\n\n" + runtimeProtocol, nil
 }
 
 func (control *controller) saveWorkflow() error {
 	if control.workflow.Status == "succeeded" && os.Getenv("WRITE_UUTER_TEST_FAIL_SUCCESS_SAVE") == "1" {
 		return fmt.Errorf("injected succeeded workflow persistence failure")
+	}
+	if control.workflow.Status == "blocked" && os.Getenv("WRITE_UUTER_TEST_FAIL_BLOCK_SAVE") == "1" {
+		return fmt.Errorf("injected blocked workflow persistence failure")
 	}
 	control.workflow.UpdatedAt = time.Now().UTC()
 	return control.store.writeJSON("workflow.json", control.workflow)
@@ -926,7 +1112,7 @@ func (control *controller) saveWorkflow() error {
 func (control *controller) block(reason string) error {
 	cleanupSucceeded := true
 	if control.runtime != nil {
-		if cleanupErr := control.runtime.cleanup(); cleanupErr != nil {
+		if cleanupErr := control.runtime.cleanup(false, control.pm); cleanupErr != nil {
 			cleanupSucceeded = false
 			reason += fmt.Sprintf("; cleanup failed: %v", cleanupErr)
 		} else if archiveErr := control.runtime.archiveAll(control.store); archiveErr != nil {
@@ -942,15 +1128,24 @@ func (control *controller) block(reason string) error {
 	control.workflow.ActiveRole = ""
 	control.workflow.BlockReason = reason
 	control.workflow.CompletedAt = &now
-	if err := control.saveWorkflow(); err != nil {
-		return fmt.Errorf("%s (also failed to persist blocked workflow: %v)", reason, err)
-	}
+	persistErr := control.saveWorkflow()
+	var privateErr error
 	if cleanupSucceeded && control.runtime != nil {
-		if err := control.runtime.closePrivate(); err != nil {
-			return fmt.Errorf("%s; private runtime cleanup failed: %v", reason, err)
-		}
+		privateErr = control.runtime.closePrivate()
+	}
+	if persistErr != nil || privateErr != nil {
+		return errors.Join(errors.New(reason),
+			wrappedOptionalError("persist blocked workflow", persistErr),
+			wrappedOptionalError("private runtime cleanup", privateErr))
 	}
 	return errors.New(reason)
+}
+
+func wrappedOptionalError(label string, err error) error {
+	if err == nil {
+		return nil
+	}
+	return fmt.Errorf("%s: %w", label, err)
 }
 
 func findStyleGuide(promptsDir string) string {

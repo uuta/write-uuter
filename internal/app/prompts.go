@@ -9,6 +9,7 @@ import (
 
 var requiredPromptFiles = []string{
 	"pm.md",
+	"pm-runtime.md",
 	"researcher.md",
 	"story-editor.md",
 	"writer.md",

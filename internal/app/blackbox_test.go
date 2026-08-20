@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"syscall"
@@ -28,15 +29,16 @@ type workflowState struct {
 }
 
 type invocationRecord struct {
-	PID            int      `json:"pid"`
-	Role           string   `json:"role"`
-	Lens           string   `json:"lens"`
-	Candidate      int      `json:"candidate"`
-	Revision       string   `json:"revision"`
-	Invocation     string   `json:"invocation"`
-	Prompt         string   `json:"prompt"`
-	Workspace      string   `json:"workspace"`
-	WorkspaceFiles []string `json:"workspace_files"`
+	PID            int               `json:"pid"`
+	Role           string            `json:"role"`
+	Lens           string            `json:"lens"`
+	Candidate      int               `json:"candidate"`
+	Revision       string            `json:"revision"`
+	Invocation     string            `json:"invocation"`
+	Prompt         string            `json:"prompt"`
+	Workspace      string            `json:"workspace"`
+	WorkspaceFiles []string          `json:"workspace_files"`
+	Isolation      map[string]string `json:"isolation"`
 }
 
 var (
@@ -93,10 +95,32 @@ func TestBlackBoxHappyPathAndReviewerIsolation(t *testing.T) {
 
 	records := readInvocationRecords(t, run.fixtureDir)
 	var reviewers []invocationRecord
+	var researcher *invocationRecord
+	var pm *invocationRecord
 	for _, record := range records {
+		if record.Role == "pm" {
+			copy := record
+			pm = &copy
+		}
+		if record.Role == "researcher" {
+			copy := record
+			researcher = &copy
+		}
 		if strings.HasPrefix(record.Role, "reviewer_") {
 			reviewers = append(reviewers, record)
 		}
+	}
+	hasSourceHint := false
+	if researcher != nil {
+		for _, name := range researcher.WorkspaceFiles {
+			hasSourceHint = hasSourceHint || name == "context/source-hints/001-README.md"
+		}
+	}
+	if !hasSourceHint {
+		t.Errorf("researcher did not receive resolved local source hints: %+v", researcher)
+	}
+	if pm == nil || !strings.Contains(pm.Prompt, `"decision": "valid_must_fix"`) || strings.Contains(pm.Prompt, `"classification":`) {
+		t.Errorf("PM prompt does not define the durable decision field exactly: %+v", pm)
 	}
 	sort.Slice(reviewers, func(i, j int) bool { return reviewers[i].Invocation < reviewers[j].Invocation })
 	if len(reviewers) != 4 {
@@ -162,7 +186,18 @@ func TestBlackBoxMustFixCreatesRevisionAndRestartsEvidence(t *testing.T) {
 		t.Errorf("revision = %q, want %q", got, want)
 	}
 	assertExactFiles(t, filepath.Join(run.runDir, "drafts", "article-002.md"), filepath.Join(run.runDir, "article.md"))
-	assertProcessesGone(t, readInvocationRecords(t, run.fixtureDir))
+	records := readInvocationRecords(t, run.fixtureDir)
+	foundRevisionContext := false
+	for _, record := range records {
+		if record.Role == "writer" && record.Candidate == 2 {
+			foundRevisionContext = strings.Contains(record.Prompt, "The opening needs a verified detail.") &&
+				strings.Contains(record.Prompt, "Add the supported workflow detail.")
+		}
+	}
+	if !foundRevisionContext {
+		t.Fatal("revision writer did not receive the validated finding and suggested direction")
+	}
+	assertProcessesGone(t, records)
 }
 
 func TestBlackBoxStaleRevisionBlocks(t *testing.T) {
@@ -230,6 +265,61 @@ func TestBlackBoxTimeoutBlocksAndCleansProcesses(t *testing.T) {
 		t.Fatalf("unexpected blocked workflow: %+v", state)
 	}
 	assertProcessesGone(t, readInvocationRecords(t, run.fixtureDir))
+}
+
+func TestBlackBoxTimeoutBoundsPrivateRunnerAndDetachedGroup(t *testing.T) {
+	tmuxDirectory, err := os.MkdirTemp("/tmp", "wu-tmux-")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(tmuxDirectory) })
+	t.Setenv("TMUX", "")
+	t.Setenv("TMUX_TMPDIR", tmuxDirectory)
+	binary, fake, runDir, fixtureDir := prepareScenario(t, "timeout_detached")
+	pidDirectory := t.TempDir()
+	command := newRunCommand(t, binary, fake, runDir, "1s", filepath.Join(repositoryRoot(t), "examples", "brief.md"))
+	command.Env = append(command.Env,
+		"WRITE_UUTER_TEST_DETACHED_PID_DIR="+pidDirectory,
+		"WRITE_UUTER_TEST_EXIT_MARKER_DELAY=2s",
+	)
+	started := time.Now()
+	output, err := command.CombinedOutput()
+	if err == nil {
+		t.Fatalf("CLI unexpectedly succeeded: %s", output)
+	}
+	if elapsed := time.Since(started); elapsed > 5*time.Second {
+		t.Fatalf("private runner timeout took %s: %s", elapsed, output)
+	}
+	state := readWorkflow(t, runDir)
+	if state.Status != "blocked" || !strings.Contains(state.BlockReason, "timed out") && !strings.Contains(state.BlockReason, "wall-clock deadline") {
+		t.Fatalf("unexpected blocked workflow: %+v", state)
+	}
+	paths, _ := filepath.Glob(filepath.Join(pidDirectory, "*.pid"))
+	if len(paths) == 0 {
+		t.Fatal("fake Codex did not start a detached descendant")
+	}
+	for _, path := range paths {
+		data, readErr := os.ReadFile(path)
+		if readErr != nil {
+			t.Fatal(readErr)
+		}
+		pid, parseErr := strconv.Atoi(strings.TrimSpace(string(data)))
+		if parseErr != nil {
+			t.Fatal(parseErr)
+		}
+		assertPIDGone(t, pid)
+	}
+	assertProcessesGone(t, readInvocationRecords(t, fixtureDir))
+	privatePaths, _ := filepath.Glob(filepath.Join(filepath.Dir(runDir), ".write-uuter-private-*"))
+	if len(privatePaths) != 0 {
+		t.Fatalf("private runtime survived timeout cleanup: %v", privatePaths)
+	}
+	sessions := exec.Command("tmux", "list-sessions", "-F", "#{session_name}")
+	sessions.Env = append(os.Environ(), "TMUX=", "TMUX_TMPDIR="+tmuxDirectory)
+	listing, _ := sessions.CombinedOutput()
+	if strings.Contains(string(listing), "write-uuter-") {
+		t.Fatalf("timeout left run tmux session: %s", listing)
+	}
 }
 
 func TestBlackBoxOptionalAndInvalidFindingsDoNotConsumeCandidate(t *testing.T) {
@@ -377,7 +467,7 @@ func TestBlackBoxAtomicCommitDoesNotReplaceCompetingTarget(t *testing.T) {
 	binary, fake, runDir, _ := prepareScenario(t, "happy")
 	barrier := filepath.Join(t.TempDir(), "commit")
 	command := newRunCommand(t, binary, fake, runDir, "5s", filepath.Join(repositoryRoot(t), "examples", "brief.md"))
-	command.Env = append(os.Environ(), "WRITE_UUTER_TEST_COMMIT_BARRIER="+barrier)
+	command.Env = append(command.Env, "WRITE_UUTER_TEST_COMMIT_BARRIER="+barrier)
 	if err := command.Start(); err != nil {
 		t.Fatal(err)
 	}
@@ -428,12 +518,257 @@ func TestBlackBoxAgentWorkspaceCannotReplaceHostLauncher(t *testing.T) {
 	if run.err != nil {
 		t.Fatalf("workspace launcher attack affected later invocations: %v\n%s", run.err, run.output)
 	}
-	if _, err := os.Stat(filepath.Join(run.runDir, ".control", "launch-agent.sh")); !errors.Is(err, os.ErrNotExist) {
-		t.Fatalf("launch-critical script was exposed in durable agent-visible run: %v", err)
+	if _, err := os.Stat(filepath.Join(run.runDir, ".control", "agent-runner")); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("launch-critical executable was exposed in durable agent-visible run: %v", err)
 	}
 	if state := readWorkflow(t, run.runDir); state.Status != "succeeded" {
 		t.Fatalf("unexpected workflow: %+v", state)
 	}
+	foundDeniedAttack := false
+	for _, record := range readInvocationRecords(t, run.fixtureDir) {
+		if record.Role == "researcher" && record.Isolation["actual_launcher_write"] != "" {
+			foundDeniedAttack = true
+		}
+	}
+	if !foundDeniedAttack {
+		t.Fatal("fake researcher did not attempt and record denial of the actual controller launcher path")
+	}
+	privatePaths, _ := filepath.Glob(filepath.Join(filepath.Dir(run.runDir), ".write-uuter-private-*"))
+	if len(privatePaths) != 0 {
+		t.Fatalf("controller-private runtime survived terminal cleanup: %v", privatePaths)
+	}
+}
+
+func TestBlackBoxReviewerHostFilesystemReadsAreDenied(t *testing.T) {
+	run := executeScenario(t, "filesystem_isolation")
+	if run.err != nil {
+		t.Fatalf("CLI failed: %v\n%s", run.err, run.output)
+	}
+	probePath := filepath.Join(run.fixtureDir, "logs", "isolation-008-reviewer-copy.probe")
+	data, err := os.ReadFile(probePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var probes map[string]string
+	if err := json.Unmarshal(data, &probes); err != nil {
+		t.Fatal(err)
+	}
+	for _, label := range []string{"durable", "prior_lens", "pm_workspace_parent", "controller", "host"} {
+		result := strings.ToLower(probes[label])
+		if result == "" || result == "read_succeeded" || !strings.Contains(result, "not permitted") && !strings.Contains(result, "permission denied") {
+			t.Errorf("copy reviewer was not OS-denied %s read: %q", label, probes[label])
+		}
+	}
+}
+
+func TestBlackBoxPMCannotRewriteAcceptedHistory(t *testing.T) {
+	run := executeScenario(t, "rewrite_history")
+	if run.err == nil {
+		t.Fatal("CLI unexpectedly accepted rewritten PM history")
+	}
+	state := readWorkflow(t, run.runDir)
+	if state.Status != "blocked" || !strings.Contains(state.BlockReason, "changed accepted classifications") {
+		t.Fatalf("unexpected workflow: %+v", state)
+	}
+	assertNoArticle(t, run.runDir)
+}
+
+func TestBlackBoxUnexpectedTmuxProbeFailureIsNotAbsence(t *testing.T) {
+	realTmux, err := exec.LookPath("tmux")
+	if err != nil {
+		t.Skip("tmux unavailable")
+	}
+	tmuxDirectory := filepath.Join(t.TempDir(), "tmux")
+	if err := os.Mkdir(tmuxDirectory, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("TMUX", "")
+	t.Setenv("TMUX_TMPDIR", tmuxDirectory)
+	binary, fake, runDir, fixtureDir := prepareScenario(t, "happy")
+	wrapper := filepath.Join(t.TempDir(), "tmux-wrapper")
+	script := fmt.Sprintf("#!/bin/sh\nif [ \"$1\" = \"has-session\" ]; then echo 'injected probe failure' >&2; exit 42; fi\nexec %q \"$@\"\n", realTmux)
+	if err := os.WriteFile(wrapper, []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	command := newRunCommand(t, binary, fake, runDir, "1s", filepath.Join(repositoryRoot(t), "examples", "brief.md"))
+	command.Args = append(command.Args, "--tmux", wrapper)
+	output, err := command.CombinedOutput()
+	if err == nil {
+		t.Fatalf("CLI unexpectedly succeeded: %s", output)
+	}
+	state := readWorkflow(t, runDir)
+	if state.Status != "blocked" || !strings.Contains(state.BlockReason, "has-session failed") {
+		t.Fatalf("unexpected workflow: %+v", state)
+	}
+	assertNoArticle(t, runDir)
+	assertProcessesGone(t, readInvocationRecords(t, fixtureDir))
+	sessions := exec.Command(realTmux, "list-sessions")
+	sessions.Env = append(os.Environ(), "TMUX=", "TMUX_TMPDIR="+tmuxDirectory)
+	listing, _ := sessions.CombinedOutput()
+	if strings.Contains(string(listing), "write-uuter-") {
+		t.Fatalf("probe failure left run tmux session: %s", listing)
+	}
+}
+
+func TestBlackBoxFinalPMExitBlocksPublication(t *testing.T) {
+	run := executeScenario(t, "final_pm_exit")
+	if run.err == nil {
+		t.Fatal("CLI unexpectedly accepted a final response from an exited PM")
+	}
+	state := readWorkflow(t, run.runDir)
+	if state.Status != "blocked" || !strings.Contains(state.BlockReason, "PM exited") && !strings.Contains(state.BlockReason, "persistent PM") {
+		t.Fatalf("unexpected workflow: %+v", state)
+	}
+	assertNoArticle(t, run.runDir)
+	assertProcessesGone(t, readInvocationRecords(t, run.fixtureDir))
+}
+
+func TestBlackBoxDetachedDescendantsAreKilledOnTerminalPaths(t *testing.T) {
+	for _, testCase := range []struct {
+		scenario string
+		success  bool
+	}{{"detached_child_success", true}, {"detached_child_block", false}} {
+		t.Run(testCase.scenario, func(t *testing.T) {
+			binary, fake, runDir, _ := prepareScenario(t, testCase.scenario)
+			pidDirectory := t.TempDir()
+			command := newRunCommand(t, binary, fake, runDir, "5s", filepath.Join(repositoryRoot(t), "examples", "brief.md"))
+			command.Env = append(command.Env, "WRITE_UUTER_TEST_DETACHED_PID_DIR="+pidDirectory)
+			output, err := command.CombinedOutput()
+			if (err == nil) != testCase.success {
+				t.Fatalf("unexpected terminal result: %v\n%s", err, output)
+			}
+			paths, _ := filepath.Glob(filepath.Join(pidDirectory, "*.pid"))
+			if len(paths) == 0 {
+				t.Fatal("fake agent did not create a detached child")
+			}
+			for _, path := range paths {
+				data, readErr := os.ReadFile(path)
+				if readErr != nil {
+					t.Fatal(readErr)
+				}
+				pid, _ := strconv.Atoi(strings.TrimSpace(string(data)))
+				assertPIDGone(t, pid)
+			}
+		})
+	}
+}
+
+func TestBlackBoxExitMarkerIsAtomicallyPublished(t *testing.T) {
+	binary, fake, runDir, _ := prepareScenario(t, "happy")
+	command := newRunCommand(t, binary, fake, runDir, "5s", filepath.Join(repositoryRoot(t), "examples", "brief.md"))
+	command.Env = append(command.Env, "WRITE_UUTER_TEST_EXIT_MARKER_DELAY=300ms")
+	var output strings.Builder
+	command.Stdout = &output
+	command.Stderr = &output
+	if err := command.Start(); err != nil {
+		t.Fatal(err)
+	}
+	finished := false
+	defer func() {
+		if !finished {
+			_ = command.Process.Kill()
+			_ = command.Wait()
+		}
+	}()
+	deadline := time.Now().Add(5 * time.Second)
+	observedTemporary := false
+	for time.Now().Before(deadline) {
+		temporary, _ := filepath.Glob(filepath.Join(filepath.Dir(runDir), ".write-uuter-private-*", "control", "exits", ".*.exit-*"))
+		if len(temporary) != 0 {
+			base := filepath.Base(temporary[0])
+			separator := strings.Index(base, ".exit-")
+			if separator < 1 {
+				t.Fatalf("unexpected temporary marker name %s", base)
+			}
+			final := filepath.Join(filepath.Dir(temporary[0]), strings.TrimPrefix(base[:separator+len(".exit")], "."))
+			if _, err := os.Lstat(final); err == nil {
+				t.Fatalf("final exit marker appeared while its temporary marker was partial: %s", final)
+			}
+			observedTemporary = true
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if !observedTemporary {
+		_ = command.Process.Kill()
+		t.Fatal("did not observe delayed same-directory temporary exit marker")
+	}
+	if err := command.Wait(); err != nil {
+		t.Fatalf("CLI failed after atomic marker publication: %v\n%s", err, output.String())
+	}
+	finished = true
+}
+
+func TestBlackBoxBlockedPersistenceFailureStillRemovesPrivateRuntime(t *testing.T) {
+	binary, fake, runDir, fixtureDir := prepareScenario(t, "stale")
+	command := newRunCommand(t, binary, fake, runDir, "5s", filepath.Join(repositoryRoot(t), "examples", "brief.md"))
+	command.Env = append(command.Env, "WRITE_UUTER_TEST_FAIL_BLOCK_SAVE=1")
+	output, err := command.CombinedOutput()
+	if err == nil || !strings.Contains(string(output), "persist blocked workflow") {
+		t.Fatalf("missing blocked persistence error: %v\n%s", err, output)
+	}
+	privatePaths, _ := filepath.Glob(filepath.Join(filepath.Dir(runDir), ".write-uuter-private-*"))
+	if len(privatePaths) != 0 {
+		t.Fatalf("private runtime survived blocked persistence failure: %v", privatePaths)
+	}
+	assertProcessesGone(t, readInvocationRecords(t, fixtureDir))
+}
+
+func TestBlackBoxAssetTreeSymlinksAreRejected(t *testing.T) {
+	for _, scenario := range []string{"asset_root_symlink", "asset_nested_symlink"} {
+		t.Run(scenario, func(t *testing.T) {
+			run := executeScenario(t, scenario)
+			if run.err == nil {
+				t.Fatal("CLI unexpectedly accepted symlinked asset tree")
+			}
+			state := readWorkflow(t, run.runDir)
+			if state.Status != "blocked" || !strings.Contains(state.BlockReason, "symlink") {
+				t.Fatalf("unexpected workflow: %+v", state)
+			}
+			assertNoArticle(t, run.runDir)
+		})
+	}
+}
+
+func TestBlackBoxMalformedReviewReportsAndWhitespaceAreRejected(t *testing.T) {
+	for _, testCase := range []struct{ scenario, reason string }{
+		{"whitespace_finding", "fields must be non-empty"},
+		{"incomplete_report", "finding entry"},
+	} {
+		t.Run(testCase.scenario, func(t *testing.T) {
+			run := executeScenario(t, testCase.scenario)
+			if run.err == nil {
+				t.Fatal("CLI unexpectedly accepted malformed review")
+			}
+			state := readWorkflow(t, run.runDir)
+			if state.Status != "blocked" || !strings.Contains(state.BlockReason, testCase.reason) {
+				t.Fatalf("unexpected workflow: %+v", state)
+			}
+			assertNoArticle(t, run.runDir)
+		})
+	}
+}
+
+func TestBlackBoxHumanReportAcceptsEquivalentFieldLayout(t *testing.T) {
+	run := executeScenario(t, "unbulleted_report")
+	if run.err != nil {
+		t.Fatalf("CLI rejected complete unbulleted report entries: %v\n%s", run.err, run.output)
+	}
+	if state := readWorkflow(t, run.runDir); state.Status != "succeeded" {
+		t.Fatalf("unexpected workflow: %+v", state)
+	}
+}
+
+func TestBlackBoxMultiplePMDocumentsAreRejected(t *testing.T) {
+	run := executeScenario(t, "multiple_pm_documents")
+	if run.err == nil {
+		t.Fatal("CLI unexpectedly accepted multiple PM documents")
+	}
+	state := readWorkflow(t, run.runDir)
+	if state.Status != "blocked" || !strings.Contains(state.BlockReason, "exactly one complete fenced JSON document") {
+		t.Fatalf("unexpected workflow: %+v", state)
+	}
+	assertNoArticle(t, run.runDir)
 }
 
 func TestBlackBoxHungTmuxCommandIsBoundedAndPersistsBlock(t *testing.T) {
@@ -525,7 +860,7 @@ func TestBlackBoxControllerRejectsSymlinkedDurableArtifactDirectory(t *testing.T
 func TestBlackBoxPublicationRollsBackWhenSucceededStateCannotPersist(t *testing.T) {
 	binary, fake, runDir, fixtureDir := prepareScenario(t, "happy")
 	command := newRunCommand(t, binary, fake, runDir, "5s", filepath.Join(repositoryRoot(t), "examples", "brief.md"))
-	command.Env = append(os.Environ(), "WRITE_UUTER_TEST_FAIL_SUCCESS_SAVE=1")
+	command.Env = append(command.Env, "WRITE_UUTER_TEST_FAIL_SUCCESS_SAVE=1")
 	output, err := command.CombinedOutput()
 	if err == nil {
 		t.Fatalf("CLI unexpectedly succeeded: %s", output)
@@ -671,6 +1006,7 @@ func newRunCommand(t *testing.T, binary, fake, runDir, timeout, briefPath string
 		"--prompts-dir", filepath.Join(repositoryRoot(t), "prompts"),
 	)
 	command.Dir = repositoryRoot(t)
+	command.Env = append(os.Environ(), "WRITE_UUTER_FAKE_LOG_DIR="+filepath.Join(filepath.Dir(fake), "logs"))
 	return command
 }
 
@@ -834,6 +1170,24 @@ func assertProcessesGone(t *testing.T, records []invocationRecord) {
 		}
 		if time.Now().After(deadline) {
 			t.Fatalf("run-owned fake Codex processes still alive: %v", alive)
+		}
+		time.Sleep(25 * time.Millisecond)
+	}
+}
+
+func assertPIDGone(t *testing.T, pid int) {
+	t.Helper()
+	if pid <= 0 {
+		t.Fatalf("invalid detached child PID %d", pid)
+	}
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		process, err := os.FindProcess(pid)
+		if err != nil || process.Signal(syscall.Signal(0)) != nil {
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("detached child process %d is still alive", pid)
 		}
 		time.Sleep(25 * time.Millisecond)
 	}

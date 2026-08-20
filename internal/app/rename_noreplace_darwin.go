@@ -10,6 +10,7 @@ import (
 const (
 	sysRenameatxNP = 488
 	renameExcl     = 0x00000004
+	darwinAtFDCWD  = ^uintptr(1)
 )
 
 func renameNoReplace(oldPath, newPath string) error {
@@ -21,8 +22,7 @@ func renameNoReplace(oldPath, newPath string) error {
 	if err != nil {
 		return err
 	}
-	atFDCWD := ^uintptr(99)
-	_, _, errno := syscall.Syscall6(sysRenameatxNP, atFDCWD, uintptr(unsafe.Pointer(oldPointer)), atFDCWD, uintptr(unsafe.Pointer(newPointer)), renameExcl, 0)
+	_, _, errno := syscall.Syscall6(sysRenameatxNP, darwinAtFDCWD, uintptr(unsafe.Pointer(oldPointer)), darwinAtFDCWD, uintptr(unsafe.Pointer(newPointer)), renameExcl, 0)
 	if errno != 0 {
 		return errno
 	}

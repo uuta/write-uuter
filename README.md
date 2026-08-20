@@ -9,8 +9,13 @@ that produced it.
 - Go 1.26 or later to build
 - tmux on the host
 - an installed and authenticated Codex CLI for real runs
+- macOS for real runs; the controller uses the native Seatbelt sandbox to
+  enforce role filesystem isolation
 
 No third-party Go packages are used.
+
+Linux cross-builds are supported, but Linux execution fails closed until an
+equivalent native read-isolation backend is implemented.
 
 ## Build and test
 
@@ -66,10 +71,15 @@ Go owns state transitions, validation, revision hashes, timeouts, and process
 cleanup. One long-lived PM Codex process and at most one worker run in a
 dedicated tmux session. Each process receives a separate controller-created
 workspace outside the durable run directory; Go copies in only the role's
-contracted context and copies validated regular-file outputs back. Researcher,
-Story Editor, Writer, then fresh Evidence, Story, Clarity, and Copy reviewer
-processes run sequentially. Reviewers never receive the run directory or edit
-candidates. Only PM-validated must-fix findings create a new candidate;
+contracted context and copies validated regular-file outputs back. A native
+sandbox denies agents access to the durable run, other role workspaces, and
+controller-private launch state. Codex's inner sandbox is disabled because
+macOS does not support nesting it inside the stricter controller sandbox. Go
+owns each Codex process group and publishes completion through an atomic marker
+only after descendants are gone.
+Researcher, Story Editor, Writer, then fresh Evidence, Story, Clarity, and Copy
+reviewer processes run sequentially. Reviewers never receive the run directory
+or edit candidates. Only PM-validated must-fix findings create a new candidate;
 candidate 003 is the hard limit.
 
 See [workflow](docs/workflow.md), [roles](docs/roles.md), and

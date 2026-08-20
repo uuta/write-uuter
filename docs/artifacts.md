@@ -55,8 +55,9 @@ that candidate.
 
 Allowed statuses are `clean`, `fix_required`, and `blocked`. A clean result has
 no findings; `fix_required` has at least one. IDs are non-empty and unique
-within the result, all finding fields are non-empty, lens/revision must match
-the assignment, and `report.md` repeats every finding field.
+within the result, all finding fields contain non-whitespace text,
+lens/revision must match the assignment, and `report.md` contains one exact,
+complete five-field entry per JSON finding in the same order.
 
 ## PM decision
 
@@ -89,7 +90,9 @@ accumulates only the lenses reached for that candidate:
 
 Each reached lens covers every finding exactly once. Unknown, duplicate, or
 missing IDs, stale revisions, mismatched request IDs or review digests, dropped
-prior lenses, and prepopulated future lenses fail the contract.
+prior lenses, changed prior classification lists, changed prior routing
+outcomes, multiple fenced documents, and prepopulated future lenses fail the
+contract.
 
 ## workflow.json
 
@@ -107,9 +110,11 @@ truth. Schema version 1 records:
 
 The durable `.control/` directory is controller-owned and preserves audit
 copies of generated prompt assignments, per-invocation logs, and natural exit
-markers. Live launchers, PM requests, and agent workspaces exist only in
-controller-private temporary directories outside the durable run; they are
-removed after verified process cleanup and are never copied into `.control/`.
-Controller artifact access rejects symlink path components and non-regular
-files. Editorial completion never depends on tmux scrollback or chat
-transcripts.
+markers. The live runner executable, sandbox profiles, process-group records,
+PM requests, and agent workspaces exist only in a controller-private sibling
+directory. They are removed after verified tmux/process-group cleanup and are
+never copied into `.control/`. Completion markers are atomically renamed into
+place; a partial marker cannot advance the workflow. Controller artifact access
+rejects symlink path components, symlinked tree roots/directories, and
+non-regular files. Editorial completion never depends on tmux scrollback or
+chat transcripts.

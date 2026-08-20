@@ -4,7 +4,9 @@ Role instructions are durable files under `prompts/`. Generated assignments
 are created in a controller-private runtime outside the run and combine those
 instructions with the allowed artifact context. They are copied to the run's
 `.control/prompts/` only after all processes are stopped. Go validates role
-output and owns every workflow transition.
+output and owns every workflow transition. The durable prompt set includes the
+PM polling protocol and the shared reviewer output/filesystem contract; those
+protocols are not embedded as Go string literals.
 
 ## Human Editor
 
@@ -25,9 +27,12 @@ result as `pm-decisions/article-00N.md`. It classifies every finding as:
 
 The PM never writes a candidate or review. Each decision record must repeat the
 active request ID and a digest of that review, preserve and revalidate every
-previously reached lens, and contain no future lens. Go independently validates
-the decision file and applies routing and the three-candidate limit. Human
-judgment takes precedence if a response also contains a must-fix decision.
+previously reached lens without changing its accepted classification list, and
+contain no future lens. The PM response must be exactly one complete fenced
+JSON document. Go independently validates the decision file and applies routing
+and the three-candidate limit. Human judgment takes precedence if a response
+also contains a must-fix decision. A response is accepted only while the
+persistent PM process, tmux window, and process group are all live.
 
 ## Researcher
 
@@ -44,8 +49,10 @@ supporting evidence, and reader takeaway.
 
 The Writer owns exactly one assigned `drafts/article-00N.md`. The initial
 assignment uses the brief, evidence, ledger, and outline. A revision also gets
-the prior candidate and its PM decision. The Writer cannot classify findings,
-change earlier candidates, or create `article.md`.
+the prior candidate, its PM decision, and the reached review result/report so
+the validated finding's exact problem and suggested direction are available.
+The Writer cannot classify findings, change earlier candidates, or create
+`article.md`.
 
 ## Reviewers
 
@@ -62,8 +69,12 @@ revision, plus:
 | Copy | optional repository style guide |
 
 Each owns `reviews/article-00N/<lens>/result.json` and `report.md`. The report
-must contain the same findings as JSON. The process's filesystem contains only
-the listed inputs under `context/` and its output root; it cannot browse the
-durable run or another review. This implementation omits prior-lens
-conversation and reports from reviewer assignments; a reviewer process has no
-inherited conversation from another lens.
+must contain one complete five-field entry for every JSON finding in the same
+order. The process's filesystem contains only the listed inputs under
+`context/` and its output root. macOS Seatbelt enforcement denies reads of the
+durable run, prior-lens/PM/controller workspaces, and unrelated host files. The
+controller uses this external boundary instead of nesting Codex's own sandbox,
+which macOS does not permit. This
+implementation omits prior-lens conversation and reports from reviewer
+assignments; a reviewer process has no inherited conversation from another
+lens.
