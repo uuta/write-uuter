@@ -9,14 +9,21 @@ import (
 	"strings"
 )
 
-func isolationProfile(workspace, codexHome, codexPath string) (string, error) {
-	paths := []*string{&workspace, &codexHome, &codexPath}
+func isolationProfile(workspace, codexHome string, runtimeExecutables []string) (string, error) {
+	paths := []*string{&workspace, &codexHome}
 	for _, path := range paths {
 		canonical, canonicalErr := canonicalIsolationPath(*path)
 		if canonicalErr != nil {
 			return "", canonicalErr
 		}
 		*path = canonical
+	}
+	for index := range runtimeExecutables {
+		canonical, err := canonicalIsolationPath(runtimeExecutables[index])
+		if err != nil {
+			return "", err
+		}
+		runtimeExecutables[index] = canonical
 	}
 	var profile strings.Builder
 	profile.WriteString("(version 1)\n(deny default)\n(import \"system.sb\")\n")
@@ -28,6 +35,9 @@ func isolationProfile(workspace, codexHome, codexPath string) (string, error) {
 		fmt.Fprintf(&profile, "(allow file-read* (subpath %s))\n", strconv.Quote(readable))
 	}
 	metadataPaths := append(pathAncestors(workspace), pathAncestors(codexHome)...)
+	for _, executable := range runtimeExecutables {
+		metadataPaths = append(metadataPaths, pathAncestors(executable)...)
+	}
 	seenMetadata := make(map[string]bool)
 	for _, parent := range metadataPaths {
 		if seenMetadata[parent] {
@@ -38,7 +48,9 @@ func isolationProfile(workspace, codexHome, codexPath string) (string, error) {
 	}
 	fmt.Fprintf(&profile, "(allow file-read* file-write* (subpath %s))\n", strconv.Quote(workspace))
 	fmt.Fprintf(&profile, "(allow file-read* file-write* (subpath %s))\n", strconv.Quote(codexHome))
-	fmt.Fprintf(&profile, "(allow file-read* (subpath %s))\n", strconv.Quote(filepath.Dir(codexPath)))
+	for _, executable := range runtimeExecutables {
+		fmt.Fprintf(&profile, "(allow file-read* (literal %s))\n", strconv.Quote(executable))
+	}
 	return profile.String(), nil
 }
 

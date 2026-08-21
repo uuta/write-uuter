@@ -51,7 +51,7 @@ Operational options:
 --codex <path>       Codex executable (default: codex)
 --tmux <path>        tmux executable (default: tmux)
 --timeout <duration> Per-agent artifact timeout (default: 10m)
---prompts-dir <path> Checked-in prompt directory (normally auto-detected)
+--prompts-dir <path> Checked-in prompt directory; an explicit value is binding
 ```
 
 The brief requires these case-insensitive level-two headings; all except

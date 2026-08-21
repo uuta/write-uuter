@@ -471,6 +471,32 @@ func TestBlackBoxFinalCandidateMutationCannotPublish(t *testing.T) {
 	assertProcessesGone(t, readInvocationRecords(t, fixtureDir))
 }
 
+func TestBlackBoxFinalCommitBoundaryRechecksDurableDraft(t *testing.T) {
+	binary, fake, runDir, fixtureDir := prepareScenario(t, "happy")
+	barrier := filepath.Join(t.TempDir(), "final-boundary")
+	command := newRunCommand(t, binary, fake, runDir, "5s", filepath.Join(repositoryRoot(t), "examples", "brief.md"))
+	command.Env = append(command.Env, "WRITE_UUTER_TEST_FINAL_BOUNDARY_BARRIER="+barrier)
+	if err := command.Start(); err != nil {
+		t.Fatal(err)
+	}
+	waitForPath(t, barrier+".ready")
+	if err := os.WriteFile(filepath.Join(runDir, "drafts", "article-001.md"), []byte("mutation after initial final audit\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(barrier+".continue", []byte("continue\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := command.Wait(); err == nil {
+		t.Fatal("CLI published bytes read before the final commit boundary")
+	}
+	state := readWorkflow(t, runDir)
+	if state.Status != "blocked" || !strings.Contains(state.BlockReason, "publication boundary") {
+		t.Fatalf("unexpected workflow: %+v", state)
+	}
+	assertNoArticle(t, runDir)
+	assertProcessesGone(t, readInvocationRecords(t, fixtureDir))
+}
+
 func TestBlackBoxAtomicCommitDoesNotReplaceCompetingTarget(t *testing.T) {
 	binary, fake, runDir, _ := prepareScenario(t, "happy")
 	barrier := filepath.Join(t.TempDir(), "commit")
@@ -566,7 +592,7 @@ func TestBlackBoxReviewerHostFilesystemReadsAreDenied(t *testing.T) {
 	if err := json.Unmarshal(data, &probes); err != nil {
 		t.Fatal(err)
 	}
-	for _, label := range []string{"durable", "prior_lens", "pm_workspace_parent", "controller", "host", "unrelated_process"} {
+	for _, label := range []string{"durable", "prior_lens", "pm_workspace_parent", "controller", "host", "codex_sibling", "unrelated_process"} {
 		result := strings.ToLower(probes[label])
 		if result == "" || strings.Contains(result, "succeeded") || !strings.Contains(result, "not permitted") && !strings.Contains(result, "permission denied") && !strings.Contains(result, "operation not permitted") {
 			t.Errorf("copy reviewer was not OS-denied %s read: %q", label, probes[label])
@@ -589,6 +615,10 @@ func TestBlackBoxStrictRoutingJSONRejectsDuplicatesAndUnknownFields(t *testing.T
 		{"unknown_review", "unknown field"},
 		{"duplicate_pm", "duplicate JSON key"},
 		{"unknown_pm", "unknown field"},
+		{"duplicate_nested_finding", "duplicate JSON key"},
+		{"unknown_nested_finding", "unknown field"},
+		{"duplicate_pm_decision", "duplicate JSON key"},
+		{"unknown_pm_lens", "unknown field"},
 	} {
 		t.Run(testCase.scenario, func(t *testing.T) {
 			run := executeScenario(t, testCase.scenario)
@@ -667,6 +697,23 @@ func TestBlackBoxFinalPMExitBlocksPublication(t *testing.T) {
 		t.Fatalf("unexpected workflow: %+v", state)
 	}
 	assertNoArticle(t, run.runDir)
+	assertProcessesGone(t, readInvocationRecords(t, run.fixtureDir))
+}
+
+func TestBlackBoxPMMustEnterProtocolBeforeAnyWorkerStarts(t *testing.T) {
+	run := executeScenario(t, "pm_exit_before_ready")
+	if run.err == nil {
+		t.Fatal("CLI unexpectedly started without a protocol-ready PM")
+	}
+	state := readWorkflow(t, run.runDir)
+	if state.Status != "blocked" || !strings.Contains(state.BlockReason, "protocol-ready marker") {
+		t.Fatalf("unexpected workflow: %+v", state)
+	}
+	for _, record := range readInvocationRecords(t, run.fixtureDir) {
+		if record.Role != "pm" {
+			t.Fatalf("worker %s started before PM protocol readiness", record.Role)
+		}
+	}
 	assertProcessesGone(t, readInvocationRecords(t, run.fixtureDir))
 }
 
@@ -785,12 +832,15 @@ func TestBlackBoxBlockedPersistenceFailureStillRemovesPrivateRuntime(t *testing.
 }
 
 func TestBlackBoxPrivateCleanupRetriesAfterRemovalFailure(t *testing.T) {
-	binary, fake, runDir, fixtureDir := prepareScenario(t, "happy")
+	binary, fake, runDir, fixtureDir := prepareScenario(t, "stale")
 	command := newRunCommand(t, binary, fake, runDir, "5s", filepath.Join(repositoryRoot(t), "examples", "brief.md"))
 	command.Env = append(command.Env, "WRITE_UUTER_TEST_FAIL_PRIVATE_REMOVE_ONCE=1")
 	output, err := command.CombinedOutput()
-	if err == nil || !strings.Contains(string(output), "injected private runtime removal failure") {
-		t.Fatalf("missing injected cleanup failure: %v\n%s", err, output)
+	if err == nil || !strings.Contains(string(output), "stale review revision") {
+		t.Fatalf("missing original blocked reason after cleanup retry: %v\n%s", err, output)
+	}
+	if strings.Contains(string(output), "private runtime removal failure") {
+		t.Fatalf("transient cleanup failure escaped retry: %s", output)
 	}
 	privatePaths, _ := filepath.Glob(filepath.Join(filepath.Dir(runDir), ".write-uuter-private-*"))
 	if len(privatePaths) != 0 {
@@ -834,8 +884,11 @@ func TestBlackBoxInvocationDeadlineStartsBeforePublicationAndLaunch(t *testing.T
 	})
 	t.Run("PM post-publication", func(t *testing.T) {
 		binary, fake, runDir, _ := prepareScenario(t, "optional_invalid")
-		command := newRunCommand(t, binary, fake, runDir, "1s", filepath.Join(repositoryRoot(t), "examples", "brief.md"))
-		command.Env = append(command.Env, "WRITE_UUTER_TEST_AFTER_PM_REQUEST_DELAY=1200ms")
+		command := newRunCommand(t, binary, fake, runDir, "5s", filepath.Join(repositoryRoot(t), "examples", "brief.md"))
+		command.Env = append(command.Env,
+			"WRITE_UUTER_TEST_PM_DECISION_TIMEOUT=100ms",
+			"WRITE_UUTER_TEST_AFTER_PM_REQUEST_DELAY=200ms",
+		)
 		if output, err := command.CombinedOutput(); err == nil {
 			t.Fatalf("CLI accepted a late PM decision: %s", output)
 		}
@@ -844,6 +897,34 @@ func TestBlackBoxInvocationDeadlineStartsBeforePublicationAndLaunch(t *testing.T
 			t.Fatalf("unexpected workflow: %+v", state)
 		}
 	})
+}
+
+func TestBlackBoxAmbiguousTmuxLaunchIsReconciledAndCleaned(t *testing.T) {
+	realTmux, err := exec.LookPath("tmux")
+	if err != nil {
+		t.Skip("tmux unavailable")
+	}
+	for _, operation := range []string{"new-session", "new-window"} {
+		t.Run(operation, func(t *testing.T) {
+			binary, fake, runDir, fixtureDir := prepareScenario(t, "timeout")
+			wrapper := filepath.Join(t.TempDir(), "tmux-wrapper")
+			script := fmt.Sprintf("#!/bin/sh\nif [ \"$1\" = %q ]; then\n  %q \"$@\"\n  sleep 2\n  exit 0\nfi\nexec %q \"$@\"\n", operation, realTmux, realTmux)
+			if err := os.WriteFile(wrapper, []byte(script), 0o755); err != nil {
+				t.Fatal(err)
+			}
+			command := newRunCommand(t, binary, fake, runDir, "400ms", filepath.Join(repositoryRoot(t), "examples", "brief.md"))
+			command.Args = append(command.Args, "--tmux", wrapper)
+			output, err := command.CombinedOutput()
+			if err == nil || (!strings.Contains(string(output), "tmux command timed out") && !strings.Contains(string(output), "ready marker")) {
+				t.Fatalf("ambiguous launch was not reconciled as an indeterminate start: %v\n%s", err, output)
+			}
+			assertProcessesGone(t, readInvocationRecords(t, fixtureDir))
+			privatePaths, _ := filepath.Glob(filepath.Join(filepath.Dir(runDir), ".write-uuter-private-*"))
+			if len(privatePaths) != 0 {
+				t.Fatalf("ambiguous launch left private state: %v", privatePaths)
+			}
+		})
+	}
 }
 
 func TestBlackBoxReadyPublicationTimeoutCleansOwnedRunner(t *testing.T) {
@@ -1066,6 +1147,21 @@ func TestBlackBoxExplicitPromptDirectoryNeverFallsBack(t *testing.T) {
 	}
 	if _, err := os.Stat(runDir); !errors.Is(err, os.ErrNotExist) {
 		t.Fatalf("invalid explicit prompts created a run: %v", err)
+	}
+	emptyRunDir := filepath.Join(temporary, "empty-run")
+	empty := exec.Command(binary, "run",
+		"--brief", filepath.Join(repositoryRoot(t), "examples", "brief.md"),
+		"--run-dir", emptyRunDir,
+		"--codex", fake,
+		"--prompts-dir=",
+	)
+	empty.Dir = repositoryRoot(t)
+	output, err = empty.CombinedOutput()
+	if err == nil || !strings.Contains(string(output), "explicit prompt directory is empty") {
+		t.Fatalf("explicit empty override silently fell back: %v\n%s", err, output)
+	}
+	if _, err := os.Stat(emptyRunDir); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("empty explicit prompts created a run: %v", err)
 	}
 }
 

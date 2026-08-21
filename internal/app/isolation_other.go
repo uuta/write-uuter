@@ -4,7 +4,7 @@ package app
 
 import "fmt"
 
-func isolationProfile(_, _, _ string) (string, error) {
+func isolationProfile(_, _ string, _ []string) (string, error) {
 	return "", fmt.Errorf("OS-enforced agent read isolation is not available on this platform")
 }
 

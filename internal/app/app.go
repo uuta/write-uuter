@@ -1,6 +1,7 @@
 package app
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -20,6 +21,7 @@ type Config struct {
 	TmuxExecutable  string
 	AgentTimeout    time.Duration
 	PromptsDir      string
+	PromptsDirSet   bool
 }
 
 type decisionBinding struct {
@@ -62,7 +64,7 @@ func Run(config Config) error {
 	if err != nil {
 		return err
 	}
-	promptsDir, err := resolvePromptsDir(config.PromptsDir)
+	promptsDir, err := resolvePromptsDir(config.PromptsDir, config.PromptsDirSet || config.PromptsDir != "")
 	if err != nil {
 		return err
 	}
@@ -727,7 +729,11 @@ func reportField(line string) (string, string, bool) {
 }
 
 func (control *controller) requestPMDecision(candidate int, lens string, result ReviewResult) ([]PMDecision, error) {
-	deadlineUnixNano := invocationDeadline(control.config.AgentTimeout)
+	pmTimeout := control.config.AgentTimeout
+	if injected, err := time.ParseDuration(os.Getenv("WRITE_UUTER_TEST_PM_DECISION_TIMEOUT")); err == nil && injected > 0 {
+		pmTimeout = injected
+	}
+	deadlineUnixNano := invocationDeadline(pmTimeout)
 	resultPath := filepath.Join("reviews", fmt.Sprintf("article-%03d", candidate), lens, "result.json")
 	reportPath := filepath.Join("reviews", fmt.Sprintf("article-%03d", candidate), lens, "report.md")
 	resultData, err := control.store.readRegular(resultPath)
@@ -988,7 +994,7 @@ func (control *controller) runWorker(role, lens string, candidate int, revision,
 	if err := ensureInvocationDeadline(deadlineUnixNano, role+" launch"); err != nil {
 		return err
 	}
-	if err := control.runtime.startWorker(inv, deadlineUnixNano); err != nil {
+	if err := control.runtime.startWorker(control.pm, inv, deadlineUnixNano); err != nil {
 		return err
 	}
 	if strings.HasPrefix(role, "reviewer_") {
@@ -1042,6 +1048,24 @@ func testInvocationDelay(name string) {
 	}
 }
 
+func waitForTestBarrier(name string) error {
+	barrier := os.Getenv(name)
+	if barrier == "" {
+		return nil
+	}
+	if err := os.WriteFile(barrier+".ready", []byte("ready\n"), 0o600); err != nil {
+		return err
+	}
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		if _, err := os.Stat(barrier + ".continue"); err == nil {
+			return nil
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	return fmt.Errorf("test barrier %s timed out", name)
+}
+
 func (control *controller) succeed(candidate int) error {
 	if err := control.runtime.cleanup(true, control.pm); err != nil {
 		return control.block(fmt.Sprintf("terminal cleanup failed: %v", err))
@@ -1063,8 +1087,24 @@ func (control *controller) succeed(candidate int) error {
 		return control.block(fmt.Sprintf("private runtime cleanup failed: %v", err))
 	}
 	control.runtime = nil
-	if err := control.store.writeAtomic("article.md", candidateData, 0o644); err != nil {
+	if err := waitForTestBarrier("WRITE_UUTER_TEST_FINAL_BOUNDARY_BARRIER"); err != nil {
+		return control.block(err.Error())
+	}
+	finalCandidateData, err := control.store.readRegular(fmt.Sprintf("drafts/article-%03d.md", candidate))
+	if err != nil {
+		return control.block(fmt.Sprintf("re-read accepted candidate at publication boundary: %v", err))
+	}
+	if got := revisionFor(finalCandidateData); got != control.workflow.CurrentRevision {
+		return control.block(fmt.Sprintf("accepted candidate changed at publication boundary: got %s, want %s", got, control.workflow.CurrentRevision))
+	}
+	if err := control.store.writeAtomic("article.md", finalCandidateData, 0o644); err != nil {
 		return control.block(fmt.Sprintf("stage final article: %v", err))
+	}
+	committedCandidate, candidateErr := control.store.readRegular(fmt.Sprintf("drafts/article-%03d.md", candidate))
+	committedArticle, articleErr := control.store.readRegular("article.md")
+	if candidateErr != nil || articleErr != nil || revisionFor(committedCandidate) != control.workflow.CurrentRevision || !bytes.Equal(committedCandidate, committedArticle) {
+		_ = control.store.remove("article.md")
+		return control.block(fmt.Sprintf("accepted candidate/article changed at final commit boundary: candidate=%v article=%v", candidateErr, articleErr))
 	}
 	now := time.Now().UTC()
 	control.workflow.Status = "succeeded"
@@ -1075,6 +1115,12 @@ func (control *controller) succeed(candidate int) error {
 	if err := control.saveWorkflow(); err != nil {
 		_ = control.store.remove("article.md")
 		return control.block(fmt.Sprintf("persist succeeded workflow: %v", err))
+	}
+	committedCandidate, candidateErr = control.store.readRegular(fmt.Sprintf("drafts/article-%03d.md", candidate))
+	committedArticle, articleErr = control.store.readRegular("article.md")
+	if candidateErr != nil || articleErr != nil || revisionFor(committedCandidate) != control.workflow.CurrentRevision || !bytes.Equal(committedCandidate, committedArticle) {
+		_ = control.store.remove("article.md")
+		return control.block(fmt.Sprintf("accepted candidate/article changed across succeeded-state commit: candidate=%v article=%v", candidateErr, articleErr))
 	}
 	return nil
 }

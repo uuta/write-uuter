@@ -1,6 +1,7 @@
 package app
 
 import (
+	"encoding/json"
 	"errors"
 	"flag"
 	"fmt"
@@ -25,6 +26,7 @@ func RunAgent(arguments []string) (returnErr error) {
 	logPath := flags.String("log", "", "")
 	exitPath := flags.String("exit", "", "")
 	readyPath := flags.String("ready", "", "")
+	ownershipPath := flags.String("ownership", "", "")
 	profilePath := flags.String("profile", "", "")
 	role := flags.String("role", "", "")
 	lens := flags.String("lens", "", "")
@@ -32,7 +34,6 @@ func RunAgent(arguments []string) (returnErr error) {
 	revision := flags.String("revision", "", "")
 	invocation := flags.String("invocation", "", "")
 	codexHome := flags.String("codex-home", "", "")
-	ownershipToken := flags.String("ownership-token", "", "")
 	exitMarkerDelay := flags.String("exit-marker-delay", "", "")
 	readyMarkerDelay := flags.String("ready-marker-delay", "", "")
 	if err := flags.Parse(arguments); err != nil || flags.NArg() != 0 {
@@ -41,8 +42,8 @@ func RunAgent(arguments []string) (returnErr error) {
 	for name, value := range map[string]string{
 		"codex": *codex, "workspace": *workspace, "prompt": *promptPath,
 		"log": *logPath, "exit": *exitPath, "ready": *readyPath,
-		"profile": *profilePath, "role": *role, "invocation": *invocation, "codex-home": *codexHome,
-		"ownership-token": *ownershipToken,
+		"ownership": *ownershipPath,
+		"profile":   *profilePath, "role": *role, "invocation": *invocation, "codex-home": *codexHome,
 	} {
 		if strings.TrimSpace(value) == "" {
 			return fmt.Errorf("internal agent runner is missing %s", name)
@@ -68,18 +69,21 @@ func RunAgent(arguments []string) (returnErr error) {
 	if err := os.MkdirAll(filepath.Join(*workspace, ".tmp"), 0o700); err != nil {
 		return fmt.Errorf("create agent temporary directory: %w", err)
 	}
-	if err := os.Setenv("WRITE_UUTER_OWNERSHIP_TOKEN", *ownershipToken); err != nil {
-		return fmt.Errorf("set invocation ownership: %w", err)
+	tracker, err := startProcessTracker(*ownershipPath, os.Getpid())
+	if err != nil {
+		return fmt.Errorf("start process ownership tracker: %w", err)
 	}
+	trackerClosed := false
+	defer func() {
+		if !trackerClosed {
+			returnErr = errors.Join(returnErr, tracker.terminate(2*time.Second))
+		}
+	}()
 	if *readyMarkerDelay != "" {
 		if delay, parseErr := time.ParseDuration(*readyMarkerDelay); parseErr == nil {
 			time.Sleep(delay)
 		}
 	}
-	if err := publishInteger(*readyPath, os.Getpid(), ""); err != nil {
-		return fmt.Errorf("publish agent ready marker: %w", err)
-	}
-
 	codexArguments := []string{
 		"--dangerously-bypass-approvals-and-sandbox", "-C", *workspace,
 		"exec", "--ephemeral", "--ignore-user-config", "--ignore-rules",
@@ -94,10 +98,21 @@ func RunAgent(arguments []string) (returnErr error) {
 	command.Stdin = prompt
 	command.Stdout = logFile
 	command.Stderr = logFile
-	command.Env = agentEnvironment(*workspace, *codexHome, *role, *lens, *candidate, *revision, *invocation, *ownershipToken)
+	command.Env = agentEnvironment(*workspace, *codexHome, *role, *lens, *candidate, *revision, *invocation)
 	configureProcessGroup(command)
 	if err := command.Start(); err != nil {
 		return fmt.Errorf("start Codex: %w", err)
+	}
+	identity, err := tracker.waitFor(command.Process.Pid, time.Now().Add(2*time.Second))
+	if err != nil {
+		_ = command.Process.Kill()
+		_ = command.Wait()
+		return fmt.Errorf("capture Codex process ownership: %w", err)
+	}
+	if err := publishJSONAtomic(*readyPath, identity); err != nil {
+		_ = command.Process.Kill()
+		_ = command.Wait()
+		return fmt.Errorf("publish live Codex ready marker: %w", err)
 	}
 	waitErr := command.Wait()
 	status = 0
@@ -109,17 +124,18 @@ func RunAgent(arguments []string) (returnErr error) {
 			status = 1
 		}
 	}
-	if err := terminateOwnedProcesses(*ownershipToken, 2*time.Second); err != nil {
+	if err := tracker.terminate(2 * time.Second); err != nil {
 		status = 1
 		_, _ = fmt.Fprintf(logFile, "\nwrite-uuter: owned-process cleanup failed: %v\n", err)
 	}
+	trackerClosed = true
 	if status != 0 {
 		return fmt.Errorf("Codex exited with status %d", status)
 	}
 	return nil
 }
 
-func agentEnvironment(workspace, codexHome, role, lens string, candidate int, revision, invocation, ownershipToken string) []string {
+func agentEnvironment(workspace, codexHome, role, lens string, candidate int, revision, invocation string) []string {
 	allowed := []string{
 		"HOME", "USER", "LOGNAME", "PATH", "SHELL", "LANG", "LC_ALL", "TERM",
 		"HTTP_PROXY", "HTTPS_PROXY", "NO_PROXY", "SSL_CERT_FILE", "SSL_CERT_DIR",
@@ -138,10 +154,49 @@ func agentEnvironment(workspace, codexHome, role, lens string, candidate int, re
 		"WRITE_UUTER_CANDIDATE="+strconv.Itoa(candidate),
 		"WRITE_UUTER_REVISION="+revision,
 		"WRITE_UUTER_INVOCATION="+invocation,
-		"WRITE_UUTER_OWNERSHIP_TOKEN="+ownershipToken,
 		"TMPDIR="+filepath.Join(workspace, ".tmp"),
 	)
 	return environment
+}
+
+func publishJSONAtomic(path string, value any) error {
+	data, err := json.Marshal(value)
+	if err != nil {
+		return err
+	}
+	data = append(data, '\n')
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		return err
+	}
+	temporary, err := os.CreateTemp(filepath.Dir(path), "."+filepath.Base(path)+"-*")
+	if err != nil {
+		return err
+	}
+	name := temporary.Name()
+	keep := false
+	defer func() {
+		_ = temporary.Close()
+		if !keep {
+			_ = os.Remove(name)
+		}
+	}()
+	if err := temporary.Chmod(0o600); err != nil {
+		return err
+	}
+	if _, err := temporary.Write(data); err != nil {
+		return err
+	}
+	if err := temporary.Sync(); err != nil {
+		return err
+	}
+	if err := temporary.Close(); err != nil {
+		return err
+	}
+	if err := os.Rename(name, path); err != nil {
+		return err
+	}
+	keep = true
+	return nil
 }
 
 func publishInteger(path string, value int, delayText string) error {

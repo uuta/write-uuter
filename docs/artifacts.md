@@ -58,6 +58,9 @@ no findings; `fix_required` has at least one. IDs are non-empty and unique
 within the result, all finding fields contain non-whitespace text,
 lens/revision must match the assignment, and `report.md` contains one exact,
 complete five-field entry per JSON finding in the same order.
+The controller rejects unknown fields and duplicate object keys recursively,
+including keys inside every finding object; JSON's usual last-value-wins
+behavior is never used for routing artifacts.
 
 ## PM decision
 
@@ -93,6 +96,8 @@ missing IDs, stale revisions, mismatched request IDs or review digests, dropped
 prior lenses, changed prior classification lists, changed prior routing
 outcomes, multiple fenced documents, and prepopulated future lenses fail the
 contract.
+Unknown fields and duplicate keys are rejected recursively in the top-level
+document, each lens record, and every decision object.
 
 ## workflow.json
 
@@ -109,10 +114,14 @@ truth. Schema version 1 records:
 - terminal `block_reason` when blocked.
 
 The durable `.control/` directory is controller-owned and preserves audit
-copies of generated prompt assignments, per-invocation logs, and natural exit
+copies of generated prompt assignments, per-invocation logs, and exit
 markers. The live runner executable, sandbox profiles, ready/ownership records,
 PM requests, and agent workspaces exist only in a controller-private sibling
-directory. They are removed after verified tmux/process-group cleanup and are
+directory. Worker `0` markers record natural successful exits. The persistent
+PM is controller-terminated after final validation, so its durable `143`
+marker is explicitly controller-synthesized cleanup evidence rather than a
+natural PM exit; interrupted workers likewise retain a nonzero terminal marker.
+Private state is removed after verified tmux/process-ownership cleanup and is
 never copied into `.control/`. Completion markers are atomically renamed into
 place; a partial marker cannot advance the workflow. Controller artifact access
 rejects symlink path components, symlinked tree roots/directories, and

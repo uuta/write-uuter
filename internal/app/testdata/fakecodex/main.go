@@ -71,10 +71,6 @@ type invocationLog struct {
 }
 
 func main() {
-	if len(os.Args) == 2 && os.Args[1] == "__detached" {
-		time.Sleep(time.Minute)
-		return
-	}
 	prompt, _ := io.ReadAll(os.Stdin)
 	role := os.Getenv("WRITE_UUTER_ROLE")
 	lens := os.Getenv("WRITE_UUTER_LENS")
@@ -84,7 +80,10 @@ func main() {
 	invocation := os.Getenv("WRITE_UUTER_INVOCATION")
 	executable, _ := os.Executable()
 	fixtureDir := filepath.Dir(executable)
-	scenarioBytes, _ := os.ReadFile(filepath.Join(fixtureDir, "scenario"))
+	scenarioBytes, err := os.ReadFile(filepath.Join(workDir, ".write-uuter-test-scenario"))
+	if err != nil {
+		scenarioBytes, _ = os.ReadFile(filepath.Join(fixtureDir, "scenario"))
+	}
 	scenario := strings.TrimSpace(string(scenarioBytes))
 	logPath := filepath.Join(workDir, ".write-uuter-test-log.json")
 	isolation := map[string]string{}
@@ -195,6 +194,10 @@ func runReviewer(workDir, scenario string, candidate int, lens, revision string)
 		(scenario == "rewrite_history" && candidate == 1 && lens == "evidence") ||
 		(scenario == "duplicate_pm" && candidate == 1 && lens == "evidence") ||
 		(scenario == "unknown_pm" && candidate == 1 && lens == "evidence") ||
+		(scenario == "duplicate_nested_finding" && candidate == 1 && lens == "evidence") ||
+		(scenario == "unknown_nested_finding" && candidate == 1 && lens == "evidence") ||
+		(scenario == "duplicate_pm_decision" && candidate == 1 && lens == "evidence") ||
+		(scenario == "unknown_pm_lens" && candidate == 1 && lens == "evidence") ||
 		(scenario == "detached_child_block" && candidate == 1 && lens == "evidence") ||
 		(scenario == "unbulleted_report" && candidate == 1 && lens == "evidence") ||
 		(scenario == "whitespace_finding" && candidate == 1 && lens == "evidence") ||
@@ -237,6 +240,16 @@ func runReviewer(workDir, scenario string, candidate int, lens, revision string)
 		}
 		return
 	}
+	if scenario == "duplicate_nested_finding" || scenario == "unknown_nested_finding" {
+		data, _ := json.MarshalIndent(result, "", "  ")
+		if scenario == "duplicate_nested_finding" {
+			data = []byte(strings.Replace(string(data), "\"severity\": \"must_fix\"", "\"severity\": \"must_fix\",\n      \"severity\": \"must_fix\"", 1))
+		} else {
+			data = []byte(strings.Replace(string(data), "\"severity\": \"must_fix\"", "\"severity\": \"must_fix\",\n      \"unexpected\": true", 1))
+		}
+		mustWrite(filepath.Join(workDir, "result.json"), string(data)+"\n")
+		return
+	}
 	mustJSON(filepath.Join(workDir, "result.json"), result)
 }
 
@@ -245,6 +258,10 @@ func standardFinding(id string) finding {
 }
 
 func runPM(workDir, scenario string) {
+	if scenario == "pm_exit_before_ready" {
+		os.Exit(23)
+	}
+	mustWrite(filepath.Join(workDir, "pm-ready"), "ready\n")
 	if scenario == "pm_exit_during_worker" {
 		time.Sleep(500 * time.Millisecond)
 		os.Exit(23)
@@ -324,6 +341,12 @@ func runPM(workDir, scenario string) {
 		if scenario == "unknown_pm" && current.Lens == "evidence" {
 			jsonData = []byte(strings.Replace(string(jsonData), "{", "{\n  \"unexpected\": true,", 1))
 		}
+		if scenario == "duplicate_pm_decision" && current.Lens == "evidence" {
+			jsonData = []byte(strings.Replace(string(jsonData), "\"decision\": \"valid_optional\"", "\"decision\": \"valid_optional\",\n          \"decision\": \"valid_optional\"", 1))
+		}
+		if scenario == "unknown_pm_lens" && current.Lens == "evidence" {
+			jsonData = []byte(strings.Replace(string(jsonData), "\"review_digest\":", "\"unexpected\": true,\n      \"review_digest\":", 1))
+		}
 		payload := "```json\n" + string(jsonData) + "\n```\n"
 		if scenario == "multiple_pm_documents" && current.Lens == "evidence" {
 			payload += "```json\n{}\n```\n"
@@ -342,9 +365,10 @@ func probeIsolation(workDir string) {
 	privateRoot := filepath.Dir(filepath.Dir(workDir))
 	runDir := filepath.Join(filepath.Dir(privateRoot), "run")
 	paths := map[string]string{
-		"durable":    filepath.Join(runDir, "brief.md"),
-		"prior_lens": filepath.Join(runDir, "reviews", "article-001", "evidence", "report.md"),
-		"host":       "/etc/hosts",
+		"durable":       filepath.Join(runDir, "brief.md"),
+		"prior_lens":    filepath.Join(runDir, "reviews", "article-001", "evidence", "report.md"),
+		"host":          "/etc/hosts",
+		"codex_sibling": filepath.Join(privateRoot, "control", "agent-runner"),
 	}
 	result := map[string]string{}
 	for label, path := range paths {
@@ -381,11 +405,8 @@ func probeIsolation(workDir string) {
 }
 
 func startDetachedChild() {
-	executable, err := os.Executable()
-	if err != nil {
-		panic(err)
-	}
-	command := exec.Command(executable, "__detached")
+	command := exec.Command("/bin/sleep", "60")
+	command.Env = []string{"PATH=/usr/bin:/bin"}
 	command.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
 	if err := command.Start(); err != nil {
 		panic(err)

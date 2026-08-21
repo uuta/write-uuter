@@ -63,20 +63,29 @@ or revision metadata is rejected rather than retried into a passing state.
 
 ## Lifecycle and terminal states
 
-The PM starts before research and remains active while Go starts one worker
-window at a time. Each role runs in a fresh private workspace outside the run
+The PM starts before research, atomically publishes its protocol-ready marker,
+and remains active while Go starts one worker window at a time. Go verifies
+both the PM Codex process identity and this application-level handshake before
+starting any worker, and rechecks PM liveness before accepting worker output.
+Each role runs in a fresh private workspace outside the run
 directory. Go stages only its allowed inputs, waits for a natural successful
 exit marker and tmux-window disappearance, validates output without following
 symlinks, and then copies regular files into the run. The marker is published
 by a same-directory temporary-file rename only after the Codex process and its
-descendants are gone. The controller-private runner, ownership/ready records,
+descendants are gone. The controller-private runner, ancestry ownership
+manifests/ready records,
 live PM requests, and other launch-critical state are siblings of—not children
 of—agent workspaces. A default-deny macOS native sandbox gives agents only
 system runtime reads plus their current workspace and isolated Codex home; it
 denies unrelated host, durable-run, prior-lens, PM, and controller-private
 access. Controller-only test paths never become sandbox rules or agent
-environment variables.
-Each lens uses a fresh Codex invocation.
+environment variables. The private runner follows parent/child edges through
+the native process table and durably records precise kernel process identities
+for the invocation ancestry, including children that create a new session or
+process group, clear their environment, or execute a protected system binary.
+Cleanup opens stable kernel process handles before signaling each recorded
+identity, so a reused bare PID is never treated as owned. Each lens uses a
+fresh Codex invocation.
 
 Every agent has the configured timeout, and tmux lifecycle commands have their
 own short bound. The controller enforces both a context timer and an absolute

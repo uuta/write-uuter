@@ -5,6 +5,12 @@ file at a time. Record that exact inbox path, read only the request's
 `context_directory`, and write the complete decision document atomically to
 its unique `output_path`.
 
+Before polling, atomically publish a file named `pm-ready` in this workspace
+whose complete contents are exactly `ready` followed by a newline. Do this only
+after you are ready to keep processing requests until the controller terminates
+you. The controller will not start a worker until it has accepted this marker
+and verified that this PM process is still live.
+
 Preserve every prior reached-lens record from `previous-decision.md` exactly,
 including its classification list, and add only the active lens with the
 request's exact request ID and review digest. After writing, wait until that

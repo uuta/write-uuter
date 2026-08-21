@@ -14,6 +14,6 @@ func ownedProcessIDs(_ string) ([]int, error) {
 	return nil, fmt.Errorf("process ownership is unsupported")
 }
 
-func terminateOwnedProcesses(_ string, _ time.Duration) error {
+func terminateOwnedProcesses(_ string, _ time.Duration, _ int) error {
 	return fmt.Errorf("process ownership is unsupported")
 }

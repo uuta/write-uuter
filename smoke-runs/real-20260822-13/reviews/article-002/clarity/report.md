@@ -1,0 +1,17 @@
+# Clarity review
+
+status: fix_required
+
+lens: clarity
+
+reviewed_revision: sha256:32eb132f9f844968c32b44164de1f3230494642681aa9ad29f46c7bd34b66192
+
+id: clarity-001
+
+severity: medium
+
+location: Four reviews form a serial routing loop, first paragraph
+
+problem: The phrase “persistent PM” introduces a key actor without explaining what persists or whether PM means a person, a Codex role, or the Go controller; readers therefore cannot form a precise model of who classifies findings across review attempts.
+
+suggested_direction: Define the PM on first use as the product-manager Codex role and state plainly what continuity “persistent” provides, while keeping the separate validation and routing responsibility of the Go controller explicit.

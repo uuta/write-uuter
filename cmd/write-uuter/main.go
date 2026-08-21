@@ -37,6 +37,12 @@ func main() {
 		fmt.Fprintln(os.Stderr, "unexpected positional arguments")
 		os.Exit(2)
 	}
+	promptsDirSet := false
+	flags.Visit(func(parsed *flag.Flag) {
+		if parsed.Name == "prompts-dir" {
+			promptsDirSet = true
+		}
+	})
 
 	err := app.Run(app.Config{
 		BriefPath:       *brief,
@@ -45,6 +51,7 @@ func main() {
 		TmuxExecutable:  *tmux,
 		AgentTimeout:    *timeout,
 		PromptsDir:      *promptsDir,
+		PromptsDirSet:   promptsDirSet,
 	})
 	if err != nil {
 		fmt.Fprintln(os.Stderr, err)

@@ -20,8 +20,11 @@ var requiredPromptFiles = []string{
 	"reviewer-copy.md",
 }
 
-func resolvePromptsDir(configured string) (string, error) {
-	if configured != "" {
+func resolvePromptsDir(configured string, explicit bool) (string, error) {
+	if explicit {
+		if configured == "" {
+			return "", fmt.Errorf("explicit prompt directory is empty")
+		}
 		absolute, err := filepath.Abs(configured)
 		if err != nil {
 			return "", fmt.Errorf("resolve explicit prompt directory: %w", err)

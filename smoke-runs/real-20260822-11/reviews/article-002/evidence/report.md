@@ -1,9 +1,0 @@
-# Evidence review
-
-status: clean
-
-lens: evidence
-
-reviewed_revision: sha256:d61a56e525cf12a1d11a63a4e453cf568341e706593167611cc27a3aa38a16b8
-
-findings: []
