@@ -1,0 +1,2087 @@
+2026-08-21T22:52:04.491154Z ERROR codex_skills_extension::loader::host: failed to walk skills root file:///Users/yutaaoki/.agents/skills: Operation not permitted (os error 1)
+OpenAI Codex v0.149.0
+--------
+workdir: /Users/yutaaoki/write-uuter/.worktrees/1/smoke-runs/.write-uuter-private-1802187262/workspaces/001-pm-4227960904
+model: gpt-5.6-sol
+provider: openai
+approval: never
+sandbox: danger-full-access
+reasoning effort: none
+reasoning summaries: none
+session id: 01a02686-3406-76d2-8eae-bde8f884dfc7
+--------
+user
+# PM role contract
+
+You are the editorial PM for one `write-uuter` run. Go owns all workflow
+transitions. Remain active and handle one durable request at a time in the
+isolated workspace described by the runtime protocol.
+
+For each request, validate every finding and classify it as
+`valid_must_fix`, `valid_optional`, `invalid`, or `needs_human_judgment`. An
+`invalid` decision requires a non-empty reason. Preserve the complete validated
+history from `previous-decision.md`; do not invent future-lens entries.
+
+Write one Markdown file containing exactly one fenced JSON object:
+
+```json
+{
+  "reviewed_revision": "sha256:...",
+  "lenses": {
+    "evidence": {
+      "request_id": "controller-issued-id",
+      "review_digest": "sha256:...",
+      "decisions": [
+        {
+          "finding_id": "evidence-001",
+          "decision": "valid_must_fix",
+          "reason": "The supported correction is required."
+        }
+      ]
+    }
+  }
+}
+```
+
+Use the active request's exact request ID, review digest, revision, and lens.
+The classification field is named exactly `decision`, never `classification`.
+Each decision object uses `finding_id`, `decision`, and a non-empty `reason`
+when the decision is `invalid`.
+Treat `request_path` as the acknowledgement identity: after publishing the
+decision, wait for that exact request-specific file to disappear before
+polling for another request. Never write a candidate or reviewer artifact.
+
+
+# PM runtime protocol
+
+This is an isolated PM workspace. Poll `inbox/` for one request-ID-named JSON
+file at a time. Record that exact inbox path, read only the request's
+`context_directory`, and write the complete decision document atomically to
+its unique `output_path`.
+
+Before polling, atomically publish a file named `pm-ready` in this workspace
+whose complete contents are exactly `ready` followed by a newline. Do this only
+after you are ready to keep processing requests until the controller terminates
+you. The controller will not start a worker until it has accepted this marker
+and verified that this PM process is still live.
+
+Preserve every prior reached-lens record from `previous-decision.md` exactly,
+including its classification list, and add only the active lens with the
+request's exact request ID and review digest. After writing, wait until that
+exact request-specific inbox file is removed; a later request uses a different
+filename and cannot satisfy this acknowledgement. Then poll for the next file.
+Continue until the process is terminated by the controller.
+
+codex
+I’m entering the PM loop now. I’ll publish the readiness marker atomically, process exactly one request file at a time, preserve prior decisions, and wait for request-specific acknowledgement before continuing.
+exec
+/bin/zsh -lc 'tmp_path=$(mktemp ./pm-ready.tmp.XXXXXX)
+printf '"'ready\\n' > \""'$tmp_path"
+mv "$tmp_path" ./pm-ready
+while true; do
+  files=(inbox/*.json(N))
+  if (( ${#files} > 0 )); then
+    print -r -- "REQUEST:${files[1]}"
+    break
+  fi
+  sleep 1
+done' in /Users/yutaaoki/write-uuter/.worktrees/1/smoke-runs/.write-uuter-private-1802187262/workspaces/001-pm-4227960904
+ exited 1 in 0ms:
+zsh:1: fork failed: operation not permitted
+
+codex
+The first watcher launch hit an environment-level process-fork restriction before polling began. I’m switching to short, non-persistent checks so the protocol can continue without relying on a background shell loop.
+exec
+/bin/zsh -c pwd in /Users/yutaaoki/write-uuter/.worktrees/1/smoke-runs/.write-uuter-private-1802187262/workspaces/001-pm-4227960904
+ succeeded in 0ms:
+/Users/yutaaoki/write-uuter/.worktrees/1/smoke-runs/.write-uuter-private-1802187262/workspaces/001-pm-4227960904
+
+apply patch
+patch: completed
+/Users/yutaaoki/write-uuter/.worktrees/1/smoke-runs/.write-uuter-private-1802187262/workspaces/001-pm-4227960904/pm-ready.staging
+diff --git a/pm-ready.staging b/pm-ready.staging
+new file mode 100644
+index 0000000000000000000000000000000000000000..395527df662d5fdf4b00c5f1cd9b8d7ac048e127
+--- /dev/null
++++ b/pm-ready.staging
+@@ -0,0 +1 @@
++ready
+
+exec
+/bin/zsh -c 'mv pm-ready.staging pm-ready' in /Users/yutaaoki/write-uuter/.worktrees/1/smoke-runs/.write-uuter-private-1802187262/workspaces/001-pm-4227960904
+ succeeded in 0ms:
+diff --git a/pm-ready.staging b/pm-ready.staging
+new file mode 100644
+index 0000000000000000000000000000000000000000..395527df662d5fdf4b00c5f1cd9b8d7ac048e127
+--- /dev/null
++++ b/pm-ready.staging
+@@ -0,0 +1 @@
++ready
+
+exec
+/bin/zsh -c 'for f in inbox/*.json(N); do print -r -- "$f"; done' in /Users/yutaaoki/write-uuter/.worktrees/1/smoke-runs/.write-uuter-private-1802187262/workspaces/001-pm-4227960904
+ succeeded in 0ms:
+diff --git a/pm-ready.staging b/pm-ready.staging
+new file mode 100644
+index 0000000000000000000000000000000000000000..395527df662d5fdf4b00c5f1cd9b8d7ac048e127
+--- /dev/null
++++ b/pm-ready.staging
+@@ -0,0 +1 @@
++ready
+
+exec
+/bin/zsh -c 'sleep 10
+for f in inbox/*.json(N); do print -r -- "$f"; done' in /Users/yutaaoki/write-uuter/.worktrees/1/smoke-runs/.write-uuter-private-1802187262/workspaces/001-pm-4227960904
+ exited 1 in 0ms:
+zsh:1: fork failed: operation not permitted
+
+diff --git a/pm-ready.staging b/pm-ready.staging
+new file mode 100644
+index 0000000000000000000000000000000000000000..395527df662d5fdf4b00c5f1cd9b8d7ac048e127
+--- /dev/null
++++ b/pm-ready.staging
+@@ -0,0 +1 @@
++ready
+
+exec
+/bin/zsh -c 'for f in inbox/*.json(N); do print -r -- "$f"; done' in /Users/yutaaoki/write-uuter/.worktrees/1/smoke-runs/.write-uuter-private-1802187262/workspaces/001-pm-4227960904
+ succeeded in 0ms:
+diff --git a/pm-ready.staging b/pm-ready.staging
+new file mode 100644
+index 0000000000000000000000000000000000000000..395527df662d5fdf4b00c5f1cd9b8d7ac048e127
+--- /dev/null
++++ b/pm-ready.staging
+@@ -0,0 +1 @@
++ready
+
+exec
+/bin/zsh -c 'for f in inbox/*.json(N); do print -r -- "$f"; done' in /Users/yutaaoki/write-uuter/.worktrees/1/smoke-runs/.write-uuter-private-1802187262/workspaces/001-pm-4227960904
+ succeeded in 0ms:
+diff --git a/pm-ready.staging b/pm-ready.staging
+new file mode 100644
+index 0000000000000000000000000000000000000000..395527df662d5fdf4b00c5f1cd9b8d7ac048e127
+--- /dev/null
++++ b/pm-ready.staging
+@@ -0,0 +1 @@
++ready
+
+exec
+/bin/zsh -c 'zmodload zsh/zselect
+zselect -t 1000
+for f in inbox/*.json(N); do print -r -- "$f"; done' in /Users/yutaaoki/write-uuter/.worktrees/1/smoke-runs/.write-uuter-private-1802187262/workspaces/001-pm-4227960904
+ succeeded in 9998ms:
+diff --git a/pm-ready.staging b/pm-ready.staging
+new file mode 100644
+index 0000000000000000000000000000000000000000..395527df662d5fdf4b00c5f1cd9b8d7ac048e127
+--- /dev/null
++++ b/pm-ready.staging
+@@ -0,0 +1 @@
++ready
+
+exec
+/bin/zsh -c 'zmodload zsh/zselect
+while true; do
+  files=(inbox/*.json(N))
+  if (( ${#files} > 0 )); then
+    print -r -- "${files[1]}"
+    break
+  fi
+  zselect -t 500
+ done' in /Users/yutaaoki/write-uuter/.worktrees/1/smoke-runs/.write-uuter-private-1802187262/workspaces/001-pm-4227960904
+diff --git a/pm-ready.staging b/pm-ready.staging
+new file mode 100644
+index 0000000000000000000000000000000000000000..395527df662d5fdf4b00c5f1cd9b8d7ac048e127
+--- /dev/null
++++ b/pm-ready.staging
+@@ -0,0 +1 @@
++ready
+
+diff --git a/pm-ready.staging b/pm-ready.staging
+new file mode 100644
+index 0000000000000000000000000000000000000000..395527df662d5fdf4b00c5f1cd9b8d7ac048e127
+--- /dev/null
++++ b/pm-ready.staging
+@@ -0,0 +1 @@
++ready
+
+codex
+The readiness marker is live and no request has appeared yet. The watcher is still active and scoped to `inbox/*.json`; I’ll begin validation as soon as the controller publishes a request.
+diff --git a/pm-ready.staging b/pm-ready.staging
+new file mode 100644
+index 0000000000000000000000000000000000000000..395527df662d5fdf4b00c5f1cd9b8d7ac048e127
+--- /dev/null
++++ b/pm-ready.staging
+@@ -0,0 +1 @@
++ready
+
+diff --git a/pm-ready.staging b/pm-ready.staging
+new file mode 100644
+index 0000000000000000000000000000000000000000..395527df662d5fdf4b00c5f1cd9b8d7ac048e127
+--- /dev/null
++++ b/pm-ready.staging
+@@ -0,0 +1 @@
++ready
+
+codex
+Still waiting on the controller’s first request; there is nothing to classify yet. The PM process remains live, with the exact `ready\n` marker already published.
+diff --git a/pm-ready.staging b/pm-ready.staging
+new file mode 100644
+index 0000000000000000000000000000000000000000..395527df662d5fdf4b00c5f1cd9b8d7ac048e127
+--- /dev/null
++++ b/pm-ready.staging
+@@ -0,0 +1 @@
++ready
+
+diff --git a/pm-ready.staging b/pm-ready.staging
+new file mode 100644
+index 0000000000000000000000000000000000000000..395527df662d5fdf4b00c5f1cd9b8d7ac048e127
+--- /dev/null
++++ b/pm-ready.staging
+@@ -0,0 +1 @@
++ready
+
+codex
+No inbox file has arrived after another polling interval. I’m continuing to hold the run open; I have not created any decision or reviewer artifact without a controller-issued request.
+ succeeded in 214492ms:
+inbox/008e1068b1424b4f8ac9165f81b58e68.json
+
+diff --git a/pm-ready.staging b/pm-ready.staging
+new file mode 100644
+index 0000000000000000000000000000000000000000..395527df662d5fdf4b00c5f1cd9b8d7ac048e127
+--- /dev/null
++++ b/pm-ready.staging
+@@ -0,0 +1 @@
++ready
+
+exec
+/bin/zsh -c "IFS= read -r -d '' content < inbox/008e1068b1424b4f8ac9165f81b58e68.json
+print -r -- \""'$content"' in /Users/yutaaoki/write-uuter/.worktrees/1/smoke-runs/.write-uuter-private-1802187262/workspaces/001-pm-4227960904
+ succeeded in 0ms:
+{
+  "request_id": "008e1068b1424b4f8ac9165f81b58e68",
+  "candidate": 1,
+  "lens": "evidence",
+  "reviewed_revision": "sha256:94b953876ab2019d9308404fdbefe8dc64506aa5b25aebf30abca863bc0f551c",
+  "review_digest": "sha256:bfdce62485498a4967ad9c8a0bc3dbcb6b36e6b7ebb14b792c14f8c47f69d3cb",
+  "result_path": "requests/008e1068b1424b4f8ac9165f81b58e68/result.json",
+  "report_path": "requests/008e1068b1424b4f8ac9165f81b58e68/report.md",
+  "decision_path": "pm-decisions/article-001.md",
+  "request_path": "inbox/008e1068b1424b4f8ac9165f81b58e68.json",
+  "context_directory": "requests/008e1068b1424b4f8ac9165f81b58e68",
+  "output_path": "outbox/008e1068b1424b4f8ac9165f81b58e68.md"
+}
+
+
+diff --git a/pm-ready.staging b/pm-ready.staging
+new file mode 100644
+index 0000000000000000000000000000000000000000..395527df662d5fdf4b00c5f1cd9b8d7ac048e127
+--- /dev/null
++++ b/pm-ready.staging
+@@ -0,0 +1 @@
++ready
+
+exec
+/bin/zsh -c 'for f in requests/008e1068b1424b4f8ac9165f81b58e68/*(N); do print -r -- "$f"; done' in /Users/yutaaoki/write-uuter/.worktrees/1/smoke-runs/.write-uuter-private-1802187262/workspaces/001-pm-4227960904
+ succeeded in 0ms:
+requests/008e1068b1424b4f8ac9165f81b58e68/brief.md
+requests/008e1068b1424b4f8ac9165f81b58e68/claim-ledger.md
+requests/008e1068b1424b4f8ac9165f81b58e68/drafts
+requests/008e1068b1424b4f8ac9165f81b58e68/evidence
+requests/008e1068b1424b4f8ac9165f81b58e68/outline.md
+requests/008e1068b1424b4f8ac9165f81b58e68/report.md
+requests/008e1068b1424b4f8ac9165f81b58e68/result.json
+
+diff --git a/pm-ready.staging b/pm-ready.staging
+new file mode 100644
+index 0000000000000000000000000000000000000000..395527df662d5fdf4b00c5f1cd9b8d7ac048e127
+--- /dev/null
++++ b/pm-ready.staging
+@@ -0,0 +1 @@
++ready
+
+exec
+/bin/zsh -c 'for f in requests/008e1068b1424b4f8ac9165f81b58e68/**/*(.N); do print -r -- "$f"; done' in /Users/yutaaoki/write-uuter/.worktrees/1/smoke-runs/.write-uuter-private-1802187262/workspaces/001-pm-4227960904
+ succeeded in 0ms:
+requests/008e1068b1424b4f8ac9165f81b58e68/brief.md
+requests/008e1068b1424b4f8ac9165f81b58e68/claim-ledger.md
+requests/008e1068b1424b4f8ac9165f81b58e68/drafts/article-001.md
+requests/008e1068b1424b4f8ac9165f81b58e68/evidence/sources.md
+requests/008e1068b1424b4f8ac9165f81b58e68/outline.md
+requests/008e1068b1424b4f8ac9165f81b58e68/report.md
+requests/008e1068b1424b4f8ac9165f81b58e68/result.json
+
+diff --git a/pm-ready.staging b/pm-ready.staging
+new file mode 100644
+index 0000000000000000000000000000000000000000..395527df662d5fdf4b00c5f1cd9b8d7ac048e127
+--- /dev/null
++++ b/pm-ready.staging
+@@ -0,0 +1 @@
++ready
+
+exec
+/bin/zsh -c 'for f in requests/008e1068b1424b4f8ac9165f81b58e68/report.md requests/008e1068b1424b4f8ac9165f81b58e68/result.json requests/008e1068b1424b4f8ac9165f81b58e68/drafts/article-001.md requests/008e1068b1424b4f8ac9165f81b58e68/evidence/sources.md requests/008e1068b1424b4f8ac9165f81b58e68/claim-ledger.md requests/008e1068b1424b4f8ac9165f81b58e68/brief.md; do
+ print -r -- "FILE:$f"
+ IFS= read -r -d '"'' content < \""'$f"
+ print -r -- "$content"
+done' in /Users/yutaaoki/write-uuter/.worktrees/1/smoke-runs/.write-uuter-private-1802187262/workspaces/001-pm-4227960904
+ succeeded in 0ms:
+FILE:requests/008e1068b1424b4f8ac9165f81b58e68/report.md
+# Evidence Review
+
+status: clean
+
+lens: evidence
+
+reviewed_revision: sha256:94b953876ab2019d9308404fdbefe8dc64506aa5b25aebf30abca863bc0f551c
+
+findings: []
+
+FILE:requests/008e1068b1424b4f8ac9165f81b58e68/result.json
+{
+  "status": "clean",
+  "lens": "evidence",
+  "reviewed_revision": "sha256:94b953876ab2019d9308404fdbefe8dc64506aa5b25aebf30abca863bc0f551c",
+  "findings": []
+}
+
+FILE:requests/008e1068b1424b4f8ac9165f81b58e68/drafts/article-001.md
+# From Brief to Inspectable Reviewed Article
+
+write-uuter is a Go CLI that turns a Markdown brief into a reviewed article while preserving the work that produced it. Its central design choice is a clear division of responsibility: a deterministic Go controller owns workflow state, validation, routing, revision hashes, timeouts, cleanup, and publication, while isolated Codex processes perform bounded editorial tasks.
+
+This is not one agent carrying an article from prompt to publication. The project assigns research, structure, writing, review, and editorial judgment to distinct roles. Workers and reviewers run separately, each reviewer starts as a fresh process, and one persistent PM makes editorial classifications throughout the run. Because those judgments are retained while Go enforces the resulting routes, engineers can inspect both the editorial decision and the control flow that followed it.
+
+## From brief to first candidate
+
+A run begins only after the controller validates the brief's required sections and confirms that the target is new. It then initializes the run directory atomically. From there, work proceeds in a fixed order.
+
+First, the Researcher creates a non-empty source record and a claim ledger. The ledger must explicitly account for five kinds of material: Fact, Firsthand observation, Inference, Opinion, and Unresolved. That classification gives later roles a concrete boundary between supported claims and material that needs qualification or cannot yet be established.
+
+Next, the Story Editor converts the evidence into an outline. Each section must state its purpose, supporting evidence, and intended reader takeaway. The Writer then expands that outline into candidate 001. A candidate must contain substantive text and cannot contain unresolved drafting markers.
+
+These requirements are examples of artifact gates: a required file and the validation it must pass before the controller advances. Each handoff is therefore a named, durable artifact with a minimum contract, not an informal assurance that the work is done.
+
+## Files, not final messages, prove progress
+
+Each role works in an isolated workspace rather than directly in the durable run directory or another role's workspace. Go stages only the context that role is allowed to receive. After the process exits successfully, the controller checks the role's owned outputs, requires valid regular files, and copies validated results back into the run.
+
+An agent's final message cannot advance the workflow on its own. The expected files must exist and satisfy their contracts. Review output, for example, is tied to a specific candidate by its SHA-256 revision; the declared lens and revision must match the assignment, and the structured findings must agree with the accompanying report.
+
+The controller records the live state in `workflow.json`, which is rewritten atomically. It includes the run's status and phase, current candidate and revision, active role, artifact paths, review attempts, timestamps, and—when applicable—a terminal blocking reason. In this repository, “inspectable” is best understood as a consequence of this design: state transitions depend on retained, validated files rather than transient chat transcripts or terminal scrollback.
+
+## Four reviews, one lens at a time
+
+Every candidate enters a fixed, sequential review sequence: Evidence, Story, Clarity, then Copy. Reviewers report findings but never edit the candidate. After each reached lens, the persistent PM classifies every finding as `valid_must_fix`, `valid_optional`, `invalid` with a reason, or `needs_human_judgment`.
+
+The separation matters. A fresh reviewer supplies a lens-specific assessment, the PM records the editorial judgment about each finding, and Go validates that decision artifact and applies predetermined routing rules. Later lenses do not run concurrently or get ahead of an unresolved must-fix.
+
+If the PM validates a must-fix, review of that candidate stops immediately. The Writer receives the prior candidate and the reached review result and produces the next numbered candidate. Review then restarts at Evidence. One rationale supported by the design is that changed content should not inherit later-lens results attached to an earlier revision. Optional and invalid findings do not consume another candidate.
+
+Automated revision is bounded at candidate 003. A must-fix against that candidate blocks the run instead of creating candidate 004. A need for human judgment, a runtime failure, or an artifact-validation failure also blocks the run. The limit does not establish that three attempts are optimal; it simply prevents indefinite automated revision and turns unresolved work into an explicit terminal state.
+
+## Two inspectable endings
+
+Success requires the final candidate to pass routing at all four review lenses. Only then does the controller create `article.md`, as a byte-for-byte copy of the accepted candidate. The published artifact can therefore be matched exactly to the revision that was reviewed.
+
+A blocked run keeps its reason and the work accumulated before the stop. Depending on how far it progressed, that record can include earlier candidates, partial review sequences, reviewer reports, PM decisions, workflow state, and audit copies of prompts, logs, and exit markers. Failure does not collapse into an unexplained absence of an article.
+
+That durable record is the practical answer to how write-uuter produces an inspectable reviewed article. The controller does not merely ask roles to follow a process; it requires evidence of each completed step, validates the evidence, and preserves the route to either exact publication or explicit blockage. The documented workflow does have firm boundaries: parallel runs, resuming after a controller restart, and editing completed runs are not implemented. Within those boundaries, its artifacts make the outcome traceable without treating agent conversation as workflow state.
+
+FILE:requests/008e1068b1424b4f8ac9165f81b58e68/evidence/sources.md
+# Sources
+
+Research method: close reading of the controller-staged copies named by the brief. No network research or firsthand execution was performed. Accessed 2026-08-22.
+
+## S1 — Repository README
+
+- Location: `context/source-hints/001-README.md` (staged copy of `README.md`)
+- Useful summary: Defines write-uuter as a Go CLI that converts a Markdown brief into a reviewed article while retaining evidence, outline, candidates, reviews, and PM decisions. Summarizes the runtime division of responsibility: Go owns state, validation, hashes, timeouts, cleanup, isolation, and artifact copying; isolated Codex roles perform editorial work. States the role order, sequential fresh reviewers, candidate-003 limit, success behavior, and blocked-run behavior.
+- Particularly useful for: the high-level answer, system requirements, controller/agent boundary, success and failure outcomes.
+
+## S2 — Workflow documentation
+
+- Location: `context/source-hints/002-workflow.md` (staged copy of `docs/workflow.md`)
+- Useful summary: Gives the exact controller sequence from brief validation and atomic run initialization through research, outline, candidate creation, four review lenses, PM classification, revision, and terminal publication or blocking. Defines artifact validation gates, explains that review lenses are sequential, and states that a must-fix stops later lenses and makes the replacement restart at Evidence. Documents lifecycle, isolation, timeout, cleanup, and terminal revalidation behavior.
+- Particularly useful for: sequential review loop, routing rules, artifact gates, failure modes, and candidate budget.
+
+## S3 — Role contracts
+
+- Location: `context/source-hints/003-roles.md` (staged copy of `docs/roles.md`)
+- Useful summary: Defines ownership and prohibited actions for the Human Editor, persistent PM, Researcher, Story Editor, Writer, and four reviewers. Specifies the PM's four finding classifications, the context supplied to each reviewer lens, and the fact that reviewers are fresh sequential processes that cannot edit candidates. Explains which durable files each role owns.
+- Particularly useful for: role boundaries, PM-versus-controller responsibilities, reviewer inputs, and why artifacts remain attributable and inspectable.
+
+## S4 — Artifact contracts
+
+- Location: `context/source-hints/004-artifacts.md` (staged copy of `docs/artifacts.md`)
+- Useful summary: Defines the run-directory layout and validated schemas for reviewer results, PM decisions, and `workflow.json`. States that earlier candidates and partial review sequences are retained, while `article.md` exists only on success and exactly matches the accepted candidate. Documents recursive JSON validation, atomic state/marker writes, audit copies, symlink and regular-file protections, and the rule that editorial completion does not depend on chat transcripts or tmux scrollback.
+- Particularly useful for: inspectable terminal artifacts, schema-level validation, retained revision history, and exact publication semantics.
+
+## Source-use boundaries
+
+- These four staged files are the complete source set permitted by the brief.
+- Claims about publishing integrations, web interfaces, other repositories, or editorial systems in general are unsupported and outside scope.
+- The documentation describes the shipped issue-1 workflow; it explicitly says parallel runs, resume after controller restart, and editing completed runs are not implemented.
+
+FILE:requests/008e1068b1424b4f8ac9165f81b58e68/claim-ledger.md
+# Claim Ledger
+
+This ledger uses the five required classifications explicitly. Source keys refer to `evidence/sources.md`.
+
+## Fact
+
+| ID | Claim | Support |
+| --- | --- | --- |
+| F1 | write-uuter is a Go CLI that turns a Markdown brief into a reviewed article and preserves the artifacts that produced it. | S1 |
+| F2 | The controller validates the required brief sections and requires a new target before atomically initializing the run directory. | S1, S2 |
+| F3 | Go, rather than an editorial agent, owns workflow transitions, artifact validation, revision hashes, timeouts, routing, process cleanup, and terminal publication. | S1, S2, S3 |
+| F4 | The editorial roles run in this order: Researcher, Story Editor, Writer, then Evidence, Story, Clarity, and Copy reviewers. | S1, S2, S3 |
+| F5 | The PM is one persistent Codex process; workers and reviewers run separately, with each reviewer lens using a fresh process. | S1, S2, S3 |
+| F6 | Role workspaces are isolated from the durable run and from other role workspaces; Go stages allowed context and copies validated regular-file outputs back into the run. | S1, S2, S3 |
+| F7 | Completion is gated on owned files existing and passing validation after the worker exits successfully; an agent's final message alone does not advance the workflow. | S2 |
+| F8 | Research must include non-empty sources and a claim ledger that names Fact, Firsthand observation, Inference, Opinion, and Unresolved. | S2, S3 |
+| F9 | Each outline section must record purpose, supporting evidence, and reader takeaway, and each candidate must be non-empty with no TODO placeholder. | S2, S3 |
+| F10 | Reviewers run sequentially in the fixed order Evidence, Story, Clarity, Copy and do not edit candidates. | S1, S2, S3 |
+| F11 | Reviewer output is revision-bound: its lens and SHA-256 revision must match the assignment, and its JSON findings must agree with the report. | S2, S4 |
+| F12 | After each reached lens, the PM classifies every finding as `valid_must_fix`, `valid_optional`, `invalid` with a reason, or `needs_human_judgment`; Go validates the decision and applies routing. | S2, S3, S4 |
+| F13 | A validated must-fix stops the remaining lenses for that candidate, causes the Writer to create the next candidate, and restarts review at Evidence. Optional and invalid findings do not consume a candidate. | S2 |
+| F14 | Candidate 003 is the hard limit. A must-fix at that limit, a need for human judgment, or a runtime/artifact failure blocks the run and preserves artifacts. | S1, S2, S3 |
+| F15 | Success requires all four lenses on the final candidate to pass PM routing; `article.md` is then a byte-for-byte copy of that candidate. | S1, S2, S4 |
+| F16 | Earlier candidates, partial lens sequences, reviews, PM decisions, workflow state, prompts/logs/exit-marker audit copies, and terminal block reasons remain available in the run as applicable. | S2, S4 |
+| F17 | `workflow.json` is the controller's atomically rewritten source of truth and records status, phase, candidate/revision, active role, artifact paths, review attempts, timestamps, and a terminal block reason when blocked. | S4 |
+| F18 | Parallel runs, resuming a run after controller restart, and editing completed runs are not implemented in the documented issue-1 workflow. | S2, S3 |
+
+## Firsthand observation
+
+None. This assignment involved document research only; the CLI was not built, run, or directly observed.
+
+## Inference
+
+| ID | Claim | Basis and caution |
+| --- | --- | --- |
+| I1 | The workflow is inspectable because editorial state changes are represented by retained, validated files rather than depending on transient agent conversation. | Inferred from F7, F11, F16, F17 and S4's explicit statement that completion does not depend on tmux scrollback or chat transcripts. “Inspectable” is a synthesis, not a measured usability result. |
+| I2 | Separating PM classification from Go routing makes editorial judgment auditable while keeping control-flow enforcement deterministic. | Inferred from F3 and F12. The sources establish the responsibility split; “auditable” is an interpretation of the retained decision records. |
+| I3 | Restarting each revised candidate at Evidence prevents later review lenses from being treated as valid after evidence-related content may have changed. | Inferred from F11 and F13. The repository documents the restart rule but does not explicitly state this rationale. |
+| I4 | The three-candidate budget bounds automated revision and converts unresolved repeated must-fix work into an inspectable blocked state. | Inferred from F14 and retained-artifact behavior in F16. “Bounds” follows logically; the design motivation is not directly stated. |
+
+## Opinion
+
+| ID | Claim | Treatment |
+| --- | --- | --- |
+| O1 | Durable artifact gates are a useful design for engineers who value reproducibility and post-run diagnosis. | Editorial evaluation, not a repository fact; if used, label it as judgment and ground it in F7, F11, and F16. |
+| O2 | A limit of three candidates is a reasonable tradeoff between autonomous revision and escalation. | Value judgment; the sources establish the limit but do not claim it is optimal or reasonable. |
+
+## Unresolved
+
+| ID | Question or claim not established | What would resolve it |
+| --- | --- | --- |
+| U1 | How often real runs succeed, block, time out, or reach candidate 003. | Empirical run data; none is provided by the allowed sources. |
+| U2 | Whether the workflow improves article accuracy or quality compared with another editorial process. | A defined comparative evaluation; outside the supplied documentation. |
+| U3 | How the workflow behaves at scale across many simultaneous jobs. | Implementation and tests for parallel runs; the documented implementation does not support them. |
+| U4 | Whether or how blocked artifacts can be resumed in place. | A future resume contract or implementation; issue 1 explicitly does not resume blocked runs. |
+| U5 | Support for Linux execution. | An equivalent native read-isolation backend and updated documentation; current Linux execution fails closed. |
+
+## Guardrails for the article team
+
+- Keep the workflow description within F1–F18 and identify I1–I4 as explanations or interpretations rather than direct facts.
+- Do not present O1–O2 as proven outcomes.
+- Do not imply answers to U1–U5.
+- Do not claim support for publishing integrations, web interfaces, resume, or workflow behavior outside this repository.
+
+FILE:requests/008e1068b1424b4f8ac9165f81b58e68/brief.md
+# Brief
+
+## Question
+
+How does write-uuter turn a brief into an inspectable reviewed article?
+
+## Audience
+
+Engineers evaluating a small, artifact-driven editorial workflow.
+
+## Provisional takeaway
+
+A deterministic Go controller can coordinate isolated Codex roles while
+leaving evidence, drafts, reviews, and decisions available for inspection.
+
+## Scope
+
+Describe the workflow implemented by this repository and the reason its
+durable artifact gates matter.
+
+## Out of scope
+
+Publishing integrations, web interfaces, and claims about workflows outside
+this repository.
+
+## Publication target
+
+A concise repository article for technical readers.
+
+## Constraints
+
+Use only facts supported by README.md and docs/. Keep the article under 900
+words and explain terms in plain language.
+
+## Done when
+
+The article accurately explains the roles, sequential review loop, candidate
+budget, and inspectable terminal artifacts.
+
+## Source hints
+
+- ../README.md
+- ../docs/workflow.md
+- ../docs/roles.md
+- ../docs/artifacts.md
+
+
+diff --git a/pm-ready.staging b/pm-ready.staging
+new file mode 100644
+index 0000000000000000000000000000000000000000..395527df662d5fdf4b00c5f1cd9b8d7ac048e127
+--- /dev/null
++++ b/pm-ready.staging
+@@ -0,0 +1 @@
++ready
+
+apply patch
+patch: completed
+/Users/yutaaoki/write-uuter/.worktrees/1/smoke-runs/.write-uuter-private-1802187262/workspaces/001-pm-4227960904/outbox/008e1068b1424b4f8ac9165f81b58e68.md.staging
+diff --git a/outbox/008e1068b1424b4f8ac9165f81b58e68.md.staging b/outbox/008e1068b1424b4f8ac9165f81b58e68.md.staging
+new file mode 100644
+index 0000000000000000000000000000000000000000..9e657ec7ca7229da1efdd06b8b3d9197d7cd2302
+--- /dev/null
++++ b/outbox/008e1068b1424b4f8ac9165f81b58e68.md.staging
+@@ -0,0 +1,12 @@
++```json
++{
++  "reviewed_revision": "sha256:94b953876ab2019d9308404fdbefe8dc64506aa5b25aebf30abca863bc0f551c",
++  "lenses": {
++    "evidence": {
++      "request_id": "008e1068b1424b4f8ac9165f81b58e68",
++      "review_digest": "sha256:bfdce62485498a4967ad9c8a0bc3dbcb6b36e6b7ebb14b792c14f8c47f69d3cb",
++      "decisions": []
++    }
++  }
++}
++```
+diff --git a/pm-ready.staging b/pm-ready.staging
+new file mode 100644
+index 0000000000000000000000000000000000000000..395527df662d5fdf4b00c5f1cd9b8d7ac048e127
+--- /dev/null
++++ b/pm-ready.staging
+@@ -0,0 +1 @@
++ready
+
+exec
+/bin/zsh -c 'mv outbox/008e1068b1424b4f8ac9165f81b58e68.md.staging outbox/008e1068b1424b4f8ac9165f81b58e68.md' in /Users/yutaaoki/write-uuter/.worktrees/1/smoke-runs/.write-uuter-private-1802187262/workspaces/001-pm-4227960904
+ succeeded in 0ms:
+diff --git a/outbox/008e1068b1424b4f8ac9165f81b58e68.md.staging b/outbox/008e1068b1424b4f8ac9165f81b58e68.md.staging
+new file mode 100644
+index 0000000000000000000000000000000000000000..9e657ec7ca7229da1efdd06b8b3d9197d7cd2302
+--- /dev/null
++++ b/outbox/008e1068b1424b4f8ac9165f81b58e68.md.staging
+@@ -0,0 +1,12 @@
++```json
++{
++  "reviewed_revision": "sha256:94b953876ab2019d9308404fdbefe8dc64506aa5b25aebf30abca863bc0f551c",
++  "lenses": {
++    "evidence": {
++      "request_id": "008e1068b1424b4f8ac9165f81b58e68",
++      "review_digest": "sha256:bfdce62485498a4967ad9c8a0bc3dbcb6b36e6b7ebb14b792c14f8c47f69d3cb",
++      "decisions": []
++    }
++  }
++}
++```
+diff --git a/pm-ready.staging b/pm-ready.staging
+new file mode 100644
+index 0000000000000000000000000000000000000000..395527df662d5fdf4b00c5f1cd9b8d7ac048e127
+--- /dev/null
++++ b/pm-ready.staging
+@@ -0,0 +1 @@
++ready
+
+codex
+The Evidence request was clean: both structured and Markdown reviewer outputs reported zero findings against the assigned revision. I published an empty Evidence decision list with the exact request ID and digest, and I’m now waiting for that specific inbox file to be removed before accepting another request.
+exec
+/bin/zsh -c 'zmodload zsh/zselect
+while [[ -e inbox/008e1068b1424b4f8ac9165f81b58e68.json ]]; do zselect -t 100; done
+print -r -- ACKNOWLEDGED
+while true; do
+  files=(inbox/*.json(N))
+  if (( ${#files} > 0 )); then
+    print -r -- "${files[1]}"
+    break
+  fi
+  zselect -t 500
+done' in /Users/yutaaoki/write-uuter/.worktrees/1/smoke-runs/.write-uuter-private-1802187262/workspaces/001-pm-4227960904
+diff --git a/outbox/008e1068b1424b4f8ac9165f81b58e68.md.staging b/outbox/008e1068b1424b4f8ac9165f81b58e68.md.staging
+new file mode 100644
+index 0000000000000000000000000000000000000000..9e657ec7ca7229da1efdd06b8b3d9197d7cd2302
+--- /dev/null
++++ b/outbox/008e1068b1424b4f8ac9165f81b58e68.md.staging
+@@ -0,0 +1,12 @@
++```json
++{
++  "reviewed_revision": "sha256:94b953876ab2019d9308404fdbefe8dc64506aa5b25aebf30abca863bc0f551c",
++  "lenses": {
++    "evidence": {
++      "request_id": "008e1068b1424b4f8ac9165f81b58e68",
++      "review_digest": "sha256:bfdce62485498a4967ad9c8a0bc3dbcb6b36e6b7ebb14b792c14f8c47f69d3cb",
++      "decisions": []
++    }
++  }
++}
++```
+diff --git a/pm-ready.staging b/pm-ready.staging
+new file mode 100644
+index 0000000000000000000000000000000000000000..395527df662d5fdf4b00c5f1cd9b8d7ac048e127
+--- /dev/null
++++ b/pm-ready.staging
+@@ -0,0 +1 @@
++ready
+
+ succeeded in 40875ms:
+inbox/222451c1df75d735351694f2367fcde1.json
+
+diff --git a/outbox/008e1068b1424b4f8ac9165f81b58e68.md.staging b/outbox/008e1068b1424b4f8ac9165f81b58e68.md.staging
+new file mode 100644
+index 0000000000000000000000000000000000000000..9e657ec7ca7229da1efdd06b8b3d9197d7cd2302
+--- /dev/null
++++ b/outbox/008e1068b1424b4f8ac9165f81b58e68.md.staging
+@@ -0,0 +1,12 @@
++```json
++{
++  "reviewed_revision": "sha256:94b953876ab2019d9308404fdbefe8dc64506aa5b25aebf30abca863bc0f551c",
++  "lenses": {
++    "evidence": {
++      "request_id": "008e1068b1424b4f8ac9165f81b58e68",
++      "review_digest": "sha256:bfdce62485498a4967ad9c8a0bc3dbcb6b36e6b7ebb14b792c14f8c47f69d3cb",
++      "decisions": []
++    }
++  }
++}
++```
+diff --git a/pm-ready.staging b/pm-ready.staging
+new file mode 100644
+index 0000000000000000000000000000000000000000..395527df662d5fdf4b00c5f1cd9b8d7ac048e127
+--- /dev/null
++++ b/pm-ready.staging
+@@ -0,0 +1 @@
++ready
+
+exec
+/bin/zsh -c "IFS= read -r -d '' content < inbox/222451c1df75d735351694f2367fcde1.json
+print -r -- \""'$content"' in /Users/yutaaoki/write-uuter/.worktrees/1/smoke-runs/.write-uuter-private-1802187262/workspaces/001-pm-4227960904
+ succeeded in 0ms:
+{
+  "request_id": "222451c1df75d735351694f2367fcde1",
+  "candidate": 1,
+  "lens": "story",
+  "reviewed_revision": "sha256:94b953876ab2019d9308404fdbefe8dc64506aa5b25aebf30abca863bc0f551c",
+  "review_digest": "sha256:2a5806150f3b0bcaa7ed51b0d15a707929e53580077870ddf579333f6d513b7a",
+  "result_path": "requests/222451c1df75d735351694f2367fcde1/result.json",
+  "report_path": "requests/222451c1df75d735351694f2367fcde1/report.md",
+  "decision_path": "pm-decisions/article-001.md",
+  "request_path": "inbox/222451c1df75d735351694f2367fcde1.json",
+  "context_directory": "requests/222451c1df75d735351694f2367fcde1",
+  "output_path": "outbox/222451c1df75d735351694f2367fcde1.md"
+}
+
+
+diff --git a/outbox/008e1068b1424b4f8ac9165f81b58e68.md.staging b/outbox/008e1068b1424b4f8ac9165f81b58e68.md.staging
+new file mode 100644
+index 0000000000000000000000000000000000000000..9e657ec7ca7229da1efdd06b8b3d9197d7cd2302
+--- /dev/null
++++ b/outbox/008e1068b1424b4f8ac9165f81b58e68.md.staging
+@@ -0,0 +1,12 @@
++```json
++{
++  "reviewed_revision": "sha256:94b953876ab2019d9308404fdbefe8dc64506aa5b25aebf30abca863bc0f551c",
++  "lenses": {
++    "evidence": {
++      "request_id": "008e1068b1424b4f8ac9165f81b58e68",
++      "review_digest": "sha256:bfdce62485498a4967ad9c8a0bc3dbcb6b36e6b7ebb14b792c14f8c47f69d3cb",
++      "decisions": []
++    }
++  }
++}
++```
+diff --git a/pm-ready.staging b/pm-ready.staging
+new file mode 100644
+index 0000000000000000000000000000000000000000..395527df662d5fdf4b00c5f1cd9b8d7ac048e127
+--- /dev/null
++++ b/pm-ready.staging
+@@ -0,0 +1 @@
++ready
+
+exec
+/bin/zsh -c 'for f in requests/222451c1df75d735351694f2367fcde1/**/*(.N); do print -r -- "$f"; done' in /Users/yutaaoki/write-uuter/.worktrees/1/smoke-runs/.write-uuter-private-1802187262/workspaces/001-pm-4227960904
+ succeeded in 0ms:
+requests/222451c1df75d735351694f2367fcde1/brief.md
+requests/222451c1df75d735351694f2367fcde1/claim-ledger.md
+requests/222451c1df75d735351694f2367fcde1/drafts/article-001.md
+requests/222451c1df75d735351694f2367fcde1/evidence/sources.md
+requests/222451c1df75d735351694f2367fcde1/outline.md
+requests/222451c1df75d735351694f2367fcde1/previous-decision.md
+requests/222451c1df75d735351694f2367fcde1/report.md
+requests/222451c1df75d735351694f2367fcde1/result.json
+
+diff --git a/outbox/008e1068b1424b4f8ac9165f81b58e68.md.staging b/outbox/008e1068b1424b4f8ac9165f81b58e68.md.staging
+new file mode 100644
+index 0000000000000000000000000000000000000000..9e657ec7ca7229da1efdd06b8b3d9197d7cd2302
+--- /dev/null
++++ b/outbox/008e1068b1424b4f8ac9165f81b58e68.md.staging
+@@ -0,0 +1,12 @@
++```json
++{
++  "reviewed_revision": "sha256:94b953876ab2019d9308404fdbefe8dc64506aa5b25aebf30abca863bc0f551c",
++  "lenses": {
++    "evidence": {
++      "request_id": "008e1068b1424b4f8ac9165f81b58e68",
++      "review_digest": "sha256:bfdce62485498a4967ad9c8a0bc3dbcb6b36e6b7ebb14b792c14f8c47f69d3cb",
++      "decisions": []
++    }
++  }
++}
++```
+diff --git a/pm-ready.staging b/pm-ready.staging
+new file mode 100644
+index 0000000000000000000000000000000000000000..395527df662d5fdf4b00c5f1cd9b8d7ac048e127
+--- /dev/null
++++ b/pm-ready.staging
+@@ -0,0 +1 @@
++ready
+
+exec
+/bin/zsh -c 'for f in requests/222451c1df75d735351694f2367fcde1/report.md requests/222451c1df75d735351694f2367fcde1/result.json requests/222451c1df75d735351694f2367fcde1/previous-decision.md requests/222451c1df75d735351694f2367fcde1/drafts/article-001.md requests/222451c1df75d735351694f2367fcde1/outline.md; do
+ print -r -- "FILE:$f"
+ IFS= read -r -d '"'' content < \""'$f"
+ print -r -- "$content"
+done' in /Users/yutaaoki/write-uuter/.worktrees/1/smoke-runs/.write-uuter-private-1802187262/workspaces/001-pm-4227960904
+ succeeded in 0ms:
+FILE:requests/222451c1df75d735351694f2367fcde1/report.md
+# Story review
+
+status: clean
+
+lens: story
+
+reviewed_revision: sha256:94b953876ab2019d9308404fdbefe8dc64506aa5b25aebf30abca863bc0f551c
+
+findings: []
+
+The candidate follows the outline's intended progression from controller-role division, through artifact-producing handoffs and gates, into sequential review, bounded revision routing, and the two inspectable terminal outcomes. The narrative is coherent and delivers the specified reader takeaways without a story-level gap.
+
+FILE:requests/222451c1df75d735351694f2367fcde1/result.json
+{
+  "status": "clean",
+  "lens": "story",
+  "reviewed_revision": "sha256:94b953876ab2019d9308404fdbefe8dc64506aa5b25aebf30abca863bc0f551c",
+  "findings": []
+}
+
+FILE:requests/222451c1df75d735351694f2367fcde1/previous-decision.md
+```json
+{
+  "reviewed_revision": "sha256:94b953876ab2019d9308404fdbefe8dc64506aa5b25aebf30abca863bc0f551c",
+  "lenses": {
+    "evidence": {
+      "request_id": "008e1068b1424b4f8ac9165f81b58e68",
+      "review_digest": "sha256:bfdce62485498a4967ad9c8a0bc3dbcb6b36e6b7ebb14b792c14f8c47f69d3cb",
+      "decisions": []
+    }
+  }
+}
+```
+
+FILE:requests/222451c1df75d735351694f2367fcde1/drafts/article-001.md
+# From Brief to Inspectable Reviewed Article
+
+write-uuter is a Go CLI that turns a Markdown brief into a reviewed article while preserving the work that produced it. Its central design choice is a clear division of responsibility: a deterministic Go controller owns workflow state, validation, routing, revision hashes, timeouts, cleanup, and publication, while isolated Codex processes perform bounded editorial tasks.
+
+This is not one agent carrying an article from prompt to publication. The project assigns research, structure, writing, review, and editorial judgment to distinct roles. Workers and reviewers run separately, each reviewer starts as a fresh process, and one persistent PM makes editorial classifications throughout the run. Because those judgments are retained while Go enforces the resulting routes, engineers can inspect both the editorial decision and the control flow that followed it.
+
+## From brief to first candidate
+
+A run begins only after the controller validates the brief's required sections and confirms that the target is new. It then initializes the run directory atomically. From there, work proceeds in a fixed order.
+
+First, the Researcher creates a non-empty source record and a claim ledger. The ledger must explicitly account for five kinds of material: Fact, Firsthand observation, Inference, Opinion, and Unresolved. That classification gives later roles a concrete boundary between supported claims and material that needs qualification or cannot yet be established.
+
+Next, the Story Editor converts the evidence into an outline. Each section must state its purpose, supporting evidence, and intended reader takeaway. The Writer then expands that outline into candidate 001. A candidate must contain substantive text and cannot contain unresolved drafting markers.
+
+These requirements are examples of artifact gates: a required file and the validation it must pass before the controller advances. Each handoff is therefore a named, durable artifact with a minimum contract, not an informal assurance that the work is done.
+
+## Files, not final messages, prove progress
+
+Each role works in an isolated workspace rather than directly in the durable run directory or another role's workspace. Go stages only the context that role is allowed to receive. After the process exits successfully, the controller checks the role's owned outputs, requires valid regular files, and copies validated results back into the run.
+
+An agent's final message cannot advance the workflow on its own. The expected files must exist and satisfy their contracts. Review output, for example, is tied to a specific candidate by its SHA-256 revision; the declared lens and revision must match the assignment, and the structured findings must agree with the accompanying report.
+
+The controller records the live state in `workflow.json`, which is rewritten atomically. It includes the run's status and phase, current candidate and revision, active role, artifact paths, review attempts, timestamps, and—when applicable—a terminal blocking reason. In this repository, “inspectable” is best understood as a consequence of this design: state transitions depend on retained, validated files rather than transient chat transcripts or terminal scrollback.
+
+## Four reviews, one lens at a time
+
+Every candidate enters a fixed, sequential review sequence: Evidence, Story, Clarity, then Copy. Reviewers report findings but never edit the candidate. After each reached lens, the persistent PM classifies every finding as `valid_must_fix`, `valid_optional`, `invalid` with a reason, or `needs_human_judgment`.
+
+The separation matters. A fresh reviewer supplies a lens-specific assessment, the PM records the editorial judgment about each finding, and Go validates that decision artifact and applies predetermined routing rules. Later lenses do not run concurrently or get ahead of an unresolved must-fix.
+
+If the PM validates a must-fix, review of that candidate stops immediately. The Writer receives the prior candidate and the reached review result and produces the next numbered candidate. Review then restarts at Evidence. One rationale supported by the design is that changed content should not inherit later-lens results attached to an earlier revision. Optional and invalid findings do not consume another candidate.
+
+Automated revision is bounded at candidate 003. A must-fix against that candidate blocks the run instead of creating candidate 004. A need for human judgment, a runtime failure, or an artifact-validation failure also blocks the run. The limit does not establish that three attempts are optimal; it simply prevents indefinite automated revision and turns unresolved work into an explicit terminal state.
+
+## Two inspectable endings
+
+Success requires the final candidate to pass routing at all four review lenses. Only then does the controller create `article.md`, as a byte-for-byte copy of the accepted candidate. The published artifact can therefore be matched exactly to the revision that was reviewed.
+
+A blocked run keeps its reason and the work accumulated before the stop. Depending on how far it progressed, that record can include earlier candidates, partial review sequences, reviewer reports, PM decisions, workflow state, and audit copies of prompts, logs, and exit markers. Failure does not collapse into an unexplained absence of an article.
+
+That durable record is the practical answer to how write-uuter produces an inspectable reviewed article. The controller does not merely ask roles to follow a process; it requires evidence of each completed step, validates the evidence, and preserves the route to either exact publication or explicit blockage. The documented workflow does have firm boundaries: parallel runs, resuming after a controller restart, and editing completed runs are not implemented. Within those boundaries, its artifacts make the outcome traceable without treating agent conversation as workflow state.
+
+FILE:requests/222451c1df75d735351694f2367fcde1/outline.md
+# Outline: From Brief to Inspectable Reviewed Article
+
+Target length: 700–850 words. The article should answer the brief through the implemented workflow, using “inspectable” as a synthesis grounded in retained artifacts rather than as a measured quality claim.
+
+## 1. The design in one view: Go controls, Codex edits
+
+- **Purpose:** Open with the direct answer: write-uuter is a Go CLI that converts a Markdown brief into a reviewed article by having a deterministic controller coordinate isolated editorial roles. Establish the key division of responsibility before introducing workflow detail.
+- **Supporting evidence:** F1 (S1); F3 (S1, S2, S3); F5–F6 (S1, S2, S3). Use I2 only as an explicitly framed interpretation: retained PM judgments plus controller-enforced routing make the responsibility split auditable.
+- **Reader takeaway:** The system is neither one free-running agent nor a conventional in-memory pipeline: Go owns control and validation, while separate Codex processes own bounded editorial tasks.
+
+## 2. The forward path: brief, evidence, outline, candidate
+
+- **Purpose:** Walk through the first half of a run in sequence: validate the brief and initialize a new run atomically; have the Researcher produce sources and a classified claim ledger; have the Story Editor turn that evidence into an outline; then have the Writer produce the first candidate. Explain role ownership in plain language.
+- **Supporting evidence:** F2 (S1, S2); F4 (S1, S2, S3); F8–F9 (S2, S3). Mention the required claim classes and the outline’s purpose/evidence/takeaway fields as concrete examples of artifact contracts.
+- **Reader takeaway:** Each editorial handoff becomes a named file with minimum content requirements, so later work begins from validated inputs rather than an informal conversation.
+
+## 3. Why artifact gates, not agent messages, advance the run
+
+- **Purpose:** Explain the mechanism that makes the workflow inspectable: roles work in isolated workspaces; the controller stages only allowed context; after a successful process exit it validates owned regular-file outputs and copies them into the durable run. Clarify that a final chat message cannot advance state.
+- **Supporting evidence:** F6–F7 (S1, S2, S3); F11 (S2, S4); F17 (S4). Use I1 as a labeled synthesis: inspectability comes from retained, validated files rather than transient transcripts. Include representative checks such as revision hashes and consistent review JSON/report content without turning the section into a schema inventory.
+- **Reader takeaway:** Progress is evidenced by durable artifacts that satisfy contracts; apparent completion by an agent is insufficient.
+
+## 4. The sequential review and decision loop
+
+- **Purpose:** Describe the fixed Evidence → Story → Clarity → Copy sequence. Distinguish reviewers, which report findings without editing candidates, from the persistent PM, which classifies each finding, and from Go, which validates decisions and applies routing.
+- **Supporting evidence:** F5, F10 (S1, S2, S3); F11 (S2, S4); F12 (S2, S3, S4). Name all four PM classifications: `valid_must_fix`, `valid_optional`, `invalid` with a reason, and `needs_human_judgment`.
+- **Reader takeaway:** Fresh reviewers supply lens-specific judgments, the PM records editorial decisions, and deterministic controller rules decide what happens next.
+
+## 5. Revision routing and the three-candidate budget
+
+- **Purpose:** Show the loop’s branching behavior. A validated must-fix stops later lenses, sends the Writer to the next candidate, and restarts that candidate at Evidence; optional or invalid findings do not consume a candidate. Explain that candidate 003 is the hard limit and identify the conditions that block a run.
+- **Supporting evidence:** F13 (S2); F14 (S1, S2, S3). I3 may explain, as an inference, why review restarts at Evidence after content changes. I4 may frame the candidate cap as bounding automated revision, but do not claim that three is an optimal number. State that must-fix at candidate 003, human judgment, and runtime or artifact failure produce a blocked run.
+- **Reader takeaway:** Revision is bounded and predictable: the workflow cannot revise indefinitely or silently skip unresolved problems.
+
+## 6. Terminal artifacts: exact success or inspectable blockage
+
+- **Purpose:** Close by contrasting the two terminal outcomes. On success, all four lenses have passed PM routing and `article.md` exactly matches the accepted candidate. On blockage, the reason and accumulated work remain. Tie both outcomes back to `workflow.json` and the retained revision/review history.
+- **Supporting evidence:** F15 (S1, S2, S4); F16–F17 (S2, S4). Mention earlier candidates, partial review sequences, reviews, PM decisions, workflow state, and applicable audit copies as retained evidence. If limits are noted, use F18 (S2, S3): parallel runs, restart-resume, and editing completed runs are not implemented.
+- **Reader takeaway:** The terminal result is inspectable in either case: readers can trace an accepted article to its candidate and reviews, or a blocked run to its preserved state and reason.
+
+## Scope and language guardrails
+
+- Do not claim measured improvements in accuracy, quality, reliability, or usability; U1–U5 remain unresolved.
+- Do not call the three-candidate limit “reasonable” or “optimal” (O2).
+- Keep publishing integrations, web interfaces, other repositories, and unsupported resume behavior out of the article.
+- Explain “artifact gate” on first use as a required file plus validation that must pass before the controller advances.
+
+
+diff --git a/outbox/008e1068b1424b4f8ac9165f81b58e68.md.staging b/outbox/008e1068b1424b4f8ac9165f81b58e68.md.staging
+new file mode 100644
+index 0000000000000000000000000000000000000000..9e657ec7ca7229da1efdd06b8b3d9197d7cd2302
+--- /dev/null
++++ b/outbox/008e1068b1424b4f8ac9165f81b58e68.md.staging
+@@ -0,0 +1,12 @@
++```json
++{
++  "reviewed_revision": "sha256:94b953876ab2019d9308404fdbefe8dc64506aa5b25aebf30abca863bc0f551c",
++  "lenses": {
++    "evidence": {
++      "request_id": "008e1068b1424b4f8ac9165f81b58e68",
++      "review_digest": "sha256:bfdce62485498a4967ad9c8a0bc3dbcb6b36e6b7ebb14b792c14f8c47f69d3cb",
++      "decisions": []
++    }
++  }
++}
++```
+diff --git a/pm-ready.staging b/pm-ready.staging
+new file mode 100644
+index 0000000000000000000000000000000000000000..395527df662d5fdf4b00c5f1cd9b8d7ac048e127
+--- /dev/null
++++ b/pm-ready.staging
+@@ -0,0 +1 @@
++ready
+
+apply patch
+patch: completed
+/Users/yutaaoki/write-uuter/.worktrees/1/smoke-runs/.write-uuter-private-1802187262/workspaces/001-pm-4227960904/outbox/222451c1df75d735351694f2367fcde1.md.staging
+diff --git a/outbox/008e1068b1424b4f8ac9165f81b58e68.md.staging b/outbox/008e1068b1424b4f8ac9165f81b58e68.md.staging
+new file mode 100644
+index 0000000000000000000000000000000000000000..9e657ec7ca7229da1efdd06b8b3d9197d7cd2302
+--- /dev/null
++++ b/outbox/008e1068b1424b4f8ac9165f81b58e68.md.staging
+@@ -0,0 +1,12 @@
++```json
++{
++  "reviewed_revision": "sha256:94b953876ab2019d9308404fdbefe8dc64506aa5b25aebf30abca863bc0f551c",
++  "lenses": {
++    "evidence": {
++      "request_id": "008e1068b1424b4f8ac9165f81b58e68",
++      "review_digest": "sha256:bfdce62485498a4967ad9c8a0bc3dbcb6b36e6b7ebb14b792c14f8c47f69d3cb",
++      "decisions": []
++    }
++  }
++}
++```
+diff --git a/outbox/222451c1df75d735351694f2367fcde1.md.staging b/outbox/222451c1df75d735351694f2367fcde1.md.staging
+new file mode 100644
+index 0000000000000000000000000000000000000000..a6759c0fb2a86fe792a35329a1b8572d986858d4
+--- /dev/null
++++ b/outbox/222451c1df75d735351694f2367fcde1.md.staging
+@@ -0,0 +1,17 @@
++```json
++{
++  "reviewed_revision": "sha256:94b953876ab2019d9308404fdbefe8dc64506aa5b25aebf30abca863bc0f551c",
++  "lenses": {
++    "evidence": {
++      "request_id": "008e1068b1424b4f8ac9165f81b58e68",
++      "review_digest": "sha256:bfdce62485498a4967ad9c8a0bc3dbcb6b36e6b7ebb14b792c14f8c47f69d3cb",
++      "decisions": []
++    },
++    "story": {
++      "request_id": "222451c1df75d735351694f2367fcde1",
++      "review_digest": "sha256:2a5806150f3b0bcaa7ed51b0d15a707929e53580077870ddf579333f6d513b7a",
++      "decisions": []
++    }
++  }
++}
++```
+diff --git a/pm-ready.staging b/pm-ready.staging
+new file mode 100644
+index 0000000000000000000000000000000000000000..395527df662d5fdf4b00c5f1cd9b8d7ac048e127
+--- /dev/null
++++ b/pm-ready.staging
+@@ -0,0 +1 @@
++ready
+
+exec
+/bin/zsh -c 'mv outbox/222451c1df75d735351694f2367fcde1.md.staging outbox/222451c1df75d735351694f2367fcde1.md' in /Users/yutaaoki/write-uuter/.worktrees/1/smoke-runs/.write-uuter-private-1802187262/workspaces/001-pm-4227960904
+ succeeded in 0ms:
+diff --git a/outbox/008e1068b1424b4f8ac9165f81b58e68.md.staging b/outbox/008e1068b1424b4f8ac9165f81b58e68.md.staging
+new file mode 100644
+index 0000000000000000000000000000000000000000..9e657ec7ca7229da1efdd06b8b3d9197d7cd2302
+--- /dev/null
++++ b/outbox/008e1068b1424b4f8ac9165f81b58e68.md.staging
+@@ -0,0 +1,12 @@
++```json
++{
++  "reviewed_revision": "sha256:94b953876ab2019d9308404fdbefe8dc64506aa5b25aebf30abca863bc0f551c",
++  "lenses": {
++    "evidence": {
++      "request_id": "008e1068b1424b4f8ac9165f81b58e68",
++      "review_digest": "sha256:bfdce62485498a4967ad9c8a0bc3dbcb6b36e6b7ebb14b792c14f8c47f69d3cb",
++      "decisions": []
++    }
++  }
++}
++```
+diff --git a/outbox/222451c1df75d735351694f2367fcde1.md.staging b/outbox/222451c1df75d735351694f2367fcde1.md.staging
+new file mode 100644
+index 0000000000000000000000000000000000000000..a6759c0fb2a86fe792a35329a1b8572d986858d4
+--- /dev/null
++++ b/outbox/222451c1df75d735351694f2367fcde1.md.staging
+@@ -0,0 +1,17 @@
++```json
++{
++  "reviewed_revision": "sha256:94b953876ab2019d9308404fdbefe8dc64506aa5b25aebf30abca863bc0f551c",
++  "lenses": {
++    "evidence": {
++      "request_id": "008e1068b1424b4f8ac9165f81b58e68",
++      "review_digest": "sha256:bfdce62485498a4967ad9c8a0bc3dbcb6b36e6b7ebb14b792c14f8c47f69d3cb",
++      "decisions": []
++    },
++    "story": {
++      "request_id": "222451c1df75d735351694f2367fcde1",
++      "review_digest": "sha256:2a5806150f3b0bcaa7ed51b0d15a707929e53580077870ddf579333f6d513b7a",
++      "decisions": []
++    }
++  }
++}
++```
+diff --git a/pm-ready.staging b/pm-ready.staging
+new file mode 100644
+index 0000000000000000000000000000000000000000..395527df662d5fdf4b00c5f1cd9b8d7ac048e127
+--- /dev/null
++++ b/pm-ready.staging
+@@ -0,0 +1 @@
++ready
+
+codex
+The Story review is also clean and consistent with the outline and candidate. I preserved the prior Evidence record exactly, appended only the active Story lens with an empty decision list, and published it atomically.
+exec
+/bin/zsh -c 'zmodload zsh/zselect
+while [[ -e inbox/222451c1df75d735351694f2367fcde1.json ]]; do zselect -t 100; done
+print -r -- ACKNOWLEDGED
+while true; do
+  files=(inbox/*.json(N))
+  if (( ${#files} > 0 )); then
+    print -r -- "${files[1]}"
+    break
+  fi
+  zselect -t 500
+done' in /Users/yutaaoki/write-uuter/.worktrees/1/smoke-runs/.write-uuter-private-1802187262/workspaces/001-pm-4227960904
+diff --git a/outbox/008e1068b1424b4f8ac9165f81b58e68.md.staging b/outbox/008e1068b1424b4f8ac9165f81b58e68.md.staging
+new file mode 100644
+index 0000000000000000000000000000000000000000..9e657ec7ca7229da1efdd06b8b3d9197d7cd2302
+--- /dev/null
++++ b/outbox/008e1068b1424b4f8ac9165f81b58e68.md.staging
+@@ -0,0 +1,12 @@
++```json
++{
++  "reviewed_revision": "sha256:94b953876ab2019d9308404fdbefe8dc64506aa5b25aebf30abca863bc0f551c",
++  "lenses": {
++    "evidence": {
++      "request_id": "008e1068b1424b4f8ac9165f81b58e68",
++      "review_digest": "sha256:bfdce62485498a4967ad9c8a0bc3dbcb6b36e6b7ebb14b792c14f8c47f69d3cb",
++      "decisions": []
++    }
++  }
++}
++```
+diff --git a/outbox/222451c1df75d735351694f2367fcde1.md.staging b/outbox/222451c1df75d735351694f2367fcde1.md.staging
+new file mode 100644
+index 0000000000000000000000000000000000000000..a6759c0fb2a86fe792a35329a1b8572d986858d4
+--- /dev/null
++++ b/outbox/222451c1df75d735351694f2367fcde1.md.staging
+@@ -0,0 +1,17 @@
++```json
++{
++  "reviewed_revision": "sha256:94b953876ab2019d9308404fdbefe8dc64506aa5b25aebf30abca863bc0f551c",
++  "lenses": {
++    "evidence": {
++      "request_id": "008e1068b1424b4f8ac9165f81b58e68",
++      "review_digest": "sha256:bfdce62485498a4967ad9c8a0bc3dbcb6b36e6b7ebb14b792c14f8c47f69d3cb",
++      "decisions": []
++    },
++    "story": {
++      "request_id": "222451c1df75d735351694f2367fcde1",
++      "review_digest": "sha256:2a5806150f3b0bcaa7ed51b0d15a707929e53580077870ddf579333f6d513b7a",
++      "decisions": []
++    }
++  }
++}
++```
+diff --git a/pm-ready.staging b/pm-ready.staging
+new file mode 100644
+index 0000000000000000000000000000000000000000..395527df662d5fdf4b00c5f1cd9b8d7ac048e127
+--- /dev/null
++++ b/pm-ready.staging
+@@ -0,0 +1 @@
++ready
+
+ succeeded in 40977ms:
+inbox/15925c94b789631ce1eb927f0f607524.json
+
+diff --git a/outbox/008e1068b1424b4f8ac9165f81b58e68.md.staging b/outbox/008e1068b1424b4f8ac9165f81b58e68.md.staging
+new file mode 100644
+index 0000000000000000000000000000000000000000..9e657ec7ca7229da1efdd06b8b3d9197d7cd2302
+--- /dev/null
++++ b/outbox/008e1068b1424b4f8ac9165f81b58e68.md.staging
+@@ -0,0 +1,12 @@
++```json
++{
++  "reviewed_revision": "sha256:94b953876ab2019d9308404fdbefe8dc64506aa5b25aebf30abca863bc0f551c",
++  "lenses": {
++    "evidence": {
++      "request_id": "008e1068b1424b4f8ac9165f81b58e68",
++      "review_digest": "sha256:bfdce62485498a4967ad9c8a0bc3dbcb6b36e6b7ebb14b792c14f8c47f69d3cb",
++      "decisions": []
++    }
++  }
++}
++```
+diff --git a/outbox/222451c1df75d735351694f2367fcde1.md.staging b/outbox/222451c1df75d735351694f2367fcde1.md.staging
+new file mode 100644
+index 0000000000000000000000000000000000000000..a6759c0fb2a86fe792a35329a1b8572d986858d4
+--- /dev/null
++++ b/outbox/222451c1df75d735351694f2367fcde1.md.staging
+@@ -0,0 +1,17 @@
++```json
++{
++  "reviewed_revision": "sha256:94b953876ab2019d9308404fdbefe8dc64506aa5b25aebf30abca863bc0f551c",
++  "lenses": {
++    "evidence": {
++      "request_id": "008e1068b1424b4f8ac9165f81b58e68",
++      "review_digest": "sha256:bfdce62485498a4967ad9c8a0bc3dbcb6b36e6b7ebb14b792c14f8c47f69d3cb",
++      "decisions": []
++    },
++    "story": {
++      "request_id": "222451c1df75d735351694f2367fcde1",
++      "review_digest": "sha256:2a5806150f3b0bcaa7ed51b0d15a707929e53580077870ddf579333f6d513b7a",
++      "decisions": []
++    }
++  }
++}
++```
+diff --git a/pm-ready.staging b/pm-ready.staging
+new file mode 100644
+index 0000000000000000000000000000000000000000..395527df662d5fdf4b00c5f1cd9b8d7ac048e127
+--- /dev/null
++++ b/pm-ready.staging
+@@ -0,0 +1 @@
++ready
+
+exec
+/bin/zsh -c "IFS= read -r -d '' content < inbox/15925c94b789631ce1eb927f0f607524.json
+print -r -- \""'$content"' in /Users/yutaaoki/write-uuter/.worktrees/1/smoke-runs/.write-uuter-private-1802187262/workspaces/001-pm-4227960904
+ succeeded in 0ms:
+{
+  "request_id": "15925c94b789631ce1eb927f0f607524",
+  "candidate": 1,
+  "lens": "clarity",
+  "reviewed_revision": "sha256:94b953876ab2019d9308404fdbefe8dc64506aa5b25aebf30abca863bc0f551c",
+  "review_digest": "sha256:ab9aa8890fadb043a6f914b6b382c02d4a54e9373670cbe13c7ef7c628d60ec6",
+  "result_path": "requests/15925c94b789631ce1eb927f0f607524/result.json",
+  "report_path": "requests/15925c94b789631ce1eb927f0f607524/report.md",
+  "decision_path": "pm-decisions/article-001.md",
+  "request_path": "inbox/15925c94b789631ce1eb927f0f607524.json",
+  "context_directory": "requests/15925c94b789631ce1eb927f0f607524",
+  "output_path": "outbox/15925c94b789631ce1eb927f0f607524.md"
+}
+
+
+diff --git a/outbox/008e1068b1424b4f8ac9165f81b58e68.md.staging b/outbox/008e1068b1424b4f8ac9165f81b58e68.md.staging
+new file mode 100644
+index 0000000000000000000000000000000000000000..9e657ec7ca7229da1efdd06b8b3d9197d7cd2302
+--- /dev/null
++++ b/outbox/008e1068b1424b4f8ac9165f81b58e68.md.staging
+@@ -0,0 +1,12 @@
++```json
++{
++  "reviewed_revision": "sha256:94b953876ab2019d9308404fdbefe8dc64506aa5b25aebf30abca863bc0f551c",
++  "lenses": {
++    "evidence": {
++      "request_id": "008e1068b1424b4f8ac9165f81b58e68",
++      "review_digest": "sha256:bfdce62485498a4967ad9c8a0bc3dbcb6b36e6b7ebb14b792c14f8c47f69d3cb",
++      "decisions": []
++    }
++  }
++}
++```
+diff --git a/outbox/222451c1df75d735351694f2367fcde1.md.staging b/outbox/222451c1df75d735351694f2367fcde1.md.staging
+new file mode 100644
+index 0000000000000000000000000000000000000000..a6759c0fb2a86fe792a35329a1b8572d986858d4
+--- /dev/null
++++ b/outbox/222451c1df75d735351694f2367fcde1.md.staging
+@@ -0,0 +1,17 @@
++```json
++{
++  "reviewed_revision": "sha256:94b953876ab2019d9308404fdbefe8dc64506aa5b25aebf30abca863bc0f551c",
++  "lenses": {
++    "evidence": {
++      "request_id": "008e1068b1424b4f8ac9165f81b58e68",
++      "review_digest": "sha256:bfdce62485498a4967ad9c8a0bc3dbcb6b36e6b7ebb14b792c14f8c47f69d3cb",
++      "decisions": []
++    },
++    "story": {
++      "request_id": "222451c1df75d735351694f2367fcde1",
++      "review_digest": "sha256:2a5806150f3b0bcaa7ed51b0d15a707929e53580077870ddf579333f6d513b7a",
++      "decisions": []
++    }
++  }
++}
++```
+diff --git a/pm-ready.staging b/pm-ready.staging
+new file mode 100644
+index 0000000000000000000000000000000000000000..395527df662d5fdf4b00c5f1cd9b8d7ac048e127
+--- /dev/null
++++ b/pm-ready.staging
+@@ -0,0 +1 @@
++ready
+
+exec
+/bin/zsh -c 'for f in requests/15925c94b789631ce1eb927f0f607524/report.md requests/15925c94b789631ce1eb927f0f607524/result.json requests/15925c94b789631ce1eb927f0f607524/previous-decision.md requests/15925c94b789631ce1eb927f0f607524/drafts/article-001.md; do
+ print -r -- "FILE:$f"
+ IFS= read -r -d '"'' content < \""'$f"
+ print -r -- "$content"
+done' in /Users/yutaaoki/write-uuter/.worktrees/1/smoke-runs/.write-uuter-private-1802187262/workspaces/001-pm-4227960904
+ succeeded in 0ms:
+FILE:requests/15925c94b789631ce1eb927f0f607524/report.md
+# Clarity Review
+
+status: clean
+
+lens: clarity
+
+reviewed_revision: sha256:94b953876ab2019d9308404fdbefe8dc64506aa5b25aebf30abca863bc0f551c
+
+findings: []
+
+FILE:requests/15925c94b789631ce1eb927f0f607524/result.json
+{
+  "status": "clean",
+  "lens": "clarity",
+  "reviewed_revision": "sha256:94b953876ab2019d9308404fdbefe8dc64506aa5b25aebf30abca863bc0f551c",
+  "findings": []
+}
+
+FILE:requests/15925c94b789631ce1eb927f0f607524/previous-decision.md
+```json
+{
+  "reviewed_revision": "sha256:94b953876ab2019d9308404fdbefe8dc64506aa5b25aebf30abca863bc0f551c",
+  "lenses": {
+    "evidence": {
+      "request_id": "008e1068b1424b4f8ac9165f81b58e68",
+      "review_digest": "sha256:bfdce62485498a4967ad9c8a0bc3dbcb6b36e6b7ebb14b792c14f8c47f69d3cb",
+      "decisions": []
+    },
+    "story": {
+      "request_id": "222451c1df75d735351694f2367fcde1",
+      "review_digest": "sha256:2a5806150f3b0bcaa7ed51b0d15a707929e53580077870ddf579333f6d513b7a",
+      "decisions": []
+    }
+  }
+}
+```
+
+FILE:requests/15925c94b789631ce1eb927f0f607524/drafts/article-001.md
+# From Brief to Inspectable Reviewed Article
+
+write-uuter is a Go CLI that turns a Markdown brief into a reviewed article while preserving the work that produced it. Its central design choice is a clear division of responsibility: a deterministic Go controller owns workflow state, validation, routing, revision hashes, timeouts, cleanup, and publication, while isolated Codex processes perform bounded editorial tasks.
+
+This is not one agent carrying an article from prompt to publication. The project assigns research, structure, writing, review, and editorial judgment to distinct roles. Workers and reviewers run separately, each reviewer starts as a fresh process, and one persistent PM makes editorial classifications throughout the run. Because those judgments are retained while Go enforces the resulting routes, engineers can inspect both the editorial decision and the control flow that followed it.
+
+## From brief to first candidate
+
+A run begins only after the controller validates the brief's required sections and confirms that the target is new. It then initializes the run directory atomically. From there, work proceeds in a fixed order.
+
+First, the Researcher creates a non-empty source record and a claim ledger. The ledger must explicitly account for five kinds of material: Fact, Firsthand observation, Inference, Opinion, and Unresolved. That classification gives later roles a concrete boundary between supported claims and material that needs qualification or cannot yet be established.
+
+Next, the Story Editor converts the evidence into an outline. Each section must state its purpose, supporting evidence, and intended reader takeaway. The Writer then expands that outline into candidate 001. A candidate must contain substantive text and cannot contain unresolved drafting markers.
+
+These requirements are examples of artifact gates: a required file and the validation it must pass before the controller advances. Each handoff is therefore a named, durable artifact with a minimum contract, not an informal assurance that the work is done.
+
+## Files, not final messages, prove progress
+
+Each role works in an isolated workspace rather than directly in the durable run directory or another role's workspace. Go stages only the context that role is allowed to receive. After the process exits successfully, the controller checks the role's owned outputs, requires valid regular files, and copies validated results back into the run.
+
+An agent's final message cannot advance the workflow on its own. The expected files must exist and satisfy their contracts. Review output, for example, is tied to a specific candidate by its SHA-256 revision; the declared lens and revision must match the assignment, and the structured findings must agree with the accompanying report.
+
+The controller records the live state in `workflow.json`, which is rewritten atomically. It includes the run's status and phase, current candidate and revision, active role, artifact paths, review attempts, timestamps, and—when applicable—a terminal blocking reason. In this repository, “inspectable” is best understood as a consequence of this design: state transitions depend on retained, validated files rather than transient chat transcripts or terminal scrollback.
+
+## Four reviews, one lens at a time
+
+Every candidate enters a fixed, sequential review sequence: Evidence, Story, Clarity, then Copy. Reviewers report findings but never edit the candidate. After each reached lens, the persistent PM classifies every finding as `valid_must_fix`, `valid_optional`, `invalid` with a reason, or `needs_human_judgment`.
+
+The separation matters. A fresh reviewer supplies a lens-specific assessment, the PM records the editorial judgment about each finding, and Go validates that decision artifact and applies predetermined routing rules. Later lenses do not run concurrently or get ahead of an unresolved must-fix.
+
+If the PM validates a must-fix, review of that candidate stops immediately. The Writer receives the prior candidate and the reached review result and produces the next numbered candidate. Review then restarts at Evidence. One rationale supported by the design is that changed content should not inherit later-lens results attached to an earlier revision. Optional and invalid findings do not consume another candidate.
+
+Automated revision is bounded at candidate 003. A must-fix against that candidate blocks the run instead of creating candidate 004. A need for human judgment, a runtime failure, or an artifact-validation failure also blocks the run. The limit does not establish that three attempts are optimal; it simply prevents indefinite automated revision and turns unresolved work into an explicit terminal state.
+
+## Two inspectable endings
+
+Success requires the final candidate to pass routing at all four review lenses. Only then does the controller create `article.md`, as a byte-for-byte copy of the accepted candidate. The published artifact can therefore be matched exactly to the revision that was reviewed.
+
+A blocked run keeps its reason and the work accumulated before the stop. Depending on how far it progressed, that record can include earlier candidates, partial review sequences, reviewer reports, PM decisions, workflow state, and audit copies of prompts, logs, and exit markers. Failure does not collapse into an unexplained absence of an article.
+
+That durable record is the practical answer to how write-uuter produces an inspectable reviewed article. The controller does not merely ask roles to follow a process; it requires evidence of each completed step, validates the evidence, and preserves the route to either exact publication or explicit blockage. The documented workflow does have firm boundaries: parallel runs, resuming after a controller restart, and editing completed runs are not implemented. Within those boundaries, its artifacts make the outcome traceable without treating agent conversation as workflow state.
+
+
+diff --git a/outbox/008e1068b1424b4f8ac9165f81b58e68.md.staging b/outbox/008e1068b1424b4f8ac9165f81b58e68.md.staging
+new file mode 100644
+index 0000000000000000000000000000000000000000..9e657ec7ca7229da1efdd06b8b3d9197d7cd2302
+--- /dev/null
++++ b/outbox/008e1068b1424b4f8ac9165f81b58e68.md.staging
+@@ -0,0 +1,12 @@
++```json
++{
++  "reviewed_revision": "sha256:94b953876ab2019d9308404fdbefe8dc64506aa5b25aebf30abca863bc0f551c",
++  "lenses": {
++    "evidence": {
++      "request_id": "008e1068b1424b4f8ac9165f81b58e68",
++      "review_digest": "sha256:bfdce62485498a4967ad9c8a0bc3dbcb6b36e6b7ebb14b792c14f8c47f69d3cb",
++      "decisions": []
++    }
++  }
++}
++```
+diff --git a/outbox/222451c1df75d735351694f2367fcde1.md.staging b/outbox/222451c1df75d735351694f2367fcde1.md.staging
+new file mode 100644
+index 0000000000000000000000000000000000000000..a6759c0fb2a86fe792a35329a1b8572d986858d4
+--- /dev/null
++++ b/outbox/222451c1df75d735351694f2367fcde1.md.staging
+@@ -0,0 +1,17 @@
++```json
++{
++  "reviewed_revision": "sha256:94b953876ab2019d9308404fdbefe8dc64506aa5b25aebf30abca863bc0f551c",
++  "lenses": {
++    "evidence": {
++      "request_id": "008e1068b1424b4f8ac9165f81b58e68",
++      "review_digest": "sha256:bfdce62485498a4967ad9c8a0bc3dbcb6b36e6b7ebb14b792c14f8c47f69d3cb",
++      "decisions": []
++    },
++    "story": {
++      "request_id": "222451c1df75d735351694f2367fcde1",
++      "review_digest": "sha256:2a5806150f3b0bcaa7ed51b0d15a707929e53580077870ddf579333f6d513b7a",
++      "decisions": []
++    }
++  }
++}
++```
+diff --git a/pm-ready.staging b/pm-ready.staging
+new file mode 100644
+index 0000000000000000000000000000000000000000..395527df662d5fdf4b00c5f1cd9b8d7ac048e127
+--- /dev/null
++++ b/pm-ready.staging
+@@ -0,0 +1 @@
++ready
+
+apply patch
+patch: completed
+/Users/yutaaoki/write-uuter/.worktrees/1/smoke-runs/.write-uuter-private-1802187262/workspaces/001-pm-4227960904/outbox/15925c94b789631ce1eb927f0f607524.md.staging
+diff --git a/outbox/008e1068b1424b4f8ac9165f81b58e68.md.staging b/outbox/008e1068b1424b4f8ac9165f81b58e68.md.staging
+new file mode 100644
+index 0000000000000000000000000000000000000000..9e657ec7ca7229da1efdd06b8b3d9197d7cd2302
+--- /dev/null
++++ b/outbox/008e1068b1424b4f8ac9165f81b58e68.md.staging
+@@ -0,0 +1,12 @@
++```json
++{
++  "reviewed_revision": "sha256:94b953876ab2019d9308404fdbefe8dc64506aa5b25aebf30abca863bc0f551c",
++  "lenses": {
++    "evidence": {
++      "request_id": "008e1068b1424b4f8ac9165f81b58e68",
++      "review_digest": "sha256:bfdce62485498a4967ad9c8a0bc3dbcb6b36e6b7ebb14b792c14f8c47f69d3cb",
++      "decisions": []
++    }
++  }
++}
++```
+diff --git a/outbox/15925c94b789631ce1eb927f0f607524.md.staging b/outbox/15925c94b789631ce1eb927f0f607524.md.staging
+new file mode 100644
+index 0000000000000000000000000000000000000000..c7c4a7c1cd18380507d91c3f30de0054cde6b37c
+--- /dev/null
++++ b/outbox/15925c94b789631ce1eb927f0f607524.md.staging
+@@ -0,0 +1,22 @@
++```json
++{
++  "reviewed_revision": "sha256:94b953876ab2019d9308404fdbefe8dc64506aa5b25aebf30abca863bc0f551c",
++  "lenses": {
++    "evidence": {
++      "request_id": "008e1068b1424b4f8ac9165f81b58e68",
++      "review_digest": "sha256:bfdce62485498a4967ad9c8a0bc3dbcb6b36e6b7ebb14b792c14f8c47f69d3cb",
++      "decisions": []
++    },
++    "story": {
++      "request_id": "222451c1df75d735351694f2367fcde1",
++      "review_digest": "sha256:2a5806150f3b0bcaa7ed51b0d15a707929e53580077870ddf579333f6d513b7a",
++      "decisions": []
++    },
++    "clarity": {
++      "request_id": "15925c94b789631ce1eb927f0f607524",
++      "review_digest": "sha256:ab9aa8890fadb043a6f914b6b382c02d4a54e9373670cbe13c7ef7c628d60ec6",
++      "decisions": []
++    }
++  }
++}
++```
+diff --git a/outbox/222451c1df75d735351694f2367fcde1.md.staging b/outbox/222451c1df75d735351694f2367fcde1.md.staging
+new file mode 100644
+index 0000000000000000000000000000000000000000..a6759c0fb2a86fe792a35329a1b8572d986858d4
+--- /dev/null
++++ b/outbox/222451c1df75d735351694f2367fcde1.md.staging
+@@ -0,0 +1,17 @@
++```json
++{
++  "reviewed_revision": "sha256:94b953876ab2019d9308404fdbefe8dc64506aa5b25aebf30abca863bc0f551c",
++  "lenses": {
++    "evidence": {
++      "request_id": "008e1068b1424b4f8ac9165f81b58e68",
++      "review_digest": "sha256:bfdce62485498a4967ad9c8a0bc3dbcb6b36e6b7ebb14b792c14f8c47f69d3cb",
++      "decisions": []
++    },
++    "story": {
++      "request_id": "222451c1df75d735351694f2367fcde1",
++      "review_digest": "sha256:2a5806150f3b0bcaa7ed51b0d15a707929e53580077870ddf579333f6d513b7a",
++      "decisions": []
++    }
++  }
++}
++```
+diff --git a/pm-ready.staging b/pm-ready.staging
+new file mode 100644
+index 0000000000000000000000000000000000000000..395527df662d5fdf4b00c5f1cd9b8d7ac048e127
+--- /dev/null
++++ b/pm-ready.staging
+@@ -0,0 +1 @@
++ready
+
+exec
+/bin/zsh -c 'mv outbox/15925c94b789631ce1eb927f0f607524.md.staging outbox/15925c94b789631ce1eb927f0f607524.md' in /Users/yutaaoki/write-uuter/.worktrees/1/smoke-runs/.write-uuter-private-1802187262/workspaces/001-pm-4227960904
+ succeeded in 0ms:
+diff --git a/outbox/008e1068b1424b4f8ac9165f81b58e68.md.staging b/outbox/008e1068b1424b4f8ac9165f81b58e68.md.staging
+new file mode 100644
+index 0000000000000000000000000000000000000000..9e657ec7ca7229da1efdd06b8b3d9197d7cd2302
+--- /dev/null
++++ b/outbox/008e1068b1424b4f8ac9165f81b58e68.md.staging
+@@ -0,0 +1,12 @@
++```json
++{
++  "reviewed_revision": "sha256:94b953876ab2019d9308404fdbefe8dc64506aa5b25aebf30abca863bc0f551c",
++  "lenses": {
++    "evidence": {
++      "request_id": "008e1068b1424b4f8ac9165f81b58e68",
++      "review_digest": "sha256:bfdce62485498a4967ad9c8a0bc3dbcb6b36e6b7ebb14b792c14f8c47f69d3cb",
++      "decisions": []
++    }
++  }
++}
++```
+diff --git a/outbox/15925c94b789631ce1eb927f0f607524.md.staging b/outbox/15925c94b789631ce1eb927f0f607524.md.staging
+new file mode 100644
+index 0000000000000000000000000000000000000000..c7c4a7c1cd18380507d91c3f30de0054cde6b37c
+--- /dev/null
++++ b/outbox/15925c94b789631ce1eb927f0f607524.md.staging
+@@ -0,0 +1,22 @@
++```json
++{
++  "reviewed_revision": "sha256:94b953876ab2019d9308404fdbefe8dc64506aa5b25aebf30abca863bc0f551c",
++  "lenses": {
++    "evidence": {
++      "request_id": "008e1068b1424b4f8ac9165f81b58e68",
++      "review_digest": "sha256:bfdce62485498a4967ad9c8a0bc3dbcb6b36e6b7ebb14b792c14f8c47f69d3cb",
++      "decisions": []
++    },
++    "story": {
++      "request_id": "222451c1df75d735351694f2367fcde1",
++      "review_digest": "sha256:2a5806150f3b0bcaa7ed51b0d15a707929e53580077870ddf579333f6d513b7a",
++      "decisions": []
++    },
++    "clarity": {
++      "request_id": "15925c94b789631ce1eb927f0f607524",
++      "review_digest": "sha256:ab9aa8890fadb043a6f914b6b382c02d4a54e9373670cbe13c7ef7c628d60ec6",
++      "decisions": []
++    }
++  }
++}
++```
+diff --git a/outbox/222451c1df75d735351694f2367fcde1.md.staging b/outbox/222451c1df75d735351694f2367fcde1.md.staging
+new file mode 100644
+index 0000000000000000000000000000000000000000..a6759c0fb2a86fe792a35329a1b8572d986858d4
+--- /dev/null
++++ b/outbox/222451c1df75d735351694f2367fcde1.md.staging
+@@ -0,0 +1,17 @@
++```json
++{
++  "reviewed_revision": "sha256:94b953876ab2019d9308404fdbefe8dc64506aa5b25aebf30abca863bc0f551c",
++  "lenses": {
++    "evidence": {
++      "request_id": "008e1068b1424b4f8ac9165f81b58e68",
++      "review_digest": "sha256:bfdce62485498a4967ad9c8a0bc3dbcb6b36e6b7ebb14b792c14f8c47f69d3cb",
++      "decisions": []
++    },
++    "story": {
++      "request_id": "222451c1df75d735351694f2367fcde1",
++      "review_digest": "sha256:2a5806150f3b0bcaa7ed51b0d15a707929e53580077870ddf579333f6d513b7a",
++      "decisions": []
++    }
++  }
++}
++```
+diff --git a/pm-ready.staging b/pm-ready.staging
+new file mode 100644
+index 0000000000000000000000000000000000000000..395527df662d5fdf4b00c5f1cd9b8d7ac048e127
+--- /dev/null
++++ b/pm-ready.staging
+@@ -0,0 +1 @@
++ready
+
+codex
+The Clarity review contains no findings, and the candidate supports that clean result. I preserved Evidence and Story verbatim, added only the Clarity record, and am waiting for its exact acknowledgement before polling Copy.
+exec
+/bin/zsh -c 'zmodload zsh/zselect
+while [[ -e inbox/15925c94b789631ce1eb927f0f607524.json ]]; do zselect -t 100; done
+print -r -- ACKNOWLEDGED
+while true; do
+  files=(inbox/*.json(N))
+  if (( ${#files} > 0 )); then
+    print -r -- "${files[1]}"
+    break
+  fi
+  zselect -t 500
+done' in /Users/yutaaoki/write-uuter/.worktrees/1/smoke-runs/.write-uuter-private-1802187262/workspaces/001-pm-4227960904
+ succeeded in 25558ms:
+inbox/4a9cac1e9dcf3530a788e41d6e707b48.json
+
+diff --git a/outbox/008e1068b1424b4f8ac9165f81b58e68.md.staging b/outbox/008e1068b1424b4f8ac9165f81b58e68.md.staging
+new file mode 100644
+index 0000000000000000000000000000000000000000..9e657ec7ca7229da1efdd06b8b3d9197d7cd2302
+--- /dev/null
++++ b/outbox/008e1068b1424b4f8ac9165f81b58e68.md.staging
+@@ -0,0 +1,12 @@
++```json
++{
++  "reviewed_revision": "sha256:94b953876ab2019d9308404fdbefe8dc64506aa5b25aebf30abca863bc0f551c",
++  "lenses": {
++    "evidence": {
++      "request_id": "008e1068b1424b4f8ac9165f81b58e68",
++      "review_digest": "sha256:bfdce62485498a4967ad9c8a0bc3dbcb6b36e6b7ebb14b792c14f8c47f69d3cb",
++      "decisions": []
++    }
++  }
++}
++```
+diff --git a/outbox/15925c94b789631ce1eb927f0f607524.md.staging b/outbox/15925c94b789631ce1eb927f0f607524.md.staging
+new file mode 100644
+index 0000000000000000000000000000000000000000..c7c4a7c1cd18380507d91c3f30de0054cde6b37c
+--- /dev/null
++++ b/outbox/15925c94b789631ce1eb927f0f607524.md.staging
+@@ -0,0 +1,22 @@
++```json
++{
++  "reviewed_revision": "sha256:94b953876ab2019d9308404fdbefe8dc64506aa5b25aebf30abca863bc0f551c",
++  "lenses": {
++    "evidence": {
++      "request_id": "008e1068b1424b4f8ac9165f81b58e68",
++      "review_digest": "sha256:bfdce62485498a4967ad9c8a0bc3dbcb6b36e6b7ebb14b792c14f8c47f69d3cb",
++      "decisions": []
++    },
++    "story": {
++      "request_id": "222451c1df75d735351694f2367fcde1",
++      "review_digest": "sha256:2a5806150f3b0bcaa7ed51b0d15a707929e53580077870ddf579333f6d513b7a",
++      "decisions": []
++    },
++    "clarity": {
++      "request_id": "15925c94b789631ce1eb927f0f607524",
++      "review_digest": "sha256:ab9aa8890fadb043a6f914b6b382c02d4a54e9373670cbe13c7ef7c628d60ec6",
++      "decisions": []
++    }
++  }
++}
++```
+diff --git a/outbox/222451c1df75d735351694f2367fcde1.md.staging b/outbox/222451c1df75d735351694f2367fcde1.md.staging
+new file mode 100644
+index 0000000000000000000000000000000000000000..a6759c0fb2a86fe792a35329a1b8572d986858d4
+--- /dev/null
++++ b/outbox/222451c1df75d735351694f2367fcde1.md.staging
+@@ -0,0 +1,17 @@
++```json
++{
++  "reviewed_revision": "sha256:94b953876ab2019d9308404fdbefe8dc64506aa5b25aebf30abca863bc0f551c",
++  "lenses": {
++    "evidence": {
++      "request_id": "008e1068b1424b4f8ac9165f81b58e68",
++      "review_digest": "sha256:bfdce62485498a4967ad9c8a0bc3dbcb6b36e6b7ebb14b792c14f8c47f69d3cb",
++      "decisions": []
++    },
++    "story": {
++      "request_id": "222451c1df75d735351694f2367fcde1",
++      "review_digest": "sha256:2a5806150f3b0bcaa7ed51b0d15a707929e53580077870ddf579333f6d513b7a",
++      "decisions": []
++    }
++  }
++}
++```
+diff --git a/pm-ready.staging b/pm-ready.staging
+new file mode 100644
+index 0000000000000000000000000000000000000000..395527df662d5fdf4b00c5f1cd9b8d7ac048e127
+--- /dev/null
++++ b/pm-ready.staging
+@@ -0,0 +1 @@
++ready
+
+exec
+/bin/zsh -c "IFS= read -r -d '' content < inbox/4a9cac1e9dcf3530a788e41d6e707b48.json
+print -r -- \""'$content"' in /Users/yutaaoki/write-uuter/.worktrees/1/smoke-runs/.write-uuter-private-1802187262/workspaces/001-pm-4227960904
+ succeeded in 0ms:
+{
+  "request_id": "4a9cac1e9dcf3530a788e41d6e707b48",
+  "candidate": 1,
+  "lens": "copy",
+  "reviewed_revision": "sha256:94b953876ab2019d9308404fdbefe8dc64506aa5b25aebf30abca863bc0f551c",
+  "review_digest": "sha256:f573f603c362019223f3229a149311229582b99f93b1f78c0fa88b14ee961514",
+  "result_path": "requests/4a9cac1e9dcf3530a788e41d6e707b48/result.json",
+  "report_path": "requests/4a9cac1e9dcf3530a788e41d6e707b48/report.md",
+  "decision_path": "pm-decisions/article-001.md",
+  "request_path": "inbox/4a9cac1e9dcf3530a788e41d6e707b48.json",
+  "context_directory": "requests/4a9cac1e9dcf3530a788e41d6e707b48",
+  "output_path": "outbox/4a9cac1e9dcf3530a788e41d6e707b48.md"
+}
+
+
+diff --git a/outbox/008e1068b1424b4f8ac9165f81b58e68.md.staging b/outbox/008e1068b1424b4f8ac9165f81b58e68.md.staging
+new file mode 100644
+index 0000000000000000000000000000000000000000..9e657ec7ca7229da1efdd06b8b3d9197d7cd2302
+--- /dev/null
++++ b/outbox/008e1068b1424b4f8ac9165f81b58e68.md.staging
+@@ -0,0 +1,12 @@
++```json
++{
++  "reviewed_revision": "sha256:94b953876ab2019d9308404fdbefe8dc64506aa5b25aebf30abca863bc0f551c",
++  "lenses": {
++    "evidence": {
++      "request_id": "008e1068b1424b4f8ac9165f81b58e68",
++      "review_digest": "sha256:bfdce62485498a4967ad9c8a0bc3dbcb6b36e6b7ebb14b792c14f8c47f69d3cb",
++      "decisions": []
++    }
++  }
++}
++```
+diff --git a/outbox/15925c94b789631ce1eb927f0f607524.md.staging b/outbox/15925c94b789631ce1eb927f0f607524.md.staging
+new file mode 100644
+index 0000000000000000000000000000000000000000..c7c4a7c1cd18380507d91c3f30de0054cde6b37c
+--- /dev/null
++++ b/outbox/15925c94b789631ce1eb927f0f607524.md.staging
+@@ -0,0 +1,22 @@
++```json
++{
++  "reviewed_revision": "sha256:94b953876ab2019d9308404fdbefe8dc64506aa5b25aebf30abca863bc0f551c",
++  "lenses": {
++    "evidence": {
++      "request_id": "008e1068b1424b4f8ac9165f81b58e68",
++      "review_digest": "sha256:bfdce62485498a4967ad9c8a0bc3dbcb6b36e6b7ebb14b792c14f8c47f69d3cb",
++      "decisions": []
++    },
++    "story": {
++      "request_id": "222451c1df75d735351694f2367fcde1",
++      "review_digest": "sha256:2a5806150f3b0bcaa7ed51b0d15a707929e53580077870ddf579333f6d513b7a",
++      "decisions": []
++    },
++    "clarity": {
++      "request_id": "15925c94b789631ce1eb927f0f607524",
++      "review_digest": "sha256:ab9aa8890fadb043a6f914b6b382c02d4a54e9373670cbe13c7ef7c628d60ec6",
++      "decisions": []
++    }
++  }
++}
++```
+diff --git a/outbox/222451c1df75d735351694f2367fcde1.md.staging b/outbox/222451c1df75d735351694f2367fcde1.md.staging
+new file mode 100644
+index 0000000000000000000000000000000000000000..a6759c0fb2a86fe792a35329a1b8572d986858d4
+--- /dev/null
++++ b/outbox/222451c1df75d735351694f2367fcde1.md.staging
+@@ -0,0 +1,17 @@
++```json
++{
++  "reviewed_revision": "sha256:94b953876ab2019d9308404fdbefe8dc64506aa5b25aebf30abca863bc0f551c",
++  "lenses": {
++    "evidence": {
++      "request_id": "008e1068b1424b4f8ac9165f81b58e68",
++      "review_digest": "sha256:bfdce62485498a4967ad9c8a0bc3dbcb6b36e6b7ebb14b792c14f8c47f69d3cb",
++      "decisions": []
++    },
++    "story": {
++      "request_id": "222451c1df75d735351694f2367fcde1",
++      "review_digest": "sha256:2a5806150f3b0bcaa7ed51b0d15a707929e53580077870ddf579333f6d513b7a",
++      "decisions": []
++    }
++  }
++}
++```
+diff --git a/pm-ready.staging b/pm-ready.staging
+new file mode 100644
+index 0000000000000000000000000000000000000000..395527df662d5fdf4b00c5f1cd9b8d7ac048e127
+--- /dev/null
++++ b/pm-ready.staging
+@@ -0,0 +1 @@
++ready
+
+exec
+/bin/zsh -c 'for f in requests/4a9cac1e9dcf3530a788e41d6e707b48/report.md requests/4a9cac1e9dcf3530a788e41d6e707b48/result.json requests/4a9cac1e9dcf3530a788e41d6e707b48/previous-decision.md requests/4a9cac1e9dcf3530a788e41d6e707b48/drafts/article-001.md; do
+ print -r -- "FILE:$f"
+ IFS= read -r -d '"'' content < \""'$f"
+ print -r -- "$content"
+done' in /Users/yutaaoki/write-uuter/.worktrees/1/smoke-runs/.write-uuter-private-1802187262/workspaces/001-pm-4227960904
+ succeeded in 0ms:
+FILE:requests/4a9cac1e9dcf3530a788e41d6e707b48/report.md
+# Copy Review
+
+status: clean
+
+lens: copy
+
+reviewed_revision: sha256:94b953876ab2019d9308404fdbefe8dc64506aa5b25aebf30abca863bc0f551c
+
+findings: []
+
+FILE:requests/4a9cac1e9dcf3530a788e41d6e707b48/result.json
+{
+  "status": "clean",
+  "lens": "copy",
+  "reviewed_revision": "sha256:94b953876ab2019d9308404fdbefe8dc64506aa5b25aebf30abca863bc0f551c",
+  "findings": []
+}
+
+FILE:requests/4a9cac1e9dcf3530a788e41d6e707b48/previous-decision.md
+```json
+{
+  "reviewed_revision": "sha256:94b953876ab2019d9308404fdbefe8dc64506aa5b25aebf30abca863bc0f551c",
+  "lenses": {
+    "evidence": {
+      "request_id": "008e1068b1424b4f8ac9165f81b58e68",
+      "review_digest": "sha256:bfdce62485498a4967ad9c8a0bc3dbcb6b36e6b7ebb14b792c14f8c47f69d3cb",
+      "decisions": []
+    },
+    "story": {
+      "request_id": "222451c1df75d735351694f2367fcde1",
+      "review_digest": "sha256:2a5806150f3b0bcaa7ed51b0d15a707929e53580077870ddf579333f6d513b7a",
+      "decisions": []
+    },
+    "clarity": {
+      "request_id": "15925c94b789631ce1eb927f0f607524",
+      "review_digest": "sha256:ab9aa8890fadb043a6f914b6b382c02d4a54e9373670cbe13c7ef7c628d60ec6",
+      "decisions": []
+    }
+  }
+}
+```
+
+FILE:requests/4a9cac1e9dcf3530a788e41d6e707b48/drafts/article-001.md
+# From Brief to Inspectable Reviewed Article
+
+write-uuter is a Go CLI that turns a Markdown brief into a reviewed article while preserving the work that produced it. Its central design choice is a clear division of responsibility: a deterministic Go controller owns workflow state, validation, routing, revision hashes, timeouts, cleanup, and publication, while isolated Codex processes perform bounded editorial tasks.
+
+This is not one agent carrying an article from prompt to publication. The project assigns research, structure, writing, review, and editorial judgment to distinct roles. Workers and reviewers run separately, each reviewer starts as a fresh process, and one persistent PM makes editorial classifications throughout the run. Because those judgments are retained while Go enforces the resulting routes, engineers can inspect both the editorial decision and the control flow that followed it.
+
+## From brief to first candidate
+
+A run begins only after the controller validates the brief's required sections and confirms that the target is new. It then initializes the run directory atomically. From there, work proceeds in a fixed order.
+
+First, the Researcher creates a non-empty source record and a claim ledger. The ledger must explicitly account for five kinds of material: Fact, Firsthand observation, Inference, Opinion, and Unresolved. That classification gives later roles a concrete boundary between supported claims and material that needs qualification or cannot yet be established.
+
+Next, the Story Editor converts the evidence into an outline. Each section must state its purpose, supporting evidence, and intended reader takeaway. The Writer then expands that outline into candidate 001. A candidate must contain substantive text and cannot contain unresolved drafting markers.
+
+These requirements are examples of artifact gates: a required file and the validation it must pass before the controller advances. Each handoff is therefore a named, durable artifact with a minimum contract, not an informal assurance that the work is done.
+
+## Files, not final messages, prove progress
+
+Each role works in an isolated workspace rather than directly in the durable run directory or another role's workspace. Go stages only the context that role is allowed to receive. After the process exits successfully, the controller checks the role's owned outputs, requires valid regular files, and copies validated results back into the run.
+
+An agent's final message cannot advance the workflow on its own. The expected files must exist and satisfy their contracts. Review output, for example, is tied to a specific candidate by its SHA-256 revision; the declared lens and revision must match the assignment, and the structured findings must agree with the accompanying report.
+
+The controller records the live state in `workflow.json`, which is rewritten atomically. It includes the run's status and phase, current candidate and revision, active role, artifact paths, review attempts, timestamps, and—when applicable—a terminal blocking reason. In this repository, “inspectable” is best understood as a consequence of this design: state transitions depend on retained, validated files rather than transient chat transcripts or terminal scrollback.
+
+## Four reviews, one lens at a time
+
+Every candidate enters a fixed, sequential review sequence: Evidence, Story, Clarity, then Copy. Reviewers report findings but never edit the candidate. After each reached lens, the persistent PM classifies every finding as `valid_must_fix`, `valid_optional`, `invalid` with a reason, or `needs_human_judgment`.
+
+The separation matters. A fresh reviewer supplies a lens-specific assessment, the PM records the editorial judgment about each finding, and Go validates that decision artifact and applies predetermined routing rules. Later lenses do not run concurrently or get ahead of an unresolved must-fix.
+
+If the PM validates a must-fix, review of that candidate stops immediately. The Writer receives the prior candidate and the reached review result and produces the next numbered candidate. Review then restarts at Evidence. One rationale supported by the design is that changed content should not inherit later-lens results attached to an earlier revision. Optional and invalid findings do not consume another candidate.
+
+Automated revision is bounded at candidate 003. A must-fix against that candidate blocks the run instead of creating candidate 004. A need for human judgment, a runtime failure, or an artifact-validation failure also blocks the run. The limit does not establish that three attempts are optimal; it simply prevents indefinite automated revision and turns unresolved work into an explicit terminal state.
+
+## Two inspectable endings
+
+Success requires the final candidate to pass routing at all four review lenses. Only then does the controller create `article.md`, as a byte-for-byte copy of the accepted candidate. The published artifact can therefore be matched exactly to the revision that was reviewed.
+
+A blocked run keeps its reason and the work accumulated before the stop. Depending on how far it progressed, that record can include earlier candidates, partial review sequences, reviewer reports, PM decisions, workflow state, and audit copies of prompts, logs, and exit markers. Failure does not collapse into an unexplained absence of an article.
+
+That durable record is the practical answer to how write-uuter produces an inspectable reviewed article. The controller does not merely ask roles to follow a process; it requires evidence of each completed step, validates the evidence, and preserves the route to either exact publication or explicit blockage. The documented workflow does have firm boundaries: parallel runs, resuming after a controller restart, and editing completed runs are not implemented. Within those boundaries, its artifacts make the outcome traceable without treating agent conversation as workflow state.
+
+
+diff --git a/outbox/008e1068b1424b4f8ac9165f81b58e68.md.staging b/outbox/008e1068b1424b4f8ac9165f81b58e68.md.staging
+new file mode 100644
+index 0000000000000000000000000000000000000000..9e657ec7ca7229da1efdd06b8b3d9197d7cd2302
+--- /dev/null
++++ b/outbox/008e1068b1424b4f8ac9165f81b58e68.md.staging
+@@ -0,0 +1,12 @@
++```json
++{
++  "reviewed_revision": "sha256:94b953876ab2019d9308404fdbefe8dc64506aa5b25aebf30abca863bc0f551c",
++  "lenses": {
++    "evidence": {
++      "request_id": "008e1068b1424b4f8ac9165f81b58e68",
++      "review_digest": "sha256:bfdce62485498a4967ad9c8a0bc3dbcb6b36e6b7ebb14b792c14f8c47f69d3cb",
++      "decisions": []
++    }
++  }
++}
++```
+diff --git a/outbox/15925c94b789631ce1eb927f0f607524.md.staging b/outbox/15925c94b789631ce1eb927f0f607524.md.staging
+new file mode 100644
+index 0000000000000000000000000000000000000000..c7c4a7c1cd18380507d91c3f30de0054cde6b37c
+--- /dev/null
++++ b/outbox/15925c94b789631ce1eb927f0f607524.md.staging
+@@ -0,0 +1,22 @@
++```json
++{
++  "reviewed_revision": "sha256:94b953876ab2019d9308404fdbefe8dc64506aa5b25aebf30abca863bc0f551c",
++  "lenses": {
++    "evidence": {
++      "request_id": "008e1068b1424b4f8ac9165f81b58e68",
++      "review_digest": "sha256:bfdce62485498a4967ad9c8a0bc3dbcb6b36e6b7ebb14b792c14f8c47f69d3cb",
++      "decisions": []
++    },
++    "story": {
++      "request_id": "222451c1df75d735351694f2367fcde1",
++      "review_digest": "sha256:2a5806150f3b0bcaa7ed51b0d15a707929e53580077870ddf579333f6d513b7a",
++      "decisions": []
++    },
++    "clarity": {
++      "request_id": "15925c94b789631ce1eb927f0f607524",
++      "review_digest": "sha256:ab9aa8890fadb043a6f914b6b382c02d4a54e9373670cbe13c7ef7c628d60ec6",
++      "decisions": []
++    }
++  }
++}
++```
+diff --git a/outbox/222451c1df75d735351694f2367fcde1.md.staging b/outbox/222451c1df75d735351694f2367fcde1.md.staging
+new file mode 100644
+index 0000000000000000000000000000000000000000..a6759c0fb2a86fe792a35329a1b8572d986858d4
+--- /dev/null
++++ b/outbox/222451c1df75d735351694f2367fcde1.md.staging
+@@ -0,0 +1,17 @@
++```json
++{
++  "reviewed_revision": "sha256:94b953876ab2019d9308404fdbefe8dc64506aa5b25aebf30abca863bc0f551c",
++  "lenses": {
++    "evidence": {
++      "request_id": "008e1068b1424b4f8ac9165f81b58e68",
++      "review_digest": "sha256:bfdce62485498a4967ad9c8a0bc3dbcb6b36e6b7ebb14b792c14f8c47f69d3cb",
++      "decisions": []
++    },
++    "story": {
++      "request_id": "222451c1df75d735351694f2367fcde1",
++      "review_digest": "sha256:2a5806150f3b0bcaa7ed51b0d15a707929e53580077870ddf579333f6d513b7a",
++      "decisions": []
++    }
++  }
++}
++```
+diff --git a/pm-ready.staging b/pm-ready.staging
+new file mode 100644
+index 0000000000000000000000000000000000000000..395527df662d5fdf4b00c5f1cd9b8d7ac048e127
+--- /dev/null
++++ b/pm-ready.staging
+@@ -0,0 +1 @@
++ready
+
+apply patch
+patch: completed
+/Users/yutaaoki/write-uuter/.worktrees/1/smoke-runs/.write-uuter-private-1802187262/workspaces/001-pm-4227960904/outbox/4a9cac1e9dcf3530a788e41d6e707b48.md.staging
+diff --git a/outbox/008e1068b1424b4f8ac9165f81b58e68.md.staging b/outbox/008e1068b1424b4f8ac9165f81b58e68.md.staging
+new file mode 100644
+index 0000000000000000000000000000000000000000..9e657ec7ca7229da1efdd06b8b3d9197d7cd2302
+--- /dev/null
++++ b/outbox/008e1068b1424b4f8ac9165f81b58e68.md.staging
+@@ -0,0 +1,12 @@
++```json
++{
++  "reviewed_revision": "sha256:94b953876ab2019d9308404fdbefe8dc64506aa5b25aebf30abca863bc0f551c",
++  "lenses": {
++    "evidence": {
++      "request_id": "008e1068b1424b4f8ac9165f81b58e68",
++      "review_digest": "sha256:bfdce62485498a4967ad9c8a0bc3dbcb6b36e6b7ebb14b792c14f8c47f69d3cb",
++      "decisions": []
++    }
++  }
++}
++```
+diff --git a/outbox/15925c94b789631ce1eb927f0f607524.md.staging b/outbox/15925c94b789631ce1eb927f0f607524.md.staging
+new file mode 100644
+index 0000000000000000000000000000000000000000..c7c4a7c1cd18380507d91c3f30de0054cde6b37c
+--- /dev/null
++++ b/outbox/15925c94b789631ce1eb927f0f607524.md.staging
+@@ -0,0 +1,22 @@
++```json
++{
++  "reviewed_revision": "sha256:94b953876ab2019d9308404fdbefe8dc64506aa5b25aebf30abca863bc0f551c",
++  "lenses": {
++    "evidence": {
++      "request_id": "008e1068b1424b4f8ac9165f81b58e68",
++      "review_digest": "sha256:bfdce62485498a4967ad9c8a0bc3dbcb6b36e6b7ebb14b792c14f8c47f69d3cb",
++      "decisions": []
++    },
++    "story": {
++      "request_id": "222451c1df75d735351694f2367fcde1",
++      "review_digest": "sha256:2a5806150f3b0bcaa7ed51b0d15a707929e53580077870ddf579333f6d513b7a",
++      "decisions": []
++    },
++    "clarity": {
++      "request_id": "15925c94b789631ce1eb927f0f607524",
++      "review_digest": "sha256:ab9aa8890fadb043a6f914b6b382c02d4a54e9373670cbe13c7ef7c628d60ec6",
++      "decisions": []
++    }
++  }
++}
++```
+diff --git a/outbox/222451c1df75d735351694f2367fcde1.md.staging b/outbox/222451c1df75d735351694f2367fcde1.md.staging
+new file mode 100644
+index 0000000000000000000000000000000000000000..a6759c0fb2a86fe792a35329a1b8572d986858d4
+--- /dev/null
++++ b/outbox/222451c1df75d735351694f2367fcde1.md.staging
+@@ -0,0 +1,17 @@
++```json
++{
++  "reviewed_revision": "sha256:94b953876ab2019d9308404fdbefe8dc64506aa5b25aebf30abca863bc0f551c",
++  "lenses": {
++    "evidence": {
++      "request_id": "008e1068b1424b4f8ac9165f81b58e68",
++      "review_digest": "sha256:bfdce62485498a4967ad9c8a0bc3dbcb6b36e6b7ebb14b792c14f8c47f69d3cb",
++      "decisions": []
++    },
++    "story": {
++      "request_id": "222451c1df75d735351694f2367fcde1",
++      "review_digest": "sha256:2a5806150f3b0bcaa7ed51b0d15a707929e53580077870ddf579333f6d513b7a",
++      "decisions": []
++    }
++  }
++}
++```
+diff --git a/outbox/4a9cac1e9dcf3530a788e41d6e707b48.md.staging b/outbox/4a9cac1e9dcf3530a788e41d6e707b48.md.staging
+new file mode 100644
+index 0000000000000000000000000000000000000000..35fbb1a11d3f1fd0381389a61ffe77180d66d188
+--- /dev/null
++++ b/outbox/4a9cac1e9dcf3530a788e41d6e707b48.md.staging
+@@ -0,0 +1,27 @@
++```json
++{
++  "reviewed_revision": "sha256:94b953876ab2019d9308404fdbefe8dc64506aa5b25aebf30abca863bc0f551c",
++  "lenses": {
++    "evidence": {
++      "request_id": "008e1068b1424b4f8ac9165f81b58e68",
++      "review_digest": "sha256:bfdce62485498a4967ad9c8a0bc3dbcb6b36e6b7ebb14b792c14f8c47f69d3cb",
++      "decisions": []
++    },
++    "story": {
++      "request_id": "222451c1df75d735351694f2367fcde1",
++      "review_digest": "sha256:2a5806150f3b0bcaa7ed51b0d15a707929e53580077870ddf579333f6d513b7a",
++      "decisions": []
++    },
++    "clarity": {
++      "request_id": "15925c94b789631ce1eb927f0f607524",
++      "review_digest": "sha256:ab9aa8890fadb043a6f914b6b382c02d4a54e9373670cbe13c7ef7c628d60ec6",
++      "decisions": []
++    },
++    "copy": {
++      "request_id": "4a9cac1e9dcf3530a788e41d6e707b48",
++      "review_digest": "sha256:f573f603c362019223f3229a149311229582b99f93b1f78c0fa88b14ee961514",
++      "decisions": []
++    }
++  }
++}
++```
+diff --git a/pm-ready.staging b/pm-ready.staging
+new file mode 100644
+index 0000000000000000000000000000000000000000..395527df662d5fdf4b00c5f1cd9b8d7ac048e127
+--- /dev/null
++++ b/pm-ready.staging
+@@ -0,0 +1 @@
++ready
+
+exec
+/bin/zsh -c 'mv outbox/4a9cac1e9dcf3530a788e41d6e707b48.md.staging outbox/4a9cac1e9dcf3530a788e41d6e707b48.md' in /Users/yutaaoki/write-uuter/.worktrees/1/smoke-runs/.write-uuter-private-1802187262/workspaces/001-pm-4227960904
+ succeeded in 0ms:
+diff --git a/outbox/008e1068b1424b4f8ac9165f81b58e68.md.staging b/outbox/008e1068b1424b4f8ac9165f81b58e68.md.staging
+new file mode 100644
+index 0000000000000000000000000000000000000000..9e657ec7ca7229da1efdd06b8b3d9197d7cd2302
+--- /dev/null
++++ b/outbox/008e1068b1424b4f8ac9165f81b58e68.md.staging
+@@ -0,0 +1,12 @@
++```json
++{
++  "reviewed_revision": "sha256:94b953876ab2019d9308404fdbefe8dc64506aa5b25aebf30abca863bc0f551c",
++  "lenses": {
++    "evidence": {
++      "request_id": "008e1068b1424b4f8ac9165f81b58e68",
++      "review_digest": "sha256:bfdce62485498a4967ad9c8a0bc3dbcb6b36e6b7ebb14b792c14f8c47f69d3cb",
++      "decisions": []
++    }
++  }
++}
++```
+diff --git a/outbox/15925c94b789631ce1eb927f0f607524.md.staging b/outbox/15925c94b789631ce1eb927f0f607524.md.staging
+new file mode 100644
+index 0000000000000000000000000000000000000000..c7c4a7c1cd18380507d91c3f30de0054cde6b37c
+--- /dev/null
++++ b/outbox/15925c94b789631ce1eb927f0f607524.md.staging
+@@ -0,0 +1,22 @@
++```json
++{
++  "reviewed_revision": "sha256:94b953876ab2019d9308404fdbefe8dc64506aa5b25aebf30abca863bc0f551c",
++  "lenses": {
++    "evidence": {
++      "request_id": "008e1068b1424b4f8ac9165f81b58e68",
++      "review_digest": "sha256:bfdce62485498a4967ad9c8a0bc3dbcb6b36e6b7ebb14b792c14f8c47f69d3cb",
++      "decisions": []
++    },
++    "story": {
++      "request_id": "222451c1df75d735351694f2367fcde1",
++      "review_digest": "sha256:2a5806150f3b0bcaa7ed51b0d15a707929e53580077870ddf579333f6d513b7a",
++      "decisions": []
++    },
++    "clarity": {
++      "request_id": "15925c94b789631ce1eb927f0f607524",
++      "review_digest": "sha256:ab9aa8890fadb043a6f914b6b382c02d4a54e9373670cbe13c7ef7c628d60ec6",
++      "decisions": []
++    }
++  }
++}
++```
+diff --git a/outbox/222451c1df75d735351694f2367fcde1.md.staging b/outbox/222451c1df75d735351694f2367fcde1.md.staging
+new file mode 100644
+index 0000000000000000000000000000000000000000..a6759c0fb2a86fe792a35329a1b8572d986858d4
+--- /dev/null
++++ b/outbox/222451c1df75d735351694f2367fcde1.md.staging
+@@ -0,0 +1,17 @@
++```json
++{
++  "reviewed_revision": "sha256:94b953876ab2019d9308404fdbefe8dc64506aa5b25aebf30abca863bc0f551c",
++  "lenses": {
++    "evidence": {
++      "request_id": "008e1068b1424b4f8ac9165f81b58e68",
++      "review_digest": "sha256:bfdce62485498a4967ad9c8a0bc3dbcb6b36e6b7ebb14b792c14f8c47f69d3cb",
++      "decisions": []
++    },
++    "story": {
++      "request_id": "222451c1df75d735351694f2367fcde1",
++      "review_digest": "sha256:2a5806150f3b0bcaa7ed51b0d15a707929e53580077870ddf579333f6d513b7a",
++      "decisions": []
++    }
++  }
++}
++```
+diff --git a/outbox/4a9cac1e9dcf3530a788e41d6e707b48.md.staging b/outbox/4a9cac1e9dcf3530a788e41d6e707b48.md.staging
+new file mode 100644
+index 0000000000000000000000000000000000000000..35fbb1a11d3f1fd0381389a61ffe77180d66d188
+--- /dev/null
++++ b/outbox/4a9cac1e9dcf3530a788e41d6e707b48.md.staging
+@@ -0,0 +1,27 @@
++```json
++{
++  "reviewed_revision": "sha256:94b953876ab2019d9308404fdbefe8dc64506aa5b25aebf30abca863bc0f551c",
++  "lenses": {
++    "evidence": {
++      "request_id": "008e1068b1424b4f8ac9165f81b58e68",
++      "review_digest": "sha256:bfdce62485498a4967ad9c8a0bc3dbcb6b36e6b7ebb14b792c14f8c47f69d3cb",
++      "decisions": []
++    },
++    "story": {
++      "request_id": "222451c1df75d735351694f2367fcde1",
++      "review_digest": "sha256:2a5806150f3b0bcaa7ed51b0d15a707929e53580077870ddf579333f6d513b7a",
++      "decisions": []
++    },
++    "clarity": {
++      "request_id": "15925c94b789631ce1eb927f0f607524",
++      "review_digest": "sha256:ab9aa8890fadb043a6f914b6b382c02d4a54e9373670cbe13c7ef7c628d60ec6",
++      "decisions": []
++    },
++    "copy": {
++      "request_id": "4a9cac1e9dcf3530a788e41d6e707b48",
++      "review_digest": "sha256:f573f603c362019223f3229a149311229582b99f93b1f78c0fa88b14ee961514",
++      "decisions": []
++    }
++  }
++}
++```
+diff --git a/pm-ready.staging b/pm-ready.staging
+new file mode 100644
+index 0000000000000000000000000000000000000000..395527df662d5fdf4b00c5f1cd9b8d7ac048e127
+--- /dev/null
++++ b/pm-ready.staging
+@@ -0,0 +1 @@
++ready
+

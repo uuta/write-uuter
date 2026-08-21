@@ -71,6 +71,16 @@ type invocationLog struct {
 }
 
 func main() {
+	if len(os.Args) > 1 {
+		switch os.Args[1] {
+		case "__fork_escape":
+			runForkEscape()
+			return
+		case "__fork_escape_child":
+			startDetachedChild()
+			return
+		}
+	}
 	prompt, _ := io.ReadAll(os.Stdin)
 	role := os.Getenv("WRITE_UUTER_ROLE")
 	lens := os.Getenv("WRITE_UUTER_LENS")
@@ -347,6 +357,12 @@ func runPM(workDir, scenario string) {
 		if scenario == "unknown_pm_lens" && current.Lens == "evidence" {
 			jsonData = []byte(strings.Replace(string(jsonData), "\"review_digest\":", "\"unexpected\": true,\n      \"review_digest\":", 1))
 		}
+		if scenario == "missing_pm_decisions" && current.Lens == "evidence" {
+			jsonData = []byte(strings.Replace(string(jsonData), ",\n      \"decisions\": []", "", 1))
+		}
+		if scenario == "null_pm_decisions" && current.Lens == "evidence" {
+			jsonData = []byte(strings.Replace(string(jsonData), "\"decisions\": []", "\"decisions\": null", 1))
+		}
 		payload := "```json\n" + string(jsonData) + "\n```\n"
 		if scenario == "multiple_pm_documents" && current.Lens == "evidence" {
 			payload += "```json\n{}\n```\n"
@@ -368,6 +384,7 @@ func probeIsolation(workDir string) {
 		"durable":       filepath.Join(runDir, "brief.md"),
 		"prior_lens":    filepath.Join(runDir, "reviews", "article-001", "evidence", "report.md"),
 		"host":          "/etc/hosts",
+		"usr_sibling":   "/usr/local/bin/docker",
 		"codex_sibling": filepath.Join(privateRoot, "control", "agent-runner"),
 	}
 	result := map[string]string{}
@@ -378,6 +395,31 @@ func probeIsolation(workDir string) {
 			result[label] = err.Error()
 		}
 	}
+	if device, err := os.Open("/dev/zero"); err == nil {
+		var one [1]byte
+		_, readErr := device.Read(one[:])
+		_ = device.Close()
+		if readErr == nil {
+			result["dev_sibling"] = "READ_SUCCEEDED"
+		} else {
+			result["dev_sibling"] = readErr.Error()
+		}
+	} else {
+		result["dev_sibling"] = err.Error()
+	}
+	authTool := exec.Command("/bin/cat", filepath.Join(os.Getenv("CODEX_HOME"), "auth.json"))
+	if output, err := authTool.CombinedOutput(); err == nil {
+		result["tool_auth"] = "READ_SUCCEEDED:" + string(output)
+	} else {
+		result["tool_auth"] = err.Error() + ":" + string(output)
+	}
+	networkTool := exec.Command("/usr/bin/nc", "-vz", "-w", "1", "127.0.0.1", "9")
+	if output, err := networkTool.CombinedOutput(); err == nil {
+		result["tool_network"] = "CONNECT_SUCCEEDED:" + string(output)
+	} else {
+		result["tool_network"] = err.Error() + ":" + string(output)
+	}
+	result["double_fork"] = probeForkEscape(workDir)
 	for label, path := range map[string]string{
 		"pm_workspace_parent": filepath.Join(privateRoot, "workspaces"),
 		"controller":          filepath.Join(privateRoot, "control"),
@@ -402,6 +444,37 @@ func probeIsolation(workDir string) {
 	}
 	data, _ := json.MarshalIndent(result, "", "  ")
 	mustWrite(filepath.Join(workDir, ".write-uuter-isolation.probe"), string(data)+"\n")
+}
+
+func probeForkEscape(workDir string) string {
+	executable, err := os.Executable()
+	if err != nil {
+		return err.Error()
+	}
+	data, err := os.ReadFile(executable)
+	if err != nil {
+		return err.Error()
+	}
+	helper := filepath.Join(workDir, "model-tool")
+	if err := os.WriteFile(helper, data, 0o700); err != nil {
+		return err.Error()
+	}
+	command := exec.Command(helper, "__fork_escape")
+	output, err := command.CombinedOutput()
+	if err == nil {
+		return "ESCAPE_SUCCEEDED:" + string(output)
+	}
+	return err.Error() + ":" + string(output)
+}
+
+func runForkEscape() {
+	command := exec.Command(os.Args[0], "__fork_escape_child")
+	command.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
+	if err := command.Start(); err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		os.Exit(71)
+	}
+	_ = command.Process.Release()
 }
 
 func startDetachedChild() {

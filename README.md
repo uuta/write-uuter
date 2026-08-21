@@ -75,9 +75,12 @@ contracted context and copies validated regular-file outputs back. A native
 sandbox denies agents access to the durable run, other role workspaces, and
 controller-private launch state. Codex's inner sandbox is disabled because
 macOS does not support nesting it inside the stricter controller sandbox. Go
-owns each invocation and its descendants with a unique identity token, requires
-a pre-launch ready handshake, and publishes completion through an atomic marker
-only after descendants are gone.
+owns each invocation with native stable process identities (pidfds on Linux and
+audit tokens on macOS). The macOS sandbox permits forks only from the staged
+Codex client, so model-invoked runtimes and tools cannot double-fork out of controller
+ownership; a controller-private manifest tracks the remaining descendants.
+The controller requires a live PM/worker handshake and publishes completion
+through an atomic marker only after descendants are gone.
 Researcher, Story Editor, Writer, then fresh Evidence, Story, Clarity, and Copy
 reviewer processes run sequentially. Reviewers never receive the run directory
 or edit candidates. Only PM-validated must-fix findings create a new candidate;

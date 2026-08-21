@@ -280,6 +280,14 @@ func (control *controller) runResearcher() error {
 				return err
 			}
 			return control.store.copyTreeFrom(workspace, "evidence/assets", "evidence/assets")
+		},
+		func() error {
+			return errors.Join(
+				control.store.remove("evidence/sources.md"),
+				control.store.remove("claim-ledger.md"),
+				control.store.remove("evidence/firsthand.md"),
+				control.store.removeAll("evidence/assets"),
+			)
 		})
 }
 
@@ -376,6 +384,9 @@ func (control *controller) runStoryEditor() error {
 		func(workspace *artifactStore) error {
 			_, err := control.store.copyRegularFrom(workspace, "outline.md", "outline.md", 0o644)
 			return err
+		},
+		func() error {
+			return control.store.remove("outline.md")
 		})
 }
 
@@ -404,6 +415,8 @@ func (control *controller) runWriter(candidate int) error {
 		}
 		prompt += contextBlock(relative, data)
 	}
+	previousCandidate := control.workflow.CurrentCandidate
+	previousRevision := control.workflow.CurrentRevision
 	err = control.runWorker("writer", "", candidate, "", "writing", prompt,
 		func(workspace *artifactStore) error {
 			for _, relative := range inputs {
@@ -434,7 +447,12 @@ func (control *controller) runWriter(candidate int) error {
 			}
 			control.workflow.CurrentCandidate = candidate
 			control.workflow.CurrentRevision = revisionFor(data)
-			return control.saveWorkflow()
+			return nil
+		},
+		func() error {
+			control.workflow.CurrentCandidate = previousCandidate
+			control.workflow.CurrentRevision = previousRevision
+			return control.store.remove(target)
 		})
 	return err
 }
@@ -549,6 +567,9 @@ func (control *controller) runReviewer(candidate int, lens string) (ReviewResult
 				return err
 			}
 			return control.store.writeAtomic(filepath.Join(basePath, "report.md"), reportData, 0o644)
+		},
+		func() error {
+			return control.store.removeAll(filepath.Join("reviews", fmt.Sprintf("article-%03d", candidate), lens))
 		})
 	return result, err
 }
@@ -797,20 +818,59 @@ func (control *controller) requestPMDecision(candidate int, lens string, result 
 				if !live {
 					return nil, fmt.Errorf("PM exited before %s decision acceptance", lens)
 				}
-				if err := control.store.writeAtomic(fmt.Sprintf("pm-decisions/article-%03d.md", candidate), data, 0o644); err != nil {
+				decisionPath := fmt.Sprintf("pm-decisions/article-%03d.md", candidate)
+				previousDecision, previousErr := control.store.readRegular(decisionPath)
+				if previousErr != nil && !errors.Is(previousErr, os.ErrNotExist) {
+					return nil, previousErr
+				}
+				rollbackDecision := func() error {
+					if previousErr == nil {
+						return control.store.writeAtomic(decisionPath, previousDecision, 0o644)
+					}
+					return control.store.remove(decisionPath)
+				}
+				if err := control.store.writeAtomic(decisionPath, data, 0o644); err != nil {
 					return nil, err
 				}
+				if err := waitForTestBarrier("WRITE_UUTER_TEST_PM_EXIT_DECISION_COMMIT_BARRIER"); err != nil {
+					return nil, errors.Join(err, wrappedOptionalError("PM decision rollback", rollbackDecision()))
+				}
 				if err := ensureInvocationDeadline(deadlineUnixNano, "PM decision commit"); err != nil {
-					return nil, err
+					return nil, errors.Join(err, wrappedOptionalError("PM decision rollback", rollbackDecision()))
+				}
+				live, liveErr = control.runtime.invocationLive(control.pm)
+				if liveErr != nil {
+					return nil, errors.Join(fmt.Errorf("verify persistent PM after decision commit: %w", liveErr), wrappedOptionalError("PM decision rollback", rollbackDecision()))
+				}
+				if !live {
+					return nil, errors.Join(fmt.Errorf("PM exited during %s decision commit", lens), wrappedOptionalError("PM decision rollback", rollbackDecision()))
 				}
 				if control.decisionBindings[candidate] == nil {
 					control.decisionBindings[candidate] = make(map[string]decisionBinding)
+				}
+				previousBinding, hadPreviousBinding := control.decisionBindings[candidate][lens]
+				previousReachedLength := len(control.reachedLenses[candidate])
+				rollbackAcceptance := func(commitErr error) error {
+					if hadPreviousBinding {
+						control.decisionBindings[candidate][lens] = previousBinding
+					} else {
+						delete(control.decisionBindings[candidate], lens)
+					}
+					control.reachedLenses[candidate] = control.reachedLenses[candidate][:previousReachedLength]
+					return errors.Join(commitErr, wrappedOptionalError("PM decision rollback", rollbackDecision()))
 				}
 				control.decisionBindings[candidate][lens] = decisionBinding{RequestID: requestID, Digest: request.ReviewDigest, DecisionDigest: decisionListDigest(decisions)}
 				control.reachedLenses[candidate] = append(control.reachedLenses[candidate], lens)
 				control.workflow.ActiveRole = ""
 				if err := control.saveWorkflow(); err != nil {
-					return nil, err
+					return nil, rollbackAcceptance(err)
+				}
+				live, liveErr = control.runtime.invocationLive(control.pm)
+				if liveErr != nil {
+					return nil, rollbackAcceptance(fmt.Errorf("verify persistent PM across decision workflow commit: %w", liveErr))
+				}
+				if !live {
+					return nil, rollbackAcceptance(fmt.Errorf("PM exited across %s decision workflow commit", lens))
 				}
 				return decisions, nil
 			}
@@ -920,6 +980,23 @@ func parsePMDecisionDocument(data []byte) (PMDecisionDocument, error) {
 	if !strings.HasPrefix(payload, "{") || !strings.HasSuffix(payload, "}") {
 		return document, fmt.Errorf("PM decision must contain exactly one complete fenced JSON document")
 	}
+	var shape struct {
+		ReviewedRevision string `json:"reviewed_revision"`
+		Lenses           map[string]struct {
+			RequestID    string          `json:"request_id"`
+			ReviewDigest string          `json:"review_digest"`
+			Decisions    json.RawMessage `json:"decisions"`
+		} `json:"lenses"`
+	}
+	if err := decodeStrictJSON([]byte(payload), &shape); err != nil {
+		return document, fmt.Errorf("invalid PM decision JSON: %w", err)
+	}
+	for lens, record := range shape.Lenses {
+		decisions := bytes.TrimSpace(record.Decisions)
+		if len(decisions) == 0 || bytes.Equal(decisions, []byte("null")) || decisions[0] != '[' {
+			return document, fmt.Errorf("PM decision for %s must contain a non-null decisions array", lens)
+		}
+	}
 	if err := decodeStrictJSON([]byte(payload), &document); err != nil {
 		return document, fmt.Errorf("invalid PM decision JSON: %w", err)
 	}
@@ -971,7 +1048,7 @@ func validateDecisionList(decisions []PMDecision, result ReviewResult) error {
 	return nil
 }
 
-func (control *controller) runWorker(role, lens string, candidate int, revision, phase, prompt string, prepare, validate, commit func(*artifactStore) error) error {
+func (control *controller) runWorker(role, lens string, candidate int, revision, phase, prompt string, prepare, validate, commit func(*artifactStore) error, rollback func() error) error {
 	deadlineUnixNano := invocationDeadline(control.config.AgentTimeout)
 	testInvocationDelay("WRITE_UUTER_TEST_BEFORE_WORKER_START_DELAY")
 	inv, err := control.runtime.prepareInvocation(role, lens, candidate, revision, prompt)
@@ -996,6 +1073,9 @@ func (control *controller) runWorker(role, lens string, candidate int, revision,
 	}
 	if err := control.runtime.startWorker(control.pm, inv, deadlineUnixNano); err != nil {
 		return err
+	}
+	if activeTimeout, parseErr := time.ParseDuration(os.Getenv("WRITE_UUTER_TEST_WORKER_ACTIVE_TIMEOUT")); parseErr == nil && activeTimeout > 0 {
+		deadlineUnixNano = invocationDeadline(activeTimeout)
 	}
 	if strings.HasPrefix(role, "reviewer_") {
 		control.workflow.ReviewAttemptCount++
@@ -1022,13 +1102,36 @@ func (control *controller) runWorker(role, lens string, candidate int, revision,
 		return fmt.Errorf("%s artifact contract failed after process completion: %w", role, err)
 	}
 	if err := commit(workspace); err != nil {
-		return err
+		return errors.Join(err, wrappedOptionalError(role+" artifact rollback", rollback()))
+	}
+	rollbackFailure := func(commitErr error) error {
+		return errors.Join(commitErr, wrappedOptionalError(role+" artifact rollback", rollback()))
+	}
+	if err := waitForTestBarrier("WRITE_UUTER_TEST_PM_EXIT_WORKER_COMMIT_BARRIER"); err != nil {
+		return rollbackFailure(err)
 	}
 	if err := ensureInvocationDeadline(deadlineUnixNano, role+" artifact commit"); err != nil {
-		return err
+		return rollbackFailure(err)
+	}
+	pmLive, err = control.runtime.invocationLive(control.pm)
+	if err != nil {
+		return rollbackFailure(fmt.Errorf("verify PM after %s artifact commit: %w", role, err))
+	}
+	if !pmLive {
+		return rollbackFailure(fmt.Errorf("PM exited during %s artifact commit", role))
 	}
 	control.workflow.ActiveRole = ""
-	return control.saveWorkflow()
+	if err := control.saveWorkflow(); err != nil {
+		return rollbackFailure(err)
+	}
+	pmLive, err = control.runtime.invocationLive(control.pm)
+	if err != nil {
+		return rollbackFailure(fmt.Errorf("verify PM across %s workflow commit: %w", role, err))
+	}
+	if !pmLive {
+		return rollbackFailure(fmt.Errorf("PM exited across %s workflow commit", role))
+	}
+	return nil
 }
 
 func invocationDeadline(timeout time.Duration) int64 {
@@ -1090,6 +1193,9 @@ func (control *controller) succeed(candidate int) error {
 	if err := waitForTestBarrier("WRITE_UUTER_TEST_FINAL_BOUNDARY_BARRIER"); err != nil {
 		return control.block(err.Error())
 	}
+	if err := control.validateFinalAudit(candidate); err != nil {
+		return control.block(fmt.Sprintf("final review audit changed at publication boundary: %v", err))
+	}
 	finalCandidateData, err := control.store.readRegular(fmt.Sprintf("drafts/article-%03d.md", candidate))
 	if err != nil {
 		return control.block(fmt.Sprintf("re-read accepted candidate at publication boundary: %v", err))
@@ -1121,6 +1227,10 @@ func (control *controller) succeed(candidate int) error {
 	if candidateErr != nil || articleErr != nil || revisionFor(committedCandidate) != control.workflow.CurrentRevision || !bytes.Equal(committedCandidate, committedArticle) {
 		_ = control.store.remove("article.md")
 		return control.block(fmt.Sprintf("accepted candidate/article changed across succeeded-state commit: candidate=%v article=%v", candidateErr, articleErr))
+	}
+	if err := control.validateFinalAudit(candidate); err != nil {
+		_ = control.store.remove("article.md")
+		return control.block(fmt.Sprintf("final review audit changed across succeeded-state commit: %v", err))
 	}
 	return nil
 }
@@ -1198,8 +1308,9 @@ func (control *controller) saveWorkflow() error {
 }
 
 func (control *controller) block(reason string) error {
+	var cleanupErr error
 	if control.runtime != nil {
-		if cleanupErr := control.runtime.cleanup(false, control.pm); cleanupErr != nil {
+		if cleanupErr = control.runtime.cleanup(false, control.pm); cleanupErr != nil {
 			reason += fmt.Sprintf("; cleanup failed: %v", cleanupErr)
 		}
 		if archiveErr := control.runtime.archiveAll(control.store); archiveErr != nil {
@@ -1218,7 +1329,13 @@ func (control *controller) block(reason string) error {
 	persistErr := control.saveWorkflow()
 	var privateErr error
 	if control.runtime != nil {
-		privateErr = control.runtime.closePrivate()
+		if cleanupErr == nil {
+			privateErr = control.runtime.closePrivate()
+		} else {
+			// Preserve controller-owned process identities for a later verified
+			// cleanup attempt, while removing staged credentials immediately.
+			privateErr = control.runtime.closeCredentials()
+		}
 	}
 	if persistErr != nil || privateErr != nil {
 		return errors.Join(errors.New(reason),

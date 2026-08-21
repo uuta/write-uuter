@@ -33,6 +33,7 @@ type tmuxRuntime struct {
 	removeAudit     string
 	auditRemoved    bool
 	failRemoveOnce  bool
+	failCleanup     bool
 	testScenario    []byte
 	commandTimeout  time.Duration
 	sequence        int
@@ -171,6 +172,7 @@ func newTmuxRuntime(tmuxExecutable, codexExecutable string, agentTimeout time.Du
 		fakeLogDir: os.Getenv("WRITE_UUTER_FAKE_LOG_DIR"), detachedPIDDir: os.Getenv("WRITE_UUTER_TEST_DETACHED_PID_DIR"),
 		exitDelay: os.Getenv("WRITE_UUTER_TEST_EXIT_MARKER_DELAY"), readyDelay: os.Getenv("WRITE_UUTER_TEST_READY_MARKER_DELAY"),
 		removeAudit: os.Getenv("WRITE_UUTER_TEST_REMOVE_AUDIT"), failRemoveOnce: os.Getenv("WRITE_UUTER_TEST_FAIL_PRIVATE_REMOVE_ONCE") == "1",
+		failCleanup:  os.Getenv("WRITE_UUTER_TEST_FAIL_CLEANUP_PERSISTENT") == "1",
 		testScenario: testScenario,
 		session:      "write-uuter-" + revisionFor([]byte(seed))[7:19],
 	}, nil
@@ -618,10 +620,37 @@ func (runtime *tmuxRuntime) cleanup(requirePMLive bool, pm invocation) error {
 	if !verifiedAbsent && probeErr == nil {
 		failures = append(failures, fmt.Errorf("tmux session %s still exists after cleanup", runtime.session))
 	}
+	if runtime.failCleanup {
+		failures = append(failures, fmt.Errorf("injected persistent runtime cleanup verification failure"))
+	}
 	if len(failures) == 0 {
 		runtime.cleaned = true
 	}
 	return errors.Join(failures...)
+}
+
+func (runtime *tmuxRuntime) closeCredentials() error {
+	if runtime == nil {
+		return nil
+	}
+	deadline := time.Now().Add(runtime.commandTimeout)
+	var lastErr error
+	for {
+		lastErr = os.RemoveAll(runtime.codexHomesDir)
+		if lastErr == nil {
+			if _, err := os.Lstat(runtime.codexHomesDir); errors.Is(err, os.ErrNotExist) {
+				return nil
+			} else if err != nil {
+				lastErr = err
+			} else {
+				lastErr = fmt.Errorf("private Codex credential directory still exists after removal")
+			}
+		}
+		if time.Now().After(deadline) {
+			return lastErr
+		}
+		time.Sleep(25 * time.Millisecond)
+	}
 }
 
 func (runtime *tmuxRuntime) sessionExists() (bool, error) {

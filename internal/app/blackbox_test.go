@@ -497,6 +497,32 @@ func TestBlackBoxFinalCommitBoundaryRechecksDurableDraft(t *testing.T) {
 	assertProcessesGone(t, readInvocationRecords(t, fixtureDir))
 }
 
+func TestBlackBoxFinalCommitBoundaryRechecksCompleteAudit(t *testing.T) {
+	binary, fake, runDir, fixtureDir := prepareScenario(t, "happy")
+	barrier := filepath.Join(t.TempDir(), "final-audit-boundary")
+	command := newRunCommand(t, binary, fake, runDir, "5s", filepath.Join(repositoryRoot(t), "examples", "brief.md"))
+	command.Env = append(command.Env, "WRITE_UUTER_TEST_FINAL_BOUNDARY_BARRIER="+barrier)
+	if err := command.Start(); err != nil {
+		t.Fatal(err)
+	}
+	waitForPath(t, barrier+".ready")
+	if err := os.WriteFile(filepath.Join(runDir, "pm-decisions", "article-001.md"), []byte("```json\n{}\n```\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(barrier+".continue", []byte("continue\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := command.Wait(); err == nil {
+		t.Fatal("CLI published after final PM audit mutation")
+	}
+	state := readWorkflow(t, runDir)
+	if state.Status != "blocked" || !strings.Contains(state.BlockReason, "audit changed at publication boundary") {
+		t.Fatalf("unexpected workflow: %+v", state)
+	}
+	assertNoArticle(t, runDir)
+	assertProcessesGone(t, readInvocationRecords(t, fixtureDir))
+}
+
 func TestBlackBoxAtomicCommitDoesNotReplaceCompetingTarget(t *testing.T) {
 	binary, fake, runDir, _ := prepareScenario(t, "happy")
 	barrier := filepath.Join(t.TempDir(), "commit")
@@ -577,6 +603,15 @@ func TestBlackBoxReviewerHostFilesystemReadsAreDenied(t *testing.T) {
 	binary, fake, runDir, fixtureDir := prepareScenario(t, "filesystem_isolation")
 	command := newRunCommand(t, binary, fake, runDir, "5s", filepath.Join(repositoryRoot(t), "examples", "brief.md"))
 	protectedAncestor := filepath.Dir(runDir)
+	credentialHome := t.TempDir()
+	const credentialSecret = "WRITE_UUTER_TOOL_BOUNDARY_SECRET"
+	if err := os.WriteFile(filepath.Join(credentialHome, "auth.json"), []byte(credentialSecret+"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(credentialHome, "installation_id"), []byte("test-installation\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	command.Env = replaceCommandEnv(command.Env, "CODEX_HOME", credentialHome)
 	command.Env = replaceCommandEnv(command.Env, "WRITE_UUTER_FAKE_LOG_DIR", protectedAncestor)
 	command.Env = replaceCommandEnv(command.Env, "WRITE_UUTER_TEST_DETACHED_PID_DIR", protectedAncestor)
 	output, runErr := command.CombinedOutput()
@@ -592,11 +627,14 @@ func TestBlackBoxReviewerHostFilesystemReadsAreDenied(t *testing.T) {
 	if err := json.Unmarshal(data, &probes); err != nil {
 		t.Fatal(err)
 	}
-	for _, label := range []string{"durable", "prior_lens", "pm_workspace_parent", "controller", "host", "codex_sibling", "unrelated_process"} {
+	for _, label := range []string{"durable", "prior_lens", "pm_workspace_parent", "controller", "host", "usr_sibling", "dev_sibling", "codex_sibling", "tool_auth", "tool_network", "double_fork", "unrelated_process"} {
 		result := strings.ToLower(probes[label])
 		if result == "" || strings.Contains(result, "succeeded") || !strings.Contains(result, "not permitted") && !strings.Contains(result, "permission denied") && !strings.Contains(result, "operation not permitted") {
 			t.Errorf("copy reviewer was not OS-denied %s read: %q", label, probes[label])
 		}
+	}
+	if strings.Contains(string(data), credentialSecret) {
+		t.Fatal("model-invoked credential probe disclosed staged authentication")
 	}
 	for _, name := range []string{"WRITE_UUTER_FAKE_LOG_DIR", "WRITE_UUTER_TEST_DETACHED_PID_DIR"} {
 		if probes[name] != "ABSENT" {
@@ -604,6 +642,76 @@ func TestBlackBoxReviewerHostFilesystemReadsAreDenied(t *testing.T) {
 		}
 	}
 	_ = fixtureDir
+}
+
+func TestBlackBoxPMDecisionRequiresPresentNonNullDecisionArrays(t *testing.T) {
+	for _, scenario := range []string{"missing_pm_decisions", "null_pm_decisions"} {
+		t.Run(scenario, func(t *testing.T) {
+			run := executeScenario(t, scenario)
+			if run.err == nil {
+				t.Fatal("CLI accepted a PM lens record without a decisions array")
+			}
+			state := readWorkflow(t, run.runDir)
+			if state.Status != "blocked" || !strings.Contains(state.BlockReason, "non-null decisions array") {
+				t.Fatalf("unexpected workflow: %+v", state)
+			}
+			assertNoArticle(t, run.runDir)
+		})
+	}
+}
+
+func TestBlackBoxPMExitDuringWorkerCommitRollsBackArtifacts(t *testing.T) {
+	binary, fake, runDir, fixtureDir := prepareScenario(t, "happy")
+	barrier := filepath.Join(t.TempDir(), "worker-commit")
+	command := newRunCommand(t, binary, fake, runDir, "5s", filepath.Join(repositoryRoot(t), "examples", "brief.md"))
+	command.Env = append(command.Env, "WRITE_UUTER_TEST_PM_EXIT_WORKER_COMMIT_BARRIER="+barrier)
+	if err := command.Start(); err != nil {
+		t.Fatal(err)
+	}
+	waitForPath(t, barrier+".ready")
+	killPersistentPM(t, runDir)
+	if err := os.WriteFile(barrier+".continue", []byte("continue\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := command.Wait(); err == nil {
+		t.Fatal("CLI committed a worker artifact after PM exit")
+	}
+	state := readWorkflow(t, runDir)
+	if state.Status != "blocked" || !strings.Contains(state.BlockReason, "PM exited during researcher artifact commit") {
+		t.Fatalf("unexpected workflow: %+v", state)
+	}
+	for _, relative := range []string{"evidence/sources.md", "claim-ledger.md"} {
+		if _, err := os.Lstat(filepath.Join(runDir, relative)); !errors.Is(err, os.ErrNotExist) {
+			t.Fatalf("rolled-back worker artifact remains at %s: %v", relative, err)
+		}
+	}
+	assertProcessesGone(t, readInvocationRecords(t, fixtureDir))
+}
+
+func TestBlackBoxPMExitDuringDecisionCommitRollsBackDecision(t *testing.T) {
+	binary, fake, runDir, fixtureDir := prepareScenario(t, "happy")
+	barrier := filepath.Join(t.TempDir(), "decision-commit")
+	command := newRunCommand(t, binary, fake, runDir, "5s", filepath.Join(repositoryRoot(t), "examples", "brief.md"))
+	command.Env = append(command.Env, "WRITE_UUTER_TEST_PM_EXIT_DECISION_COMMIT_BARRIER="+barrier)
+	if err := command.Start(); err != nil {
+		t.Fatal(err)
+	}
+	waitForPath(t, barrier+".ready")
+	killPersistentPM(t, runDir)
+	if err := os.WriteFile(barrier+".continue", []byte("continue\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := command.Wait(); err == nil {
+		t.Fatal("CLI committed a PM decision after PM exit")
+	}
+	state := readWorkflow(t, runDir)
+	if state.Status != "blocked" || !strings.Contains(state.BlockReason, "PM exited during evidence decision commit") {
+		t.Fatalf("unexpected workflow: %+v", state)
+	}
+	if _, err := os.Lstat(filepath.Join(runDir, "pm-decisions", "article-001.md")); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("rolled-back PM decision remains: %v", err)
+	}
+	assertProcessesGone(t, readInvocationRecords(t, fixtureDir))
 }
 
 func TestBlackBoxStrictRoutingJSONRejectsDuplicatesAndUnknownFields(t *testing.T) {
@@ -682,8 +790,12 @@ func TestBlackBoxUnexpectedTmuxProbeFailureIsNotAbsence(t *testing.T) {
 		t.Fatalf("probe failure left run tmux session: %s", listing)
 	}
 	privatePaths, _ := filepath.Glob(filepath.Join(filepath.Dir(runDir), ".write-uuter-private-*"))
-	if len(privatePaths) != 0 {
-		t.Fatalf("probe failure left copied credentials behind: %v", privatePaths)
+	if len(privatePaths) != 1 {
+		t.Fatalf("probe failure did not preserve one recoverable ownership root: %v", privatePaths)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(privatePaths[0]) })
+	if _, err := os.Lstat(filepath.Join(privatePaths[0], "codex-homes")); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("probe failure left copied credentials behind: %v", err)
 	}
 }
 
@@ -845,6 +957,30 @@ func TestBlackBoxPrivateCleanupRetriesAfterRemovalFailure(t *testing.T) {
 	privatePaths, _ := filepath.Glob(filepath.Join(filepath.Dir(runDir), ".write-uuter-private-*"))
 	if len(privatePaths) != 0 {
 		t.Fatalf("retry left controller credentials behind: %v", privatePaths)
+	}
+	assertProcessesGone(t, readInvocationRecords(t, fixtureDir))
+}
+
+func TestBlackBoxPersistentCleanupFailurePreservesOwnershipButDeletesCredentials(t *testing.T) {
+	binary, fake, runDir, fixtureDir := prepareScenario(t, "stale")
+	command := newRunCommand(t, binary, fake, runDir, "5s", filepath.Join(repositoryRoot(t), "examples", "brief.md"))
+	command.Env = append(command.Env, "WRITE_UUTER_TEST_FAIL_CLEANUP_PERSISTENT=1")
+	output, err := command.CombinedOutput()
+	if err == nil || !strings.Contains(string(output), "cleanup failed") {
+		t.Fatalf("missing persistent cleanup diagnostic: %v\n%s", err, output)
+	}
+	privatePaths, globErr := filepath.Glob(filepath.Join(filepath.Dir(runDir), ".write-uuter-private-*"))
+	if globErr != nil || len(privatePaths) != 1 {
+		t.Fatalf("recoverable controller state was not preserved: %v, %v", privatePaths, globErr)
+	}
+	privateRoot := privatePaths[0]
+	t.Cleanup(func() { _ = os.RemoveAll(privateRoot) })
+	if _, err := os.Lstat(filepath.Join(privateRoot, "codex-homes")); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("staged credentials survived cleanup failure: %v", err)
+	}
+	manifests, err := filepath.Glob(filepath.Join(privateRoot, "control", "ownership", "*.json"))
+	if err != nil || len(manifests) == 0 {
+		t.Fatalf("recoverable ownership identities were deleted: %v, %v", manifests, err)
 	}
 	assertProcessesGone(t, readInvocationRecords(t, fixtureDir))
 }
@@ -1033,7 +1169,8 @@ func TestBlackBoxWorkerTerminationErrorStopsWorkflowAndSession(t *testing.T) {
 	if err := os.WriteFile(wrapper, []byte(script), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	command := newRunCommand(t, binary, fake, runDir, "1s", filepath.Join(repositoryRoot(t), "examples", "brief.md"))
+	command := newRunCommand(t, binary, fake, runDir, "5s", filepath.Join(repositoryRoot(t), "examples", "brief.md"))
+	command.Env = append(command.Env, "WRITE_UUTER_TEST_WORKER_ACTIVE_TIMEOUT=250ms")
 	command.Args = append(command.Args, "--tmux", wrapper)
 	output, err := command.CombinedOutput()
 	if err == nil {
@@ -1427,6 +1564,33 @@ func waitForPath(t *testing.T, path string) {
 		time.Sleep(10 * time.Millisecond)
 	}
 	t.Fatalf("timed out waiting for %s", path)
+}
+
+func killPersistentPM(t *testing.T, runDir string) {
+	t.Helper()
+	readyPaths, err := filepath.Glob(filepath.Join(filepath.Dir(runDir), ".write-uuter-private-*", "control", "ready", "001-pm.ready"))
+	if err != nil || len(readyPaths) != 1 {
+		t.Fatalf("locate persistent PM ready marker: %v, %v", readyPaths, err)
+	}
+	data, err := os.ReadFile(readyPaths[0])
+	if err != nil {
+		t.Fatal(err)
+	}
+	var identity struct {
+		PID int `json:"pid"`
+	}
+	if err := json.Unmarshal(data, &identity); err != nil {
+		t.Fatal(err)
+	}
+	process, err := os.FindProcess(identity.PID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := process.Signal(syscall.SIGKILL); err != nil {
+		t.Fatal(err)
+	}
+	controlDir := filepath.Dir(filepath.Dir(readyPaths[0]))
+	waitForPath(t, filepath.Join(controlDir, "exits", "001-pm.exit"))
 }
 
 func assertProcessesGone(t *testing.T, records []invocationRecord) {

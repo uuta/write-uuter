@@ -1,0 +1,629 @@
+2026-08-21T22:54:59.269543Z ERROR codex_skills_extension::loader::host: failed to walk skills root file:///Users/yutaaoki/.agents/skills: Operation not permitted (os error 1)
+OpenAI Codex v0.149.0
+--------
+workdir: /Users/yutaaoki/write-uuter/.worktrees/1/smoke-runs/.write-uuter-private-1802187262/workspaces/004-writer-2016979191
+model: gpt-5.6-sol
+provider: openai
+approval: never
+sandbox: danger-full-access
+reasoning effort: none
+reasoning summaries: none
+session id: 01a02688-dec2-7a71-8266-c0754077b4e3
+--------
+user
+# Writer role contract
+
+Write only the assigned versioned candidate under `drafts/`. Expand the
+supplied outline into publishable prose supported by the supplied evidence and
+brief. Do not leave TODOs or unresolved placeholders.
+
+For a revision, apply every PM-validated must-fix decision using the prior
+candidate and the reached review result/report as input. Use the matching
+finding's problem, location, and suggested direction to make the correction,
+then verify that the revised wording actually resolves it. Do not accept or
+reject findings yourself. Never edit a review result, PM decision, earlier
+draft, or final `article.md`. Finish only after the assigned candidate is
+complete on disk.
+
+
+## Assignment
+
+Write candidate 001 to `drafts/article-001.md` in this isolated workspace.
+
+## Provided context: brief.md
+
+<write-uuter-context name="brief.md">
+# Brief
+
+## Question
+
+How does write-uuter turn a brief into an inspectable reviewed article?
+
+## Audience
+
+Engineers evaluating a small, artifact-driven editorial workflow.
+
+## Provisional takeaway
+
+A deterministic Go controller can coordinate isolated Codex roles while
+leaving evidence, drafts, reviews, and decisions available for inspection.
+
+## Scope
+
+Describe the workflow implemented by this repository and the reason its
+durable artifact gates matter.
+
+## Out of scope
+
+Publishing integrations, web interfaces, and claims about workflows outside
+this repository.
+
+## Publication target
+
+A concise repository article for technical readers.
+
+## Constraints
+
+Use only facts supported by README.md and docs/. Keep the article under 900
+words and explain terms in plain language.
+
+## Done when
+
+The article accurately explains the roles, sequential review loop, candidate
+budget, and inspectable terminal artifacts.
+
+## Source hints
+
+- ../README.md
+- ../docs/workflow.md
+- ../docs/roles.md
+- ../docs/artifacts.md
+
+</write-uuter-context>
+
+## Provided context: evidence/sources.md
+
+<write-uuter-context name="evidence/sources.md">
+# Sources
+
+Research method: close reading of the controller-staged copies named by the brief. No network research or firsthand execution was performed. Accessed 2026-08-22.
+
+## S1 — Repository README
+
+- Location: `context/source-hints/001-README.md` (staged copy of `README.md`)
+- Useful summary: Defines write-uuter as a Go CLI that converts a Markdown brief into a reviewed article while retaining evidence, outline, candidates, reviews, and PM decisions. Summarizes the runtime division of responsibility: Go owns state, validation, hashes, timeouts, cleanup, isolation, and artifact copying; isolated Codex roles perform editorial work. States the role order, sequential fresh reviewers, candidate-003 limit, success behavior, and blocked-run behavior.
+- Particularly useful for: the high-level answer, system requirements, controller/agent boundary, success and failure outcomes.
+
+## S2 — Workflow documentation
+
+- Location: `context/source-hints/002-workflow.md` (staged copy of `docs/workflow.md`)
+- Useful summary: Gives the exact controller sequence from brief validation and atomic run initialization through research, outline, candidate creation, four review lenses, PM classification, revision, and terminal publication or blocking. Defines artifact validation gates, explains that review lenses are sequential, and states that a must-fix stops later lenses and makes the replacement restart at Evidence. Documents lifecycle, isolation, timeout, cleanup, and terminal revalidation behavior.
+- Particularly useful for: sequential review loop, routing rules, artifact gates, failure modes, and candidate budget.
+
+## S3 — Role contracts
+
+- Location: `context/source-hints/003-roles.md` (staged copy of `docs/roles.md`)
+- Useful summary: Defines ownership and prohibited actions for the Human Editor, persistent PM, Researcher, Story Editor, Writer, and four reviewers. Specifies the PM's four finding classifications, the context supplied to each reviewer lens, and the fact that reviewers are fresh sequential processes that cannot edit candidates. Explains which durable files each role owns.
+- Particularly useful for: role boundaries, PM-versus-controller responsibilities, reviewer inputs, and why artifacts remain attributable and inspectable.
+
+## S4 — Artifact contracts
+
+- Location: `context/source-hints/004-artifacts.md` (staged copy of `docs/artifacts.md`)
+- Useful summary: Defines the run-directory layout and validated schemas for reviewer results, PM decisions, and `workflow.json`. States that earlier candidates and partial review sequences are retained, while `article.md` exists only on success and exactly matches the accepted candidate. Documents recursive JSON validation, atomic state/marker writes, audit copies, symlink and regular-file protections, and the rule that editorial completion does not depend on chat transcripts or tmux scrollback.
+- Particularly useful for: inspectable terminal artifacts, schema-level validation, retained revision history, and exact publication semantics.
+
+## Source-use boundaries
+
+- These four staged files are the complete source set permitted by the brief.
+- Claims about publishing integrations, web interfaces, other repositories, or editorial systems in general are unsupported and outside scope.
+- The documentation describes the shipped issue-1 workflow; it explicitly says parallel runs, resume after controller restart, and editing completed runs are not implemented.
+
+</write-uuter-context>
+
+## Provided context: claim-ledger.md
+
+<write-uuter-context name="claim-ledger.md">
+# Claim Ledger
+
+This ledger uses the five required classifications explicitly. Source keys refer to `evidence/sources.md`.
+
+## Fact
+
+| ID | Claim | Support |
+| --- | --- | --- |
+| F1 | write-uuter is a Go CLI that turns a Markdown brief into a reviewed article and preserves the artifacts that produced it. | S1 |
+| F2 | The controller validates the required brief sections and requires a new target before atomically initializing the run directory. | S1, S2 |
+| F3 | Go, rather than an editorial agent, owns workflow transitions, artifact validation, revision hashes, timeouts, routing, process cleanup, and terminal publication. | S1, S2, S3 |
+| F4 | The editorial roles run in this order: Researcher, Story Editor, Writer, then Evidence, Story, Clarity, and Copy reviewers. | S1, S2, S3 |
+| F5 | The PM is one persistent Codex process; workers and reviewers run separately, with each reviewer lens using a fresh process. | S1, S2, S3 |
+| F6 | Role workspaces are isolated from the durable run and from other role workspaces; Go stages allowed context and copies validated regular-file outputs back into the run. | S1, S2, S3 |
+| F7 | Completion is gated on owned files existing and passing validation after the worker exits successfully; an agent's final message alone does not advance the workflow. | S2 |
+| F8 | Research must include non-empty sources and a claim ledger that names Fact, Firsthand observation, Inference, Opinion, and Unresolved. | S2, S3 |
+| F9 | Each outline section must record purpose, supporting evidence, and reader takeaway, and each candidate must be non-empty with no TODO placeholder. | S2, S3 |
+| F10 | Reviewers run sequentially in the fixed order Evidence, Story, Clarity, Copy and do not edit candidates. | S1, S2, S3 |
+| F11 | Reviewer output is revision-bound: its lens and SHA-256 revision must match the assignment, and its JSON findings must agree with the report. | S2, S4 |
+| F12 | After each reached lens, the PM classifies every finding as `valid_must_fix`, `valid_optional`, `invalid` with a reason, or `needs_human_judgment`; Go validates the decision and applies routing. | S2, S3, S4 |
+| F13 | A validated must-fix stops the remaining lenses for that candidate, causes the Writer to create the next candidate, and restarts review at Evidence. Optional and invalid findings do not consume a candidate. | S2 |
+| F14 | Candidate 003 is the hard limit. A must-fix at that limit, a need for human judgment, or a runtime/artifact failure blocks the run and preserves artifacts. | S1, S2, S3 |
+| F15 | Success requires all four lenses on the final candidate to pass PM routing; `article.md` is then a byte-for-byte copy of that candidate. | S1, S2, S4 |
+| F16 | Earlier candidates, partial lens sequences, reviews, PM decisions, workflow state, prompts/logs/exit-marker audit copies, and terminal block reasons remain available in the run as applicable. | S2, S4 |
+| F17 | `workflow.json` is the controller's atomically rewritten source of truth and records status, phase, candidate/revision, active role, artifact paths, review attempts, timestamps, and a terminal block reason when blocked. | S4 |
+| F18 | Parallel runs, resuming a run after controller restart, and editing completed runs are not implemented in the documented issue-1 workflow. | S2, S3 |
+
+## Firsthand observation
+
+None. This assignment involved document research only; the CLI was not built, run, or directly observed.
+
+## Inference
+
+| ID | Claim | Basis and caution |
+| --- | --- | --- |
+| I1 | The workflow is inspectable because editorial state changes are represented by retained, validated files rather than depending on transient agent conversation. | Inferred from F7, F11, F16, F17 and S4's explicit statement that completion does not depend on tmux scrollback or chat transcripts. “Inspectable” is a synthesis, not a measured usability result. |
+| I2 | Separating PM classification from Go routing makes editorial judgment auditable while keeping control-flow enforcement deterministic. | Inferred from F3 and F12. The sources establish the responsibility split; “auditable” is an interpretation of the retained decision records. |
+| I3 | Restarting each revised candidate at Evidence prevents later review lenses from being treated as valid after evidence-related content may have changed. | Inferred from F11 and F13. The repository documents the restart rule but does not explicitly state this rationale. |
+| I4 | The three-candidate budget bounds automated revision and converts unresolved repeated must-fix work into an inspectable blocked state. | Inferred from F14 and retained-artifact behavior in F16. “Bounds” follows logically; the design motivation is not directly stated. |
+
+## Opinion
+
+| ID | Claim | Treatment |
+| --- | --- | --- |
+| O1 | Durable artifact gates are a useful design for engineers who value reproducibility and post-run diagnosis. | Editorial evaluation, not a repository fact; if used, label it as judgment and ground it in F7, F11, and F16. |
+| O2 | A limit of three candidates is a reasonable tradeoff between autonomous revision and escalation. | Value judgment; the sources establish the limit but do not claim it is optimal or reasonable. |
+
+## Unresolved
+
+| ID | Question or claim not established | What would resolve it |
+| --- | --- | --- |
+| U1 | How often real runs succeed, block, time out, or reach candidate 003. | Empirical run data; none is provided by the allowed sources. |
+| U2 | Whether the workflow improves article accuracy or quality compared with another editorial process. | A defined comparative evaluation; outside the supplied documentation. |
+| U3 | How the workflow behaves at scale across many simultaneous jobs. | Implementation and tests for parallel runs; the documented implementation does not support them. |
+| U4 | Whether or how blocked artifacts can be resumed in place. | A future resume contract or implementation; issue 1 explicitly does not resume blocked runs. |
+| U5 | Support for Linux execution. | An equivalent native read-isolation backend and updated documentation; current Linux execution fails closed. |
+
+## Guardrails for the article team
+
+- Keep the workflow description within F1–F18 and identify I1–I4 as explanations or interpretations rather than direct facts.
+- Do not present O1–O2 as proven outcomes.
+- Do not imply answers to U1–U5.
+- Do not claim support for publishing integrations, web interfaces, resume, or workflow behavior outside this repository.
+
+</write-uuter-context>
+
+## Provided context: outline.md
+
+<write-uuter-context name="outline.md">
+# Outline: From Brief to Inspectable Reviewed Article
+
+Target length: 700–850 words. The article should answer the brief through the implemented workflow, using “inspectable” as a synthesis grounded in retained artifacts rather than as a measured quality claim.
+
+## 1. The design in one view: Go controls, Codex edits
+
+- **Purpose:** Open with the direct answer: write-uuter is a Go CLI that converts a Markdown brief into a reviewed article by having a deterministic controller coordinate isolated editorial roles. Establish the key division of responsibility before introducing workflow detail.
+- **Supporting evidence:** F1 (S1); F3 (S1, S2, S3); F5–F6 (S1, S2, S3). Use I2 only as an explicitly framed interpretation: retained PM judgments plus controller-enforced routing make the responsibility split auditable.
+- **Reader takeaway:** The system is neither one free-running agent nor a conventional in-memory pipeline: Go owns control and validation, while separate Codex processes own bounded editorial tasks.
+
+## 2. The forward path: brief, evidence, outline, candidate
+
+- **Purpose:** Walk through the first half of a run in sequence: validate the brief and initialize a new run atomically; have the Researcher produce sources and a classified claim ledger; have the Story Editor turn that evidence into an outline; then have the Writer produce the first candidate. Explain role ownership in plain language.
+- **Supporting evidence:** F2 (S1, S2); F4 (S1, S2, S3); F8–F9 (S2, S3). Mention the required claim classes and the outline’s purpose/evidence/takeaway fields as concrete examples of artifact contracts.
+- **Reader takeaway:** Each editorial handoff becomes a named file with minimum content requirements, so later work begins from validated inputs rather than an informal conversation.
+
+## 3. Why artifact gates, not agent messages, advance the run
+
+- **Purpose:** Explain the mechanism that makes the workflow inspectable: roles work in isolated workspaces; the controller stages only allowed context; after a successful process exit it validates owned regular-file outputs and copies them into the durable run. Clarify that a final chat message cannot advance state.
+- **Supporting evidence:** F6–F7 (S1, S2, S3); F11 (S2, S4); F17 (S4). Use I1 as a labeled synthesis: inspectability comes from retained, validated files rather than transient transcripts. Include representative checks such as revision hashes and consistent review JSON/report content without turning the section into a schema inventory.
+- **Reader takeaway:** Progress is evidenced by durable artifacts that satisfy contracts; apparent completion by an agent is insufficient.
+
+## 4. The sequential review and decision loop
+
+- **Purpose:** Describe the fixed Evidence → Story → Clarity → Copy sequence. Distinguish reviewers, which report findings without editing candidates, from the persistent PM, which classifies each finding, and from Go, which validates decisions and applies routing.
+- **Supporting evidence:** F5, F10 (S1, S2, S3); F11 (S2, S4); F12 (S2, S3, S4). Name all four PM classifications: `valid_must_fix`, `valid_optional`, `invalid` with a reason, and `needs_human_judgment`.
+- **Reader takeaway:** Fresh reviewers supply lens-specific judgments, the PM records editorial decisions, and deterministic controller rules decide what happens next.
+
+## 5. Revision routing and the three-candidate budget
+
+- **Purpose:** Show the loop’s branching behavior. A validated must-fix stops later lenses, sends the Writer to the next candidate, and restarts that candidate at Evidence; optional or invalid findings do not consume a candidate. Explain that candidate 003 is the hard limit and identify the conditions that block a run.
+- **Supporting evidence:** F13 (S2); F14 (S1, S2, S3). I3 may explain, as an inference, why review restarts at Evidence after content changes. I4 may frame the candidate cap as bounding automated revision, but do not claim that three is an optimal number. State that must-fix at candidate 003, human judgment, and runtime or artifact failure produce a blocked run.
+- **Reader takeaway:** Revision is bounded and predictable: the workflow cannot revise indefinitely or silently skip unresolved problems.
+
+## 6. Terminal artifacts: exact success or inspectable blockage
+
+- **Purpose:** Close by contrasting the two terminal outcomes. On success, all four lenses have passed PM routing and `article.md` exactly matches the accepted candidate. On blockage, the reason and accumulated work remain. Tie both outcomes back to `workflow.json` and the retained revision/review history.
+- **Supporting evidence:** F15 (S1, S2, S4); F16–F17 (S2, S4). Mention earlier candidates, partial review sequences, reviews, PM decisions, workflow state, and applicable audit copies as retained evidence. If limits are noted, use F18 (S2, S3): parallel runs, restart-resume, and editing completed runs are not implemented.
+- **Reader takeaway:** The terminal result is inspectable in either case: readers can trace an accepted article to its candidate and reviews, or a blocked run to its preserved state and reason.
+
+## Scope and language guardrails
+
+- Do not claim measured improvements in accuracy, quality, reliability, or usability; U1–U5 remain unresolved.
+- Do not call the three-candidate limit “reasonable” or “optimal” (O2).
+- Keep publishing integrations, web interfaces, other repositories, and unsupported resume behavior out of the article.
+- Explain “artifact gate” on first use as a required file plus validation that must pass before the controller advances.
+
+</write-uuter-context>
+codex
+I’ll draft the assigned candidate from the supplied brief, evidence ledger, and outline, then verify the file is complete, under 900 words, and free of placeholders.
+exec
+/bin/zsh -lc "pwd && rg --files -g 'AGENTS.md' -g 'drafts/**' -g 'context/source-hints/**' | sort" in /Users/yutaaoki/write-uuter/.worktrees/1/smoke-runs/.write-uuter-private-1802187262/workspaces/004-writer-2016979191
+ exited 1 in 0ms:
+/Users/yutaaoki/write-uuter/.worktrees/1/smoke-runs/.write-uuter-private-1802187262/workspaces/004-writer-2016979191
+zsh:1: fork failed: operation not permitted
+
+exec
+/bin/zsh -c "rg --files | sed -n '1,120p'" in /Users/yutaaoki/write-uuter/.worktrees/1/smoke-runs/.write-uuter-private-1802187262/workspaces/004-writer-2016979191
+ exited 1 in 0ms:
+zsh:1: fork failed: operation not permitted
+
+apply patch
+patch: completed
+/Users/yutaaoki/write-uuter/.worktrees/1/smoke-runs/.write-uuter-private-1802187262/workspaces/004-writer-2016979191/drafts/article-001.md
+diff --git a/drafts/article-001.md b/drafts/article-001.md
+new file mode 100644
+index 0000000000000000000000000000000000000000..73692802f63b24779a957dd8dfabff2f2c50c02d
+--- /dev/null
++++ b/drafts/article-001.md
+@@ -0,0 +1,41 @@
++# From Brief to Inspectable Reviewed Article
++
++write-uuter is a Go CLI that turns a Markdown brief into a reviewed article while preserving the work that produced it. Its central design choice is a clear division of responsibility: a deterministic Go controller owns workflow state, validation, routing, revision hashes, timeouts, cleanup, and publication, while isolated Codex processes perform bounded editorial tasks.
++
++This is not one agent carrying an article from prompt to publication. The project assigns research, structure, writing, review, and editorial judgment to distinct roles. Workers and reviewers run separately, each reviewer starts as a fresh process, and one persistent PM makes editorial classifications throughout the run. Because those judgments are retained while Go enforces the resulting routes, engineers can inspect both the editorial decision and the control flow that followed it.
++
++## From brief to first candidate
++
++A run begins only after the controller validates the brief's required sections and confirms that the target is new. It then initializes the run directory atomically. From there, work proceeds in a fixed order.
++
++First, the Researcher creates a non-empty source record and a claim ledger. The ledger must explicitly account for five kinds of material: Fact, Firsthand observation, Inference, Opinion, and Unresolved. That classification gives later roles a concrete boundary between supported claims and material that needs qualification or cannot yet be established.
++
++Next, the Story Editor converts the evidence into an outline. Each section must state its purpose, supporting evidence, and intended reader takeaway. The Writer then expands that outline into candidate 001. A candidate must contain substantive text and cannot contain TODO placeholders.
++
++These requirements are examples of artifact gates: a required file and the validation it must pass before the controller advances. Each handoff is therefore a named, durable artifact with a minimum contract, not an informal assurance that the work is done.
++
++## Files, not final messages, prove progress
++
++Each role works in an isolated workspace rather than directly in the durable run directory or another role's workspace. Go stages only the context that role is allowed to receive. After the process exits successfully, the controller checks the role's owned outputs, requires valid regular files, and copies validated results back into the run.
++
++An agent's final message cannot advance the workflow on its own. The expected files must exist and satisfy their contracts. Review output, for example, is tied to a specific candidate by its SHA-256 revision; the declared lens and revision must match the assignment, and the structured findings must agree with the accompanying report.
++
++The controller records the live state in `workflow.json`, which is rewritten atomically. It includes the run's status and phase, current candidate and revision, active role, artifact paths, review attempts, timestamps, and—when applicable—a terminal blocking reason. In this repository, “inspectable” is best understood as a consequence of this design: state transitions depend on retained, validated files rather than transient chat transcripts or terminal scrollback.
++
++## Four reviews, one lens at a time
++
++Every candidate enters a fixed, sequential review sequence: Evidence, Story, Clarity, then Copy. Reviewers report findings but never edit the candidate. After each reached lens, the persistent PM classifies every finding as `valid_must_fix`, `valid_optional`, `invalid` with a reason, or `needs_human_judgment`.
++
++The separation matters. A fresh reviewer supplies a lens-specific assessment, the PM records the editorial judgment about each finding, and Go validates that decision artifact and applies predetermined routing rules. Later lenses do not run concurrently or get ahead of an unresolved must-fix.
++
++If the PM validates a must-fix, review of that candidate stops immediately. The Writer receives the prior candidate and the reached review result and produces the next numbered candidate. Review then restarts at Evidence. One rationale supported by the design is that changed content should not inherit later-lens results attached to an earlier revision. Optional and invalid findings do not consume another candidate.
++
++Automated revision is bounded at candidate 003. A must-fix against that candidate blocks the run instead of creating candidate 004. A need for human judgment, a runtime failure, or an artifact-validation failure also blocks the run. The limit does not establish that three attempts are optimal; it simply prevents indefinite automated revision and turns unresolved work into an explicit terminal state.
++
++## Two inspectable endings
++
++Success requires the final candidate to pass routing at all four review lenses. Only then does the controller create `article.md`, as a byte-for-byte copy of the accepted candidate. The published artifact can therefore be matched exactly to the revision that was reviewed.
++
++A blocked run keeps its reason and the work accumulated before the stop. Depending on how far it progressed, that record can include earlier candidates, partial review sequences, reviewer reports, PM decisions, workflow state, and audit copies of prompts, logs, and exit markers. Failure does not collapse into an unexplained absence of an article.
++
++That durable record is the practical answer to how write-uuter produces an inspectable reviewed article. The controller does not merely ask roles to follow a process; it requires evidence of each completed step, validates the evidence, and preserves the route to either exact publication or explicit blockage. The documented workflow does have firm boundaries: parallel runs, resuming after a controller restart, and editing completed runs are not implemented. Within those boundaries, its artifacts make the outcome traceable without treating agent conversation as workflow state.
+
+diff --git a/drafts/article-001.md b/drafts/article-001.md
+new file mode 100644
+index 0000000000000000000000000000000000000000..73692802f63b24779a957dd8dfabff2f2c50c02d
+--- /dev/null
++++ b/drafts/article-001.md
+@@ -0,0 +1,41 @@
++# From Brief to Inspectable Reviewed Article
++
++write-uuter is a Go CLI that turns a Markdown brief into a reviewed article while preserving the work that produced it. Its central design choice is a clear division of responsibility: a deterministic Go controller owns workflow state, validation, routing, revision hashes, timeouts, cleanup, and publication, while isolated Codex processes perform bounded editorial tasks.
++
++This is not one agent carrying an article from prompt to publication. The project assigns research, structure, writing, review, and editorial judgment to distinct roles. Workers and reviewers run separately, each reviewer starts as a fresh process, and one persistent PM makes editorial classifications throughout the run. Because those judgments are retained while Go enforces the resulting routes, engineers can inspect both the editorial decision and the control flow that followed it.
++
++## From brief to first candidate
++
++A run begins only after the controller validates the brief's required sections and confirms that the target is new. It then initializes the run directory atomically. From there, work proceeds in a fixed order.
++
++First, the Researcher creates a non-empty source record and a claim ledger. The ledger must explicitly account for five kinds of material: Fact, Firsthand observation, Inference, Opinion, and Unresolved. That classification gives later roles a concrete boundary between supported claims and material that needs qualification or cannot yet be established.
++
++Next, the Story Editor converts the evidence into an outline. Each section must state its purpose, supporting evidence, and intended reader takeaway. The Writer then expands that outline into candidate 001. A candidate must contain substantive text and cannot contain TODO placeholders.
++
++These requirements are examples of artifact gates: a required file and the validation it must pass before the controller advances. Each handoff is therefore a named, durable artifact with a minimum contract, not an informal assurance that the work is done.
++
++## Files, not final messages, prove progress
++
++Each role works in an isolated workspace rather than directly in the durable run directory or another role's workspace. Go stages only the context that role is allowed to receive. After the process exits successfully, the controller checks the role's owned outputs, requires valid regular files, and copies validated results back into the run.
++
++An agent's final message cannot advance the workflow on its own. The expected files must exist and satisfy their contracts. Review output, for example, is tied to a specific candidate by its SHA-256 revision; the declared lens and revision must match the assignment, and the structured findings must agree with the accompanying report.
++
++The controller records the live state in `workflow.json`, which is rewritten atomically. It includes the run's status and phase, current candidate and revision, active role, artifact paths, review attempts, timestamps, and—when applicable—a terminal blocking reason. In this repository, “inspectable” is best understood as a consequence of this design: state transitions depend on retained, validated files rather than transient chat transcripts or terminal scrollback.
++
++## Four reviews, one lens at a time
++
++Every candidate enters a fixed, sequential review sequence: Evidence, Story, Clarity, then Copy. Reviewers report findings but never edit the candidate. After each reached lens, the persistent PM classifies every finding as `valid_must_fix`, `valid_optional`, `invalid` with a reason, or `needs_human_judgment`.
++
++The separation matters. A fresh reviewer supplies a lens-specific assessment, the PM records the editorial judgment about each finding, and Go validates that decision artifact and applies predetermined routing rules. Later lenses do not run concurrently or get ahead of an unresolved must-fix.
++
++If the PM validates a must-fix, review of that candidate stops immediately. The Writer receives the prior candidate and the reached review result and produces the next numbered candidate. Review then restarts at Evidence. One rationale supported by the design is that changed content should not inherit later-lens results attached to an earlier revision. Optional and invalid findings do not consume another candidate.
++
++Automated revision is bounded at candidate 003. A must-fix against that candidate blocks the run instead of creating candidate 004. A need for human judgment, a runtime failure, or an artifact-validation failure also blocks the run. The limit does not establish that three attempts are optimal; it simply prevents indefinite automated revision and turns unresolved work into an explicit terminal state.
++
++## Two inspectable endings
++
++Success requires the final candidate to pass routing at all four review lenses. Only then does the controller create `article.md`, as a byte-for-byte copy of the accepted candidate. The published artifact can therefore be matched exactly to the revision that was reviewed.
++
++A blocked run keeps its reason and the work accumulated before the stop. Depending on how far it progressed, that record can include earlier candidates, partial review sequences, reviewer reports, PM decisions, workflow state, and audit copies of prompts, logs, and exit markers. Failure does not collapse into an unexplained absence of an article.
++
++That durable record is the practical answer to how write-uuter produces an inspectable reviewed article. The controller does not merely ask roles to follow a process; it requires evidence of each completed step, validates the evidence, and preserves the route to either exact publication or explicit blockage. The documented workflow does have firm boundaries: parallel runs, resuming after a controller restart, and editing completed runs are not implemented. Within those boundaries, its artifacts make the outcome traceable without treating agent conversation as workflow state.
+
+exec
+/bin/zsh -c 'f=drafts/article-001.md
+[[ -f $f ]] || { print -r -- MISSING; exit 1; }
+content=$(<$f)
+words=(${=content})
+print -r -- "words=${#words}"
+if [[ $content == *TODO* || $content == *PLACEHOLDER* ]]; then print -r -- PLACEHOLDER_FOUND; exit 1; fi
+print -r -- "heading=${${(f)content}[1]}"
+print -r -- VERIFIED' in /Users/yutaaoki/write-uuter/.worktrees/1/smoke-runs/.write-uuter-private-1802187262/workspaces/004-writer-2016979191
+ exited 1 in 0ms:
+words=882
+PLACEHOLDER_FOUND
+
+diff --git a/drafts/article-001.md b/drafts/article-001.md
+new file mode 100644
+index 0000000000000000000000000000000000000000..73692802f63b24779a957dd8dfabff2f2c50c02d
+--- /dev/null
++++ b/drafts/article-001.md
+@@ -0,0 +1,41 @@
++# From Brief to Inspectable Reviewed Article
++
++write-uuter is a Go CLI that turns a Markdown brief into a reviewed article while preserving the work that produced it. Its central design choice is a clear division of responsibility: a deterministic Go controller owns workflow state, validation, routing, revision hashes, timeouts, cleanup, and publication, while isolated Codex processes perform bounded editorial tasks.
++
++This is not one agent carrying an article from prompt to publication. The project assigns research, structure, writing, review, and editorial judgment to distinct roles. Workers and reviewers run separately, each reviewer starts as a fresh process, and one persistent PM makes editorial classifications throughout the run. Because those judgments are retained while Go enforces the resulting routes, engineers can inspect both the editorial decision and the control flow that followed it.
++
++## From brief to first candidate
++
++A run begins only after the controller validates the brief's required sections and confirms that the target is new. It then initializes the run directory atomically. From there, work proceeds in a fixed order.
++
++First, the Researcher creates a non-empty source record and a claim ledger. The ledger must explicitly account for five kinds of material: Fact, Firsthand observation, Inference, Opinion, and Unresolved. That classification gives later roles a concrete boundary between supported claims and material that needs qualification or cannot yet be established.
++
++Next, the Story Editor converts the evidence into an outline. Each section must state its purpose, supporting evidence, and intended reader takeaway. The Writer then expands that outline into candidate 001. A candidate must contain substantive text and cannot contain TODO placeholders.
++
++These requirements are examples of artifact gates: a required file and the validation it must pass before the controller advances. Each handoff is therefore a named, durable artifact with a minimum contract, not an informal assurance that the work is done.
++
++## Files, not final messages, prove progress
++
++Each role works in an isolated workspace rather than directly in the durable run directory or another role's workspace. Go stages only the context that role is allowed to receive. After the process exits successfully, the controller checks the role's owned outputs, requires valid regular files, and copies validated results back into the run.
++
++An agent's final message cannot advance the workflow on its own. The expected files must exist and satisfy their contracts. Review output, for example, is tied to a specific candidate by its SHA-256 revision; the declared lens and revision must match the assignment, and the structured findings must agree with the accompanying report.
++
++The controller records the live state in `workflow.json`, which is rewritten atomically. It includes the run's status and phase, current candidate and revision, active role, artifact paths, review attempts, timestamps, and—when applicable—a terminal blocking reason. In this repository, “inspectable” is best understood as a consequence of this design: state transitions depend on retained, validated files rather than transient chat transcripts or terminal scrollback.
++
++## Four reviews, one lens at a time
++
++Every candidate enters a fixed, sequential review sequence: Evidence, Story, Clarity, then Copy. Reviewers report findings but never edit the candidate. After each reached lens, the persistent PM classifies every finding as `valid_must_fix`, `valid_optional`, `invalid` with a reason, or `needs_human_judgment`.
++
++The separation matters. A fresh reviewer supplies a lens-specific assessment, the PM records the editorial judgment about each finding, and Go validates that decision artifact and applies predetermined routing rules. Later lenses do not run concurrently or get ahead of an unresolved must-fix.
++
++If the PM validates a must-fix, review of that candidate stops immediately. The Writer receives the prior candidate and the reached review result and produces the next numbered candidate. Review then restarts at Evidence. One rationale supported by the design is that changed content should not inherit later-lens results attached to an earlier revision. Optional and invalid findings do not consume another candidate.
++
++Automated revision is bounded at candidate 003. A must-fix against that candidate blocks the run instead of creating candidate 004. A need for human judgment, a runtime failure, or an artifact-validation failure also blocks the run. The limit does not establish that three attempts are optimal; it simply prevents indefinite automated revision and turns unresolved work into an explicit terminal state.
++
++## Two inspectable endings
++
++Success requires the final candidate to pass routing at all four review lenses. Only then does the controller create `article.md`, as a byte-for-byte copy of the accepted candidate. The published artifact can therefore be matched exactly to the revision that was reviewed.
++
++A blocked run keeps its reason and the work accumulated before the stop. Depending on how far it progressed, that record can include earlier candidates, partial review sequences, reviewer reports, PM decisions, workflow state, and audit copies of prompts, logs, and exit markers. Failure does not collapse into an unexplained absence of an article.
++
++That durable record is the practical answer to how write-uuter produces an inspectable reviewed article. The controller does not merely ask roles to follow a process; it requires evidence of each completed step, validates the evidence, and preserves the route to either exact publication or explicit blockage. The documented workflow does have firm boundaries: parallel runs, resuming after a controller restart, and editing completed runs are not implemented. Within those boundaries, its artifacts make the outcome traceable without treating agent conversation as workflow state.
+
+apply patch
+patch: completed
+/Users/yutaaoki/write-uuter/.worktrees/1/smoke-runs/.write-uuter-private-1802187262/workspaces/004-writer-2016979191/drafts/article-001.md
+diff --git a/drafts/article-001.md b/drafts/article-001.md
+new file mode 100644
+index 0000000000000000000000000000000000000000..b09e2bb5f371fb6d2671afc033b63e5a6fb95e41
+--- /dev/null
++++ b/drafts/article-001.md
+@@ -0,0 +1,41 @@
++# From Brief to Inspectable Reviewed Article
++
++write-uuter is a Go CLI that turns a Markdown brief into a reviewed article while preserving the work that produced it. Its central design choice is a clear division of responsibility: a deterministic Go controller owns workflow state, validation, routing, revision hashes, timeouts, cleanup, and publication, while isolated Codex processes perform bounded editorial tasks.
++
++This is not one agent carrying an article from prompt to publication. The project assigns research, structure, writing, review, and editorial judgment to distinct roles. Workers and reviewers run separately, each reviewer starts as a fresh process, and one persistent PM makes editorial classifications throughout the run. Because those judgments are retained while Go enforces the resulting routes, engineers can inspect both the editorial decision and the control flow that followed it.
++
++## From brief to first candidate
++
++A run begins only after the controller validates the brief's required sections and confirms that the target is new. It then initializes the run directory atomically. From there, work proceeds in a fixed order.
++
++First, the Researcher creates a non-empty source record and a claim ledger. The ledger must explicitly account for five kinds of material: Fact, Firsthand observation, Inference, Opinion, and Unresolved. That classification gives later roles a concrete boundary between supported claims and material that needs qualification or cannot yet be established.
++
++Next, the Story Editor converts the evidence into an outline. Each section must state its purpose, supporting evidence, and intended reader takeaway. The Writer then expands that outline into candidate 001. A candidate must contain substantive text and cannot contain unresolved drafting markers.
++
++These requirements are examples of artifact gates: a required file and the validation it must pass before the controller advances. Each handoff is therefore a named, durable artifact with a minimum contract, not an informal assurance that the work is done.
++
++## Files, not final messages, prove progress
++
++Each role works in an isolated workspace rather than directly in the durable run directory or another role's workspace. Go stages only the context that role is allowed to receive. After the process exits successfully, the controller checks the role's owned outputs, requires valid regular files, and copies validated results back into the run.
++
++An agent's final message cannot advance the workflow on its own. The expected files must exist and satisfy their contracts. Review output, for example, is tied to a specific candidate by its SHA-256 revision; the declared lens and revision must match the assignment, and the structured findings must agree with the accompanying report.
++
++The controller records the live state in `workflow.json`, which is rewritten atomically. It includes the run's status and phase, current candidate and revision, active role, artifact paths, review attempts, timestamps, and—when applicable—a terminal blocking reason. In this repository, “inspectable” is best understood as a consequence of this design: state transitions depend on retained, validated files rather than transient chat transcripts or terminal scrollback.
++
++## Four reviews, one lens at a time
++
++Every candidate enters a fixed, sequential review sequence: Evidence, Story, Clarity, then Copy. Reviewers report findings but never edit the candidate. After each reached lens, the persistent PM classifies every finding as `valid_must_fix`, `valid_optional`, `invalid` with a reason, or `needs_human_judgment`.
++
++The separation matters. A fresh reviewer supplies a lens-specific assessment, the PM records the editorial judgment about each finding, and Go validates that decision artifact and applies predetermined routing rules. Later lenses do not run concurrently or get ahead of an unresolved must-fix.
++
++If the PM validates a must-fix, review of that candidate stops immediately. The Writer receives the prior candidate and the reached review result and produces the next numbered candidate. Review then restarts at Evidence. One rationale supported by the design is that changed content should not inherit later-lens results attached to an earlier revision. Optional and invalid findings do not consume another candidate.
++
++Automated revision is bounded at candidate 003. A must-fix against that candidate blocks the run instead of creating candidate 004. A need for human judgment, a runtime failure, or an artifact-validation failure also blocks the run. The limit does not establish that three attempts are optimal; it simply prevents indefinite automated revision and turns unresolved work into an explicit terminal state.
++
++## Two inspectable endings
++
++Success requires the final candidate to pass routing at all four review lenses. Only then does the controller create `article.md`, as a byte-for-byte copy of the accepted candidate. The published artifact can therefore be matched exactly to the revision that was reviewed.
++
++A blocked run keeps its reason and the work accumulated before the stop. Depending on how far it progressed, that record can include earlier candidates, partial review sequences, reviewer reports, PM decisions, workflow state, and audit copies of prompts, logs, and exit markers. Failure does not collapse into an unexplained absence of an article.
++
++That durable record is the practical answer to how write-uuter produces an inspectable reviewed article. The controller does not merely ask roles to follow a process; it requires evidence of each completed step, validates the evidence, and preserves the route to either exact publication or explicit blockage. The documented workflow does have firm boundaries: parallel runs, resuming after a controller restart, and editing completed runs are not implemented. Within those boundaries, its artifacts make the outcome traceable without treating agent conversation as workflow state.
+
+diff --git a/drafts/article-001.md b/drafts/article-001.md
+new file mode 100644
+index 0000000000000000000000000000000000000000..b09e2bb5f371fb6d2671afc033b63e5a6fb95e41
+--- /dev/null
++++ b/drafts/article-001.md
+@@ -0,0 +1,41 @@
++# From Brief to Inspectable Reviewed Article
++
++write-uuter is a Go CLI that turns a Markdown brief into a reviewed article while preserving the work that produced it. Its central design choice is a clear division of responsibility: a deterministic Go controller owns workflow state, validation, routing, revision hashes, timeouts, cleanup, and publication, while isolated Codex processes perform bounded editorial tasks.
++
++This is not one agent carrying an article from prompt to publication. The project assigns research, structure, writing, review, and editorial judgment to distinct roles. Workers and reviewers run separately, each reviewer starts as a fresh process, and one persistent PM makes editorial classifications throughout the run. Because those judgments are retained while Go enforces the resulting routes, engineers can inspect both the editorial decision and the control flow that followed it.
++
++## From brief to first candidate
++
++A run begins only after the controller validates the brief's required sections and confirms that the target is new. It then initializes the run directory atomically. From there, work proceeds in a fixed order.
++
++First, the Researcher creates a non-empty source record and a claim ledger. The ledger must explicitly account for five kinds of material: Fact, Firsthand observation, Inference, Opinion, and Unresolved. That classification gives later roles a concrete boundary between supported claims and material that needs qualification or cannot yet be established.
++
++Next, the Story Editor converts the evidence into an outline. Each section must state its purpose, supporting evidence, and intended reader takeaway. The Writer then expands that outline into candidate 001. A candidate must contain substantive text and cannot contain unresolved drafting markers.
++
++These requirements are examples of artifact gates: a required file and the validation it must pass before the controller advances. Each handoff is therefore a named, durable artifact with a minimum contract, not an informal assurance that the work is done.
++
++## Files, not final messages, prove progress
++
++Each role works in an isolated workspace rather than directly in the durable run directory or another role's workspace. Go stages only the context that role is allowed to receive. After the process exits successfully, the controller checks the role's owned outputs, requires valid regular files, and copies validated results back into the run.
++
++An agent's final message cannot advance the workflow on its own. The expected files must exist and satisfy their contracts. Review output, for example, is tied to a specific candidate by its SHA-256 revision; the declared lens and revision must match the assignment, and the structured findings must agree with the accompanying report.
++
++The controller records the live state in `workflow.json`, which is rewritten atomically. It includes the run's status and phase, current candidate and revision, active role, artifact paths, review attempts, timestamps, and—when applicable—a terminal blocking reason. In this repository, “inspectable” is best understood as a consequence of this design: state transitions depend on retained, validated files rather than transient chat transcripts or terminal scrollback.
++
++## Four reviews, one lens at a time
++
++Every candidate enters a fixed, sequential review sequence: Evidence, Story, Clarity, then Copy. Reviewers report findings but never edit the candidate. After each reached lens, the persistent PM classifies every finding as `valid_must_fix`, `valid_optional`, `invalid` with a reason, or `needs_human_judgment`.
++
++The separation matters. A fresh reviewer supplies a lens-specific assessment, the PM records the editorial judgment about each finding, and Go validates that decision artifact and applies predetermined routing rules. Later lenses do not run concurrently or get ahead of an unresolved must-fix.
++
++If the PM validates a must-fix, review of that candidate stops immediately. The Writer receives the prior candidate and the reached review result and produces the next numbered candidate. Review then restarts at Evidence. One rationale supported by the design is that changed content should not inherit later-lens results attached to an earlier revision. Optional and invalid findings do not consume another candidate.
++
++Automated revision is bounded at candidate 003. A must-fix against that candidate blocks the run instead of creating candidate 004. A need for human judgment, a runtime failure, or an artifact-validation failure also blocks the run. The limit does not establish that three attempts are optimal; it simply prevents indefinite automated revision and turns unresolved work into an explicit terminal state.
++
++## Two inspectable endings
++
++Success requires the final candidate to pass routing at all four review lenses. Only then does the controller create `article.md`, as a byte-for-byte copy of the accepted candidate. The published artifact can therefore be matched exactly to the revision that was reviewed.
++
++A blocked run keeps its reason and the work accumulated before the stop. Depending on how far it progressed, that record can include earlier candidates, partial review sequences, reviewer reports, PM decisions, workflow state, and audit copies of prompts, logs, and exit markers. Failure does not collapse into an unexplained absence of an article.
++
++That durable record is the practical answer to how write-uuter produces an inspectable reviewed article. The controller does not merely ask roles to follow a process; it requires evidence of each completed step, validates the evidence, and preserves the route to either exact publication or explicit blockage. The documented workflow does have firm boundaries: parallel runs, resuming after a controller restart, and editing completed runs are not implemented. Within those boundaries, its artifacts make the outcome traceable without treating agent conversation as workflow state.
+
+exec
+/bin/zsh -c 'f=drafts/article-001.md
+[[ -f $f && -s $f ]] || { print -r -- INVALID_FILE; exit 1; }
+content=$(<$f)
+words=(${=content})
+print -r -- "words=${#words}"
+if [[ $content == *TODO* || $content == *PLACEHOLDER* ]]; then print -r -- PLACEHOLDER_FOUND; exit 1; fi
+print -r -- "heading=${${(f)content}[1]}"
+print -r -- VERIFIED' in /Users/yutaaoki/write-uuter/.worktrees/1/smoke-runs/.write-uuter-private-1802187262/workspaces/004-writer-2016979191
+ succeeded in 0ms:
+words=883
+heading=# From Brief to Inspectable Reviewed Article
+VERIFIED
+
+diff --git a/drafts/article-001.md b/drafts/article-001.md
+new file mode 100644
+index 0000000000000000000000000000000000000000..b09e2bb5f371fb6d2671afc033b63e5a6fb95e41
+--- /dev/null
++++ b/drafts/article-001.md
+@@ -0,0 +1,41 @@
++# From Brief to Inspectable Reviewed Article
++
++write-uuter is a Go CLI that turns a Markdown brief into a reviewed article while preserving the work that produced it. Its central design choice is a clear division of responsibility: a deterministic Go controller owns workflow state, validation, routing, revision hashes, timeouts, cleanup, and publication, while isolated Codex processes perform bounded editorial tasks.
++
++This is not one agent carrying an article from prompt to publication. The project assigns research, structure, writing, review, and editorial judgment to distinct roles. Workers and reviewers run separately, each reviewer starts as a fresh process, and one persistent PM makes editorial classifications throughout the run. Because those judgments are retained while Go enforces the resulting routes, engineers can inspect both the editorial decision and the control flow that followed it.
++
++## From brief to first candidate
++
++A run begins only after the controller validates the brief's required sections and confirms that the target is new. It then initializes the run directory atomically. From there, work proceeds in a fixed order.
++
++First, the Researcher creates a non-empty source record and a claim ledger. The ledger must explicitly account for five kinds of material: Fact, Firsthand observation, Inference, Opinion, and Unresolved. That classification gives later roles a concrete boundary between supported claims and material that needs qualification or cannot yet be established.
++
++Next, the Story Editor converts the evidence into an outline. Each section must state its purpose, supporting evidence, and intended reader takeaway. The Writer then expands that outline into candidate 001. A candidate must contain substantive text and cannot contain unresolved drafting markers.
++
++These requirements are examples of artifact gates: a required file and the validation it must pass before the controller advances. Each handoff is therefore a named, durable artifact with a minimum contract, not an informal assurance that the work is done.
++
++## Files, not final messages, prove progress
++
++Each role works in an isolated workspace rather than directly in the durable run directory or another role's workspace. Go stages only the context that role is allowed to receive. After the process exits successfully, the controller checks the role's owned outputs, requires valid regular files, and copies validated results back into the run.
++
++An agent's final message cannot advance the workflow on its own. The expected files must exist and satisfy their contracts. Review output, for example, is tied to a specific candidate by its SHA-256 revision; the declared lens and revision must match the assignment, and the structured findings must agree with the accompanying report.
++
++The controller records the live state in `workflow.json`, which is rewritten atomically. It includes the run's status and phase, current candidate and revision, active role, artifact paths, review attempts, timestamps, and—when applicable—a terminal blocking reason. In this repository, “inspectable” is best understood as a consequence of this design: state transitions depend on retained, validated files rather than transient chat transcripts or terminal scrollback.
++
++## Four reviews, one lens at a time
++
++Every candidate enters a fixed, sequential review sequence: Evidence, Story, Clarity, then Copy. Reviewers report findings but never edit the candidate. After each reached lens, the persistent PM classifies every finding as `valid_must_fix`, `valid_optional`, `invalid` with a reason, or `needs_human_judgment`.
++
++The separation matters. A fresh reviewer supplies a lens-specific assessment, the PM records the editorial judgment about each finding, and Go validates that decision artifact and applies predetermined routing rules. Later lenses do not run concurrently or get ahead of an unresolved must-fix.
++
++If the PM validates a must-fix, review of that candidate stops immediately. The Writer receives the prior candidate and the reached review result and produces the next numbered candidate. Review then restarts at Evidence. One rationale supported by the design is that changed content should not inherit later-lens results attached to an earlier revision. Optional and invalid findings do not consume another candidate.
++
++Automated revision is bounded at candidate 003. A must-fix against that candidate blocks the run instead of creating candidate 004. A need for human judgment, a runtime failure, or an artifact-validation failure also blocks the run. The limit does not establish that three attempts are optimal; it simply prevents indefinite automated revision and turns unresolved work into an explicit terminal state.
++
++## Two inspectable endings
++
++Success requires the final candidate to pass routing at all four review lenses. Only then does the controller create `article.md`, as a byte-for-byte copy of the accepted candidate. The published artifact can therefore be matched exactly to the revision that was reviewed.
++
++A blocked run keeps its reason and the work accumulated before the stop. Depending on how far it progressed, that record can include earlier candidates, partial review sequences, reviewer reports, PM decisions, workflow state, and audit copies of prompts, logs, and exit markers. Failure does not collapse into an unexplained absence of an article.
++
++That durable record is the practical answer to how write-uuter produces an inspectable reviewed article. The controller does not merely ask roles to follow a process; it requires evidence of each completed step, validates the evidence, and preserves the route to either exact publication or explicit blockage. The documented workflow does have firm boundaries: parallel runs, resuming after a controller restart, and editing completed runs are not implemented. Within those boundaries, its artifacts make the outcome traceable without treating agent conversation as workflow state.
+
+codex
+Completed candidate 001 at [drafts/article-001.md](/Users/yutaaoki/write-uuter/.worktrees/1/smoke-runs/.write-uuter-private-1802187262/workspaces/004-writer-2016979191/drafts/article-001.md). Verified at 883 words with no unresolved placeholders.
+diff --git a/drafts/article-001.md b/drafts/article-001.md
+new file mode 100644
+index 0000000000000000000000000000000000000000..b09e2bb5f371fb6d2671afc033b63e5a6fb95e41
+--- /dev/null
++++ b/drafts/article-001.md
+@@ -0,0 +1,41 @@
++# From Brief to Inspectable Reviewed Article
++
++write-uuter is a Go CLI that turns a Markdown brief into a reviewed article while preserving the work that produced it. Its central design choice is a clear division of responsibility: a deterministic Go controller owns workflow state, validation, routing, revision hashes, timeouts, cleanup, and publication, while isolated Codex processes perform bounded editorial tasks.
++
++This is not one agent carrying an article from prompt to publication. The project assigns research, structure, writing, review, and editorial judgment to distinct roles. Workers and reviewers run separately, each reviewer starts as a fresh process, and one persistent PM makes editorial classifications throughout the run. Because those judgments are retained while Go enforces the resulting routes, engineers can inspect both the editorial decision and the control flow that followed it.
++
++## From brief to first candidate
++
++A run begins only after the controller validates the brief's required sections and confirms that the target is new. It then initializes the run directory atomically. From there, work proceeds in a fixed order.
++
++First, the Researcher creates a non-empty source record and a claim ledger. The ledger must explicitly account for five kinds of material: Fact, Firsthand observation, Inference, Opinion, and Unresolved. That classification gives later roles a concrete boundary between supported claims and material that needs qualification or cannot yet be established.
++
++Next, the Story Editor converts the evidence into an outline. Each section must state its purpose, supporting evidence, and intended reader takeaway. The Writer then expands that outline into candidate 001. A candidate must contain substantive text and cannot contain unresolved drafting markers.
++
++These requirements are examples of artifact gates: a required file and the validation it must pass before the controller advances. Each handoff is therefore a named, durable artifact with a minimum contract, not an informal assurance that the work is done.
++
++## Files, not final messages, prove progress
++
++Each role works in an isolated workspace rather than directly in the durable run directory or another role's workspace. Go stages only the context that role is allowed to receive. After the process exits successfully, the controller checks the role's owned outputs, requires valid regular files, and copies validated results back into the run.
++
++An agent's final message cannot advance the workflow on its own. The expected files must exist and satisfy their contracts. Review output, for example, is tied to a specific candidate by its SHA-256 revision; the declared lens and revision must match the assignment, and the structured findings must agree with the accompanying report.
++
++The controller records the live state in `workflow.json`, which is rewritten atomically. It includes the run's status and phase, current candidate and revision, active role, artifact paths, review attempts, timestamps, and—when applicable—a terminal blocking reason. In this repository, “inspectable” is best understood as a consequence of this design: state transitions depend on retained, validated files rather than transient chat transcripts or terminal scrollback.
++
++## Four reviews, one lens at a time
++
++Every candidate enters a fixed, sequential review sequence: Evidence, Story, Clarity, then Copy. Reviewers report findings but never edit the candidate. After each reached lens, the persistent PM classifies every finding as `valid_must_fix`, `valid_optional`, `invalid` with a reason, or `needs_human_judgment`.
++
++The separation matters. A fresh reviewer supplies a lens-specific assessment, the PM records the editorial judgment about each finding, and Go validates that decision artifact and applies predetermined routing rules. Later lenses do not run concurrently or get ahead of an unresolved must-fix.
++
++If the PM validates a must-fix, review of that candidate stops immediately. The Writer receives the prior candidate and the reached review result and produces the next numbered candidate. Review then restarts at Evidence. One rationale supported by the design is that changed content should not inherit later-lens results attached to an earlier revision. Optional and invalid findings do not consume another candidate.
++
++Automated revision is bounded at candidate 003. A must-fix against that candidate blocks the run instead of creating candidate 004. A need for human judgment, a runtime failure, or an artifact-validation failure also blocks the run. The limit does not establish that three attempts are optimal; it simply prevents indefinite automated revision and turns unresolved work into an explicit terminal state.
++
++## Two inspectable endings
++
++Success requires the final candidate to pass routing at all four review lenses. Only then does the controller create `article.md`, as a byte-for-byte copy of the accepted candidate. The published artifact can therefore be matched exactly to the revision that was reviewed.
++
++A blocked run keeps its reason and the work accumulated before the stop. Depending on how far it progressed, that record can include earlier candidates, partial review sequences, reviewer reports, PM decisions, workflow state, and audit copies of prompts, logs, and exit markers. Failure does not collapse into an unexplained absence of an article.
++
++That durable record is the practical answer to how write-uuter produces an inspectable reviewed article. The controller does not merely ask roles to follow a process; it requires evidence of each completed step, validates the evidence, and preserves the route to either exact publication or explicit blockage. The documented workflow does have firm boundaries: parallel runs, resuming after a controller restart, and editing completed runs are not implemented. Within those boundaries, its artifacts make the outcome traceable without treating agent conversation as workflow state.
+
+tokens used
+16,787
+Completed candidate 001 at [drafts/article-001.md](/Users/yutaaoki/write-uuter/.worktrees/1/smoke-runs/.write-uuter-private-1802187262/workspaces/004-writer-2016979191/drafts/article-001.md). Verified at 883 words with no unresolved placeholders.

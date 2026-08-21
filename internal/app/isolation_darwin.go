@@ -27,12 +27,16 @@ func isolationProfile(workspace, codexHome string, runtimeExecutables []string) 
 	}
 	var profile strings.Builder
 	profile.WriteString("(version 1)\n(deny default)\n(import \"system.sb\")\n")
-	profile.WriteString("(allow process-exec process-fork)\n")
-	profile.WriteString("(allow network*)\n")
+	profile.WriteString("(allow process-exec)\n")
 	profile.WriteString("(allow mach-lookup)\n")
 	profile.WriteString("(allow sysctl-read)\n")
-	for _, readable := range []string{"/System", "/usr", "/bin", "/sbin", "/dev", "/Library/Apple", "/private/etc/ssl"} {
+	profile.WriteString("(deny file-read* file-write* (subpath \"/usr/local\"))\n")
+	profile.WriteString("(deny file-read* file-write* (literal \"/dev/zero\"))\n")
+	for _, readable := range []string{"/System", "/usr/bin", "/usr/lib", "/bin", "/Library/Apple", "/private/etc/ssl"} {
 		fmt.Fprintf(&profile, "(allow file-read* (subpath %s))\n", strconv.Quote(readable))
+	}
+	for _, readable := range []string{"/dev/null", "/dev/random", "/dev/urandom", "/dev/tty"} {
+		fmt.Fprintf(&profile, "(allow file-read* file-write* (literal %s))\n", strconv.Quote(readable))
 	}
 	metadataPaths := append(pathAncestors(workspace), pathAncestors(codexHome)...)
 	for _, executable := range runtimeExecutables {
@@ -47,9 +51,17 @@ func isolationProfile(workspace, codexHome string, runtimeExecutables []string) 
 		fmt.Fprintf(&profile, "(allow file-read-metadata (literal %s))\n", strconv.Quote(parent))
 	}
 	fmt.Fprintf(&profile, "(allow file-read* file-write* (subpath %s))\n", strconv.Quote(workspace))
-	fmt.Fprintf(&profile, "(allow file-read* file-write* (subpath %s))\n", strconv.Quote(codexHome))
-	for _, executable := range runtimeExecutables {
+	for index, executable := range runtimeExecutables {
 		fmt.Fprintf(&profile, "(allow file-read* (literal %s))\n", strconv.Quote(executable))
+		if index == 0 {
+			// Only the staged Codex client may fork, read authentication, or open
+			// the network. Model-invoked runtimes and tools inherit CODEX_HOME for
+			// compatibility, but the kernel denies them those capabilities. A tool
+			// can replace itself with one executable; it cannot double-fork.
+			fmt.Fprintf(&profile, "(with-filter (process-path %s) (allow process-fork))\n", strconv.Quote(executable))
+			fmt.Fprintf(&profile, "(with-filter (process-path %s) (allow file-read* file-write* (subpath %s)))\n", strconv.Quote(executable), strconv.Quote(codexHome))
+			fmt.Fprintf(&profile, "(with-filter (process-path %s) (allow network*))\n", strconv.Quote(executable))
+		}
 	}
 	return profile.String(), nil
 }
