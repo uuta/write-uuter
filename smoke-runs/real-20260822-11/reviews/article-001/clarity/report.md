@@ -1,0 +1,17 @@
+# Clarity review
+
+status: fix_required
+
+lens: clarity
+
+reviewed_revision: sha256:d1d12a512a27490f7d955080de6e81df86d3c6c171914906c87c86320f2aa1c4
+
+id: clarity-001
+
+severity: minor
+
+location: Success includes the trail, second and third sentences
+
+problem: The phrases `natural exit markers`, `live private runner state`, and `role workspaces` are not explained, so readers cannot tell what these terminal artifacts and cleanup choices mean or what they can inspect after a run.
+
+suggested_direction: Define these terms in plain language and state briefly what the retained files show versus what temporary execution data is removed.

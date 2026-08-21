@@ -75,7 +75,8 @@ contracted context and copies validated regular-file outputs back. A native
 sandbox denies agents access to the durable run, other role workspaces, and
 controller-private launch state. Codex's inner sandbox is disabled because
 macOS does not support nesting it inside the stricter controller sandbox. Go
-owns each Codex process group and publishes completion through an atomic marker
+owns each invocation and its descendants with a unique identity token, requires
+a pre-launch ready handshake, and publishes completion through an atomic marker
 only after descendants are gone.
 Researcher, Story Editor, Writer, then fresh Evidence, Story, Clarity, and Copy
 reviewer processes run sequentially. Reviewers never receive the run directory

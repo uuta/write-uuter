@@ -191,7 +191,8 @@ func (control *controller) execute() error {
 	if err != nil {
 		return control.block(err.Error())
 	}
-	if err := control.runtime.startPM(control.pm); err != nil {
+	pmDeadline := invocationDeadline(control.config.AgentTimeout)
+	if err := control.runtime.startPM(control.pm, pmDeadline); err != nil {
 		return control.block(err.Error())
 	}
 	if err := control.runResearcher(); err != nil {
@@ -620,7 +621,7 @@ func validateReviewData(resultData, reportData []byte, lens, revision string) (R
 	if strings.TrimSpace(string(fields["findings"])) == "null" {
 		return result, fmt.Errorf("review findings must be an array")
 	}
-	if err := json.Unmarshal(resultData, &result); err != nil {
+	if err := decodeStrictJSON(resultData, &result); err != nil {
 		return result, err
 	}
 	if result.Lens != lens {
@@ -726,6 +727,7 @@ func reportField(line string) (string, string, bool) {
 }
 
 func (control *controller) requestPMDecision(candidate int, lens string, result ReviewResult) ([]PMDecision, error) {
+	deadlineUnixNano := invocationDeadline(control.config.AgentTimeout)
 	resultPath := filepath.Join("reviews", fmt.Sprintf("article-%03d", candidate), lens, "result.json")
 	reportPath := filepath.Join("reviews", fmt.Sprintf("article-%03d", candidate), lens, "report.md")
 	resultData, err := control.store.readRegular(resultPath)
@@ -759,6 +761,7 @@ func (control *controller) requestPMDecision(candidate int, lens string, result 
 	if err := pmStore.writeJSON(requestPath, request); err != nil {
 		return nil, err
 	}
+	testInvocationDelay("WRITE_UUTER_TEST_AFTER_PM_REQUEST_DELAY")
 	defer pmStore.remove(requestPath)
 	defer pmStore.remove(outputPath)
 	defer pmStore.removeAll(contextDirectory)
@@ -766,9 +769,8 @@ func (control *controller) requestPMDecision(candidate int, lens string, result 
 	if err := control.saveWorkflow(); err != nil {
 		return nil, err
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), control.config.AgentTimeout)
+	ctx, cancel := context.WithDeadline(context.Background(), time.Unix(0, deadlineUnixNano))
 	defer cancel()
-	deadlineUnixNano := time.Now().UnixNano() + control.config.AgentTimeout.Nanoseconds()
 	ticker := time.NewTicker(50 * time.Millisecond)
 	defer ticker.Stop()
 	for {
@@ -779,6 +781,9 @@ func (control *controller) requestPMDecision(candidate int, lens string, result 
 		if readErr == nil {
 			decisions, validateErr := control.validatePMDecisionData(data, candidate, lens, result, request)
 			if validateErr == nil {
+				if err := ensureInvocationDeadline(deadlineUnixNano, "PM decision acceptance"); err != nil {
+					return nil, err
+				}
 				live, liveErr := control.runtime.invocationLive(control.pm)
 				if liveErr != nil {
 					return nil, fmt.Errorf("verify persistent PM at decision acceptance: %w", liveErr)
@@ -787,6 +792,9 @@ func (control *controller) requestPMDecision(candidate int, lens string, result 
 					return nil, fmt.Errorf("PM exited before %s decision acceptance", lens)
 				}
 				if err := control.store.writeAtomic(fmt.Sprintf("pm-decisions/article-%03d.md", candidate), data, 0o644); err != nil {
+					return nil, err
+				}
+				if err := ensureInvocationDeadline(deadlineUnixNano, "PM decision commit"); err != nil {
 					return nil, err
 				}
 				if control.decisionBindings[candidate] == nil {
@@ -906,7 +914,7 @@ func parsePMDecisionDocument(data []byte) (PMDecisionDocument, error) {
 	if !strings.HasPrefix(payload, "{") || !strings.HasSuffix(payload, "}") {
 		return document, fmt.Errorf("PM decision must contain exactly one complete fenced JSON document")
 	}
-	if err := json.Unmarshal([]byte(payload), &document); err != nil {
+	if err := decodeStrictJSON([]byte(payload), &document); err != nil {
 		return document, fmt.Errorf("invalid PM decision JSON: %w", err)
 	}
 	return document, nil
@@ -958,6 +966,8 @@ func validateDecisionList(decisions []PMDecision, result ReviewResult) error {
 }
 
 func (control *controller) runWorker(role, lens string, candidate int, revision, phase, prompt string, prepare, validate, commit func(*artifactStore) error) error {
+	deadlineUnixNano := invocationDeadline(control.config.AgentTimeout)
+	testInvocationDelay("WRITE_UUTER_TEST_BEFORE_WORKER_START_DELAY")
 	inv, err := control.runtime.prepareInvocation(role, lens, candidate, revision, prompt)
 	if err != nil {
 		return err
@@ -975,7 +985,10 @@ func (control *controller) runWorker(role, lens string, candidate int, revision,
 	if err := control.saveWorkflow(); err != nil {
 		return err
 	}
-	if err := control.runtime.startWorker(inv); err != nil {
+	if err := ensureInvocationDeadline(deadlineUnixNano, role+" launch"); err != nil {
+		return err
+	}
+	if err := control.runtime.startWorker(inv, deadlineUnixNano); err != nil {
 		return err
 	}
 	if strings.HasPrefix(role, "reviewer_") {
@@ -984,11 +997,20 @@ func (control *controller) runWorker(role, lens string, candidate int, revision,
 			return err
 		}
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), control.config.AgentTimeout)
+	ctx, cancel := context.WithDeadline(context.Background(), time.Unix(0, deadlineUnixNano))
 	defer cancel()
-	deadlineUnixNano := time.Now().UnixNano() + control.config.AgentTimeout.Nanoseconds()
 	if err := control.runtime.waitForWorker(ctx, deadlineUnixNano, control.pm, inv); err != nil {
 		return err
+	}
+	if err := ensureInvocationDeadline(deadlineUnixNano, role+" artifact validation"); err != nil {
+		return err
+	}
+	pmLive, err := control.runtime.invocationLive(control.pm)
+	if err != nil {
+		return fmt.Errorf("verify PM before %s artifact commit: %w", role, err)
+	}
+	if !pmLive {
+		return fmt.Errorf("PM exited before %s artifact commit", role)
 	}
 	if err := validate(workspace); err != nil {
 		return fmt.Errorf("%s artifact contract failed after process completion: %w", role, err)
@@ -996,8 +1018,28 @@ func (control *controller) runWorker(role, lens string, candidate int, revision,
 	if err := commit(workspace); err != nil {
 		return err
 	}
+	if err := ensureInvocationDeadline(deadlineUnixNano, role+" artifact commit"); err != nil {
+		return err
+	}
 	control.workflow.ActiveRole = ""
 	return control.saveWorkflow()
+}
+
+func invocationDeadline(timeout time.Duration) int64 {
+	return time.Now().Add(timeout).UnixNano()
+}
+
+func ensureInvocationDeadline(deadlineUnixNano int64, action string) error {
+	if time.Now().UnixNano() >= deadlineUnixNano {
+		return fmt.Errorf("%s exceeded its wall-clock deadline", action)
+	}
+	return nil
+}
+
+func testInvocationDelay(name string) {
+	if delay, err := time.ParseDuration(os.Getenv(name)); err == nil && delay > 0 {
+		time.Sleep(delay)
+	}
 }
 
 func (control *controller) succeed(candidate int) error {
@@ -1110,12 +1152,11 @@ func (control *controller) saveWorkflow() error {
 }
 
 func (control *controller) block(reason string) error {
-	cleanupSucceeded := true
 	if control.runtime != nil {
 		if cleanupErr := control.runtime.cleanup(false, control.pm); cleanupErr != nil {
-			cleanupSucceeded = false
 			reason += fmt.Sprintf("; cleanup failed: %v", cleanupErr)
-		} else if archiveErr := control.runtime.archiveAll(control.store); archiveErr != nil {
+		}
+		if archiveErr := control.runtime.archiveAll(control.store); archiveErr != nil {
 			reason += fmt.Sprintf("; audit archive failed: %v", archiveErr)
 		}
 	}
@@ -1130,7 +1171,7 @@ func (control *controller) block(reason string) error {
 	control.workflow.CompletedAt = &now
 	persistErr := control.saveWorkflow()
 	var privateErr error
-	if cleanupSucceeded && control.runtime != nil {
+	if control.runtime != nil {
 		privateErr = control.runtime.closePrivate()
 	}
 	if persistErr != nil || privateErr != nil {

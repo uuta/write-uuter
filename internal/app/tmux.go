@@ -28,10 +28,15 @@ type tmuxRuntime struct {
 	fakeLogDir      string
 	detachedPIDDir  string
 	exitDelay       string
+	readyDelay      string
+	removeAudit     string
+	auditRemoved    bool
+	failRemoveOnce  bool
 	commandTimeout  time.Duration
 	sequence        int
 	cleaned         bool
 	closed          bool
+	storeClosed     bool
 	invocations     []invocation
 }
 
@@ -44,11 +49,14 @@ type invocation struct {
 	PromptRelative  string
 	ExitRelative    string
 	LogRelative     string
-	PGIDRelative    string
+	ReadyRelative   string
 	ProfileRelative string
 	WorkspacePath   string
 	CodexHomePath   string
 	Window          string
+	OwnershipToken  string
+	started         bool
+	retired         bool
 	archived        bool
 }
 
@@ -101,7 +109,7 @@ func newTmuxRuntime(tmuxExecutable, codexExecutable string, agentTimeout time.Du
 		cleanupRoot()
 		return nil, err
 	}
-	for _, directory := range []string{"prompts", "logs", "exits", "pgids", "profiles"} {
+	for _, directory := range []string{"prompts", "logs", "exits", "ready", "profiles"} {
 		if err := controlStore.mkdirAll(directory, 0o700); err != nil {
 			_ = controlStore.Close()
 			cleanupRoot()
@@ -132,8 +140,9 @@ func newTmuxRuntime(tmuxExecutable, codexExecutable string, agentTimeout time.Du
 		codexHomesDir: codexHomesDir, sourceCodexHome: sourceCodexHome,
 		controlStore: controlStore, commandTimeout: commandTimeout,
 		fakeLogDir: os.Getenv("WRITE_UUTER_FAKE_LOG_DIR"), detachedPIDDir: os.Getenv("WRITE_UUTER_TEST_DETACHED_PID_DIR"),
-		exitDelay: os.Getenv("WRITE_UUTER_TEST_EXIT_MARKER_DELAY"),
-		session:   "write-uuter-" + revisionFor([]byte(seed))[7:19],
+		exitDelay: os.Getenv("WRITE_UUTER_TEST_EXIT_MARKER_DELAY"), readyDelay: os.Getenv("WRITE_UUTER_TEST_READY_MARKER_DELAY"),
+		removeAudit: os.Getenv("WRITE_UUTER_TEST_REMOVE_AUDIT"), failRemoveOnce: os.Getenv("WRITE_UUTER_TEST_FAIL_PRIVATE_REMOVE_ONCE") == "1",
+		session: "write-uuter-" + revisionFor([]byte(seed))[7:19],
 	}, nil
 }
 
@@ -202,8 +211,7 @@ func (runtime *tmuxRuntime) prepareInvocation(role, lens string, candidate int, 
 		_ = os.RemoveAll(workspace)
 		return invocation{}, err
 	}
-	profile, err := isolationProfile(workspace, codexHome, runtime.runDir, runtime.privateRoot, runtime.codex,
-		os.Getenv("WRITE_UUTER_FAKE_LOG_DIR"), os.Getenv("WRITE_UUTER_TEST_DETACHED_PID_DIR"))
+	profile, err := isolationProfile(workspace, codexHome, runtime.codex)
 	if err != nil {
 		_ = os.RemoveAll(workspace)
 		return invocation{}, err
@@ -216,45 +224,101 @@ func (runtime *tmuxRuntime) prepareInvocation(role, lens string, candidate int, 
 	inv := invocation{
 		ID: id, Role: role, Lens: lens, Candidate: candidate, Revision: revision,
 		PromptRelative: promptRelative, ExitRelative: filepath.Join("exits", id+".exit"),
-		LogRelative: filepath.Join("logs", id+".log"), PGIDRelative: filepath.Join("pgids", id+".pgid"),
+		LogRelative: filepath.Join("logs", id+".log"), ReadyRelative: filepath.Join("ready", id+".ready"),
 		ProfileRelative: profileRelative, WorkspacePath: workspace, CodexHomePath: codexHome, Window: id,
+		OwnershipToken: randomToken() + randomToken(),
 	}
 	runtime.invocations = append(runtime.invocations, inv)
 	return inv, nil
 }
 
-func (runtime *tmuxRuntime) startPM(inv invocation) error {
+func (runtime *tmuxRuntime) startPM(inv invocation, deadlineUnixNano int64) error {
 	output, err := runtime.runCommand("new-session", "-d", "-s", runtime.session, "-n", inv.Window, runtime.command(inv))
 	if err != nil {
 		return fmt.Errorf("start PM tmux session: %w: %s", err, strings.TrimSpace(string(output)))
 	}
+	runtime.markStarted(inv.ID)
+	if err := runtime.waitInvocationReady(inv, deadlineUnixNano, true); err != nil {
+		return errors.Join(err, runtime.stopInvocation(inv))
+	}
 	return nil
 }
 
-func (runtime *tmuxRuntime) startWorker(inv invocation) error {
+func (runtime *tmuxRuntime) startWorker(inv invocation, deadlineUnixNano int64) error {
 	output, err := runtime.runCommand("new-window", "-d", "-t", runtime.session, "-n", inv.Window, runtime.command(inv))
 	if err != nil {
 		return fmt.Errorf("start %s worker: %w: %s", inv.Role, err, strings.TrimSpace(string(output)))
+	}
+	runtime.markStarted(inv.ID)
+	if err := runtime.waitInvocationReady(inv, deadlineUnixNano, false); err != nil {
+		return errors.Join(err, runtime.stopInvocation(inv))
 	}
 	return nil
 }
 
 func (runtime *tmuxRuntime) command(inv invocation) string {
+	readyDelay := runtime.readyDelay
+	if inv.Role == "pm" {
+		readyDelay = ""
+	}
 	arguments := []string{
 		runtime.runner, "__agent", "--codex", runtime.codex, "--workspace", inv.WorkspacePath,
 		"--prompt", filepath.Join(runtime.controlDir, inv.PromptRelative), "--log", filepath.Join(runtime.controlDir, inv.LogRelative),
-		"--exit", filepath.Join(runtime.controlDir, inv.ExitRelative), "--pgid", filepath.Join(runtime.controlDir, inv.PGIDRelative),
+		"--exit", filepath.Join(runtime.controlDir, inv.ExitRelative), "--ready", filepath.Join(runtime.controlDir, inv.ReadyRelative),
 		"--profile", filepath.Join(runtime.controlDir, inv.ProfileRelative), "--role", inv.Role, "--lens", inv.Lens,
 		"--candidate", strconv.Itoa(inv.Candidate), "--revision", inv.Revision, "--invocation", inv.ID,
-		"--codex-home", inv.CodexHomePath,
-		"--fake-log-dir", runtime.fakeLogDir, "--detached-pid-dir", runtime.detachedPIDDir,
-		"--exit-marker-delay", runtime.exitDelay,
+		"--codex-home", inv.CodexHomePath, "--ownership-token", inv.OwnershipToken,
+		"--exit-marker-delay", runtime.exitDelay, "--ready-marker-delay", readyDelay,
 	}
 	parts := []string{"exec"}
 	for _, argument := range arguments {
 		parts = append(parts, shellQuote(argument))
 	}
 	return strings.Join(parts, " ")
+}
+
+func (runtime *tmuxRuntime) markStarted(id string) {
+	if record := runtime.invocationRecord(id); record != nil {
+		record.started = true
+	}
+}
+
+func (runtime *tmuxRuntime) invocationRecord(id string) *invocation {
+	for index := range runtime.invocations {
+		if runtime.invocations[index].ID == id {
+			return &runtime.invocations[index]
+		}
+	}
+	return nil
+}
+
+func (runtime *tmuxRuntime) waitInvocationReady(inv invocation, deadlineUnixNano int64, requireLive bool) error {
+	ticker := time.NewTicker(20 * time.Millisecond)
+	defer ticker.Stop()
+	for time.Now().UnixNano() < deadlineUnixNano {
+		if _, ready, err := runtime.readyStatus(inv); err != nil {
+			return fmt.Errorf("read %s launch marker: %w", inv.Role, err)
+		} else if ready {
+			if !requireLive {
+				return nil
+			}
+			live, err := runtime.invocationLive(inv)
+			if err != nil {
+				return err
+			}
+			if !live {
+				return fmt.Errorf("%s exited before its ready handshake was accepted", inv.Role)
+			}
+			return nil
+		}
+		if status, exited, err := runtime.exitStatus(inv); err != nil {
+			return err
+		} else if exited {
+			return fmt.Errorf("%s exited with status %d before publishing its ready marker", inv.Role, status)
+		}
+		<-ticker.C
+	}
+	return fmt.Errorf("%s timed out before publishing its ready marker", inv.Role)
 }
 
 func copyOptionalCredential(source, target string) error {
@@ -311,6 +375,25 @@ func (runtime *tmuxRuntime) waitForWorker(ctx context.Context, deadlineUnixNano 
 			}
 			return fmt.Errorf("%s timed out waiting for process completion: wall-clock deadline exceeded", worker.Role)
 		}
+		pmStatus, pmExited, pmErr := runtime.exitStatus(pm)
+		if pmErr != nil {
+			return fmt.Errorf("read PM completion: %w", pmErr)
+		}
+		if pmExited {
+			stopErr := runtime.stopInvocation(worker)
+			if stopErr != nil {
+				return fmt.Errorf("PM exited unexpectedly with status %d; worker cleanup failed: %v", pmStatus, stopErr)
+			}
+			return fmt.Errorf("PM exited unexpectedly with status %d", pmStatus)
+		}
+		pmLive, pmLiveErr := runtime.invocationLive(pm)
+		if pmLiveErr != nil {
+			return fmt.Errorf("verify PM while %s is active: %w", worker.Role, pmLiveErr)
+		}
+		if !pmLive {
+			_ = runtime.stopInvocation(worker)
+			return fmt.Errorf("PM exited unexpectedly while %s was active", worker.Role)
+		}
 		status, exited, statusErr := runtime.exitStatus(worker)
 		if statusErr != nil {
 			return fmt.Errorf("read %s completion: %w", worker.Role, statusErr)
@@ -322,21 +405,11 @@ func (runtime *tmuxRuntime) waitForWorker(ctx context.Context, deadlineUnixNano 
 			if err := runtime.waitWindowAbsent(ctx, worker.Window); err != nil {
 				return fmt.Errorf("verify %s worker termination: %w", worker.Role, err)
 			}
-			if err := runtime.ensureInvocationGroupStopped(worker); err != nil {
-				return fmt.Errorf("verify %s process group termination: %w", worker.Role, err)
+			if err := runtime.ensureInvocationStopped(worker); err != nil {
+				return fmt.Errorf("verify %s owned processes terminated: %w", worker.Role, err)
 			}
+			runtime.markNaturalExit(worker.ID)
 			return nil
-		}
-		pmStatus, pmExited, pmErr := runtime.exitStatus(pm)
-		if pmErr != nil {
-			return fmt.Errorf("read PM completion: %w", pmErr)
-		}
-		if pmExited {
-			stopErr := runtime.stopInvocation(worker)
-			if stopErr != nil {
-				return fmt.Errorf("PM exited unexpectedly with status %d; worker cleanup failed: %v", pmStatus, stopErr)
-			}
-			return fmt.Errorf("PM exited unexpectedly with status %d", pmStatus)
 		}
 		select {
 		case <-ctx.Done():
@@ -358,11 +431,12 @@ func (runtime *tmuxRuntime) invocationLive(inv invocation) (bool, error) {
 	if err != nil || !exists {
 		return false, err
 	}
-	pgid, ready, err := runtime.processGroupID(inv)
+	_, ready, err := runtime.readyStatus(inv)
 	if err != nil || !ready {
 		return false, err
 	}
-	return processGroupExists(pgid)
+	pids, err := ownedProcessIDs(inv.OwnershipToken)
+	return len(pids) != 0, err
 }
 
 func (runtime *tmuxRuntime) stopInvocation(inv invocation) error {
@@ -377,7 +451,7 @@ func (runtime *tmuxRuntime) stopInvocation(inv invocation) error {
 			failures = append(failures, fmt.Errorf("kill tmux window: %w: %s", killErr, strings.TrimSpace(string(output))))
 		}
 	}
-	if err := runtime.terminateInvocationGroup(inv); err != nil {
+	if err := runtime.terminateInvocation(inv); err != nil {
 		failures = append(failures, err)
 	}
 	if len(failures) == 0 {
@@ -387,7 +461,13 @@ func (runtime *tmuxRuntime) stopInvocation(inv invocation) error {
 			failures = append(failures, err)
 		}
 	}
-	return errors.Join(failures...)
+	result := errors.Join(failures...)
+	if result == nil {
+		if record := runtime.invocationRecord(inv.ID); record != nil {
+			record.retired = true
+		}
+	}
+	return result
 }
 
 func (runtime *tmuxRuntime) cleanup(requirePMLive bool, pm invocation) error {
@@ -413,9 +493,15 @@ func (runtime *tmuxRuntime) cleanup(requirePMLive bool, pm invocation) error {
 			failures = append(failures, fmt.Errorf("kill tmux session: %w: %s", killErr, strings.TrimSpace(string(output))))
 		}
 	}
-	for _, inv := range runtime.invocations {
-		if err := runtime.terminateInvocationGroup(inv); err != nil {
-			failures = append(failures, fmt.Errorf("terminate %s process group: %w", inv.Role, err))
+	for index := range runtime.invocations {
+		inv := &runtime.invocations[index]
+		if !inv.started || inv.retired {
+			continue
+		}
+		if err := runtime.terminateInvocation(*inv); err != nil {
+			failures = append(failures, fmt.Errorf("terminate %s owned processes: %w", inv.Role, err))
+		} else {
+			inv.retired = true
 		}
 	}
 	deadline := time.Now().Add(runtime.commandTimeout)
@@ -512,45 +598,52 @@ func (runtime *tmuxRuntime) exitStatus(inv invocation) (int, bool, error) {
 	return status, true, nil
 }
 
-func (runtime *tmuxRuntime) processGroupID(inv invocation) (int, bool, error) {
-	data, err := runtime.controlStore.readRegular(inv.PGIDRelative)
+func (runtime *tmuxRuntime) readyStatus(inv invocation) (int, bool, error) {
+	data, err := runtime.controlStore.readRegular(inv.ReadyRelative)
 	if errors.Is(err, os.ErrNotExist) {
 		return 0, false, nil
 	}
 	if err != nil {
 		return 0, false, err
 	}
-	pgid, err := strconv.Atoi(strings.TrimSpace(string(data)))
-	if err != nil || pgid <= 0 {
-		return 0, false, fmt.Errorf("invalid process-group marker for %s", inv.ID)
+	pid, err := strconv.Atoi(strings.TrimSpace(string(data)))
+	if err != nil || pid <= 0 {
+		return 0, false, fmt.Errorf("invalid ready marker for %s", inv.ID)
 	}
-	return pgid, true, nil
+	return pid, true, nil
 }
 
-func (runtime *tmuxRuntime) terminateInvocationGroup(inv invocation) error {
-	pgid, ready, err := runtime.processGroupID(inv)
-	if err != nil || !ready {
-		return err
+func (runtime *tmuxRuntime) terminateInvocation(inv invocation) error {
+	record := runtime.invocationRecord(inv.ID)
+	if record == nil || !record.started {
+		return nil
 	}
-	return terminateProcessGroup(pgid, runtime.commandTimeout)
+	terminationErr := terminateOwnedProcesses(inv.OwnershipToken, runtime.commandTimeout)
+	if terminationErr == nil {
+		if _, exited, err := runtime.exitStatus(inv); err != nil {
+			terminationErr = err
+		} else if !exited {
+			terminationErr = runtime.controlStore.writeAtomic(inv.ExitRelative, []byte("143\n"), 0o600)
+		}
+	}
+	return terminationErr
 }
 
-func (runtime *tmuxRuntime) ensureInvocationGroupStopped(inv invocation) error {
-	pgid, ready, err := runtime.processGroupID(inv)
+func (runtime *tmuxRuntime) ensureInvocationStopped(inv invocation) error {
+	pids, err := ownedProcessIDs(inv.OwnershipToken)
 	if err != nil {
 		return err
 	}
-	if !ready {
-		return fmt.Errorf("process-group marker is missing for %s", inv.ID)
-	}
-	exists, err := processGroupExists(pgid)
-	if err != nil {
-		return err
-	}
-	if exists {
-		return fmt.Errorf("process group %d remains for %s", pgid, inv.ID)
+	if len(pids) != 0 {
+		return fmt.Errorf("owned processes remain for %s: %v", inv.ID, pids)
 	}
 	return nil
+}
+
+func (runtime *tmuxRuntime) markNaturalExit(id string) {
+	if record := runtime.invocationRecord(id); record != nil {
+		record.retired = true
+	}
 }
 
 func (runtime *tmuxRuntime) runCommand(arguments ...string) ([]byte, error) {
@@ -571,6 +664,10 @@ func (runtime *tmuxRuntime) archive(inv *invocation, destination *artifactStore)
 	if inv.archived {
 		return nil
 	}
+	if !inv.started {
+		inv.archived = true
+		return nil
+	}
 	for _, item := range []struct {
 		source string
 		target string
@@ -580,15 +677,72 @@ func (runtime *tmuxRuntime) archive(inv *invocation, destination *artifactStore)
 		{inv.LogRelative, filepath.Join(".control", "logs", filepath.Base(inv.LogRelative)), 0o600},
 		{inv.ExitRelative, filepath.Join(".control", "exits", filepath.Base(inv.ExitRelative)), 0o600},
 	} {
-		if _, err := destination.copyRegularFrom(runtime.controlStore, item.source, item.target, item.mode); err != nil && !errors.Is(err, os.ErrNotExist) {
-			return err
+		if _, err := destination.copyRegularFrom(runtime.controlStore, item.source, item.target, item.mode); err != nil {
+			return fmt.Errorf("archive required %s audit file for %s: %w", filepath.Base(item.source), inv.ID, err)
 		}
+	}
+	if err := runtime.exportTestArtifacts(*inv); err != nil {
+		return err
 	}
 	inv.archived = true
 	return nil
 }
 
+func (runtime *tmuxRuntime) exportTestArtifacts(inv invocation) error {
+	for _, item := range []struct {
+		source    string
+		directory string
+		target    string
+	}{
+		{".write-uuter-test-log.json", runtime.fakeLogDir, inv.ID + ".json"},
+		{".write-uuter-isolation.probe", runtime.fakeLogDir, "isolation-" + inv.ID + ".probe"},
+		{".write-uuter-detached.pid", runtime.detachedPIDDir, inv.ID + ".pid"},
+		{".write-uuter-detached.pgid", runtime.detachedPIDDir, inv.ID + ".pgid"},
+	} {
+		if item.directory == "" {
+			continue
+		}
+		info, err := os.Lstat(filepath.Join(inv.WorkspacePath, item.source))
+		if errors.Is(err, os.ErrNotExist) {
+			continue
+		}
+		if err != nil {
+			return err
+		}
+		if !info.Mode().IsRegular() {
+			return fmt.Errorf("test artifact %s is not a regular file", item.source)
+		}
+		data, err := os.ReadFile(filepath.Join(inv.WorkspacePath, item.source))
+		if err != nil {
+			return err
+		}
+		if err := os.MkdirAll(item.directory, 0o700); err != nil {
+			return err
+		}
+		if err := os.WriteFile(filepath.Join(item.directory, item.target), data, 0o600); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
 func (runtime *tmuxRuntime) archiveAll(destination *artifactStore) error {
+	if runtime.removeAudit != "" && !runtime.auditRemoved {
+		runtime.auditRemoved = true
+		for index := len(runtime.invocations) - 1; index >= 0; index-- {
+			inv := runtime.invocations[index]
+			if !inv.started {
+				continue
+			}
+			relative := map[string]string{"prompt": inv.PromptRelative, "log": inv.LogRelative, "exit": inv.ExitRelative}[runtime.removeAudit]
+			if relative != "" {
+				if err := runtime.controlStore.remove(relative); err != nil {
+					return fmt.Errorf("inject missing audit source: %w", err)
+				}
+			}
+			break
+		}
+	}
 	for index := range runtime.invocations {
 		if err := runtime.archive(&runtime.invocations[index], destination); err != nil {
 			return err
@@ -601,8 +755,20 @@ func (runtime *tmuxRuntime) closePrivate() error {
 	if runtime == nil || runtime.closed {
 		return nil
 	}
-	runtime.closed = true
-	storeErr := runtime.controlStore.Close()
+	var storeErr error
+	if !runtime.storeClosed {
+		storeErr = runtime.controlStore.Close()
+		if storeErr == nil {
+			runtime.storeClosed = true
+		}
+	}
+	if runtime.failRemoveOnce {
+		runtime.failRemoveOnce = false
+		return errors.Join(storeErr, fmt.Errorf("injected private runtime removal failure"))
+	}
 	removeErr := os.RemoveAll(runtime.privateRoot)
+	if removeErr == nil {
+		runtime.closed = true
+	}
 	return errors.Join(storeErr, removeErr)
 }

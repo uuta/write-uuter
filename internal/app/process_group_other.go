@@ -10,10 +10,10 @@ import (
 
 func configureProcessGroup(_ *exec.Cmd) {}
 
-func processGroupExists(pgid int) (bool, error) {
-	return false, fmt.Errorf("process-group ownership is unsupported for process group %d", pgid)
+func ownedProcessIDs(_ string) ([]int, error) {
+	return nil, fmt.Errorf("process ownership is unsupported")
 }
 
-func terminateProcessGroup(pgid int, _ time.Duration) error {
-	return fmt.Errorf("process-group termination is unsupported for process group %d", pgid)
+func terminateOwnedProcesses(_ string, _ time.Duration) error {
+	return fmt.Errorf("process ownership is unsupported")
 }

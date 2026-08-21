@@ -24,7 +24,7 @@ func RunAgent(arguments []string) (returnErr error) {
 	promptPath := flags.String("prompt", "", "")
 	logPath := flags.String("log", "", "")
 	exitPath := flags.String("exit", "", "")
-	pgidPath := flags.String("pgid", "", "")
+	readyPath := flags.String("ready", "", "")
 	profilePath := flags.String("profile", "", "")
 	role := flags.String("role", "", "")
 	lens := flags.String("lens", "", "")
@@ -32,16 +32,17 @@ func RunAgent(arguments []string) (returnErr error) {
 	revision := flags.String("revision", "", "")
 	invocation := flags.String("invocation", "", "")
 	codexHome := flags.String("codex-home", "", "")
-	fakeLogDir := flags.String("fake-log-dir", "", "")
-	detachedPIDDir := flags.String("detached-pid-dir", "", "")
+	ownershipToken := flags.String("ownership-token", "", "")
 	exitMarkerDelay := flags.String("exit-marker-delay", "", "")
+	readyMarkerDelay := flags.String("ready-marker-delay", "", "")
 	if err := flags.Parse(arguments); err != nil || flags.NArg() != 0 {
 		return fmt.Errorf("invalid internal agent runner arguments")
 	}
 	for name, value := range map[string]string{
 		"codex": *codex, "workspace": *workspace, "prompt": *promptPath,
-		"log": *logPath, "exit": *exitPath, "pgid": *pgidPath,
+		"log": *logPath, "exit": *exitPath, "ready": *readyPath,
 		"profile": *profilePath, "role": *role, "invocation": *invocation, "codex-home": *codexHome,
+		"ownership-token": *ownershipToken,
 	} {
 		if strings.TrimSpace(value) == "" {
 			return fmt.Errorf("internal agent runner is missing %s", name)
@@ -64,6 +65,20 @@ func RunAgent(arguments []string) (returnErr error) {
 		return fmt.Errorf("open agent log: %w", err)
 	}
 	defer logFile.Close()
+	if err := os.MkdirAll(filepath.Join(*workspace, ".tmp"), 0o700); err != nil {
+		return fmt.Errorf("create agent temporary directory: %w", err)
+	}
+	if err := os.Setenv("WRITE_UUTER_OWNERSHIP_TOKEN", *ownershipToken); err != nil {
+		return fmt.Errorf("set invocation ownership: %w", err)
+	}
+	if *readyMarkerDelay != "" {
+		if delay, parseErr := time.ParseDuration(*readyMarkerDelay); parseErr == nil {
+			time.Sleep(delay)
+		}
+	}
+	if err := publishInteger(*readyPath, os.Getpid(), ""); err != nil {
+		return fmt.Errorf("publish agent ready marker: %w", err)
+	}
 
 	codexArguments := []string{
 		"--dangerously-bypass-approvals-and-sandbox", "-C", *workspace,
@@ -79,18 +94,11 @@ func RunAgent(arguments []string) (returnErr error) {
 	command.Stdin = prompt
 	command.Stdout = logFile
 	command.Stderr = logFile
-	command.Env = agentEnvironment(*workspace, *codexHome, *role, *lens, *candidate, *revision, *invocation, *fakeLogDir, *detachedPIDDir)
+	command.Env = agentEnvironment(*workspace, *codexHome, *role, *lens, *candidate, *revision, *invocation, *ownershipToken)
 	configureProcessGroup(command)
 	if err := command.Start(); err != nil {
 		return fmt.Errorf("start Codex: %w", err)
 	}
-	pgid := command.Process.Pid
-	if err := publishInteger(*pgidPath, pgid, ""); err != nil {
-		_ = terminateProcessGroup(pgid, 2*time.Second)
-		_ = command.Wait()
-		return fmt.Errorf("publish agent process group: %w", err)
-	}
-
 	waitErr := command.Wait()
 	status = 0
 	if waitErr != nil {
@@ -101,9 +109,9 @@ func RunAgent(arguments []string) (returnErr error) {
 			status = 1
 		}
 	}
-	if err := terminateProcessGroup(pgid, 2*time.Second); err != nil {
+	if err := terminateOwnedProcesses(*ownershipToken, 2*time.Second); err != nil {
 		status = 1
-		_, _ = fmt.Fprintf(logFile, "\nwrite-uuter: process-group cleanup failed: %v\n", err)
+		_, _ = fmt.Fprintf(logFile, "\nwrite-uuter: owned-process cleanup failed: %v\n", err)
 	}
 	if status != 0 {
 		return fmt.Errorf("Codex exited with status %d", status)
@@ -111,9 +119,9 @@ func RunAgent(arguments []string) (returnErr error) {
 	return nil
 }
 
-func agentEnvironment(workspace, codexHome, role, lens string, candidate int, revision, invocation, fakeLogDir, detachedPIDDir string) []string {
+func agentEnvironment(workspace, codexHome, role, lens string, candidate int, revision, invocation, ownershipToken string) []string {
 	allowed := []string{
-		"HOME", "USER", "LOGNAME", "PATH", "SHELL", "TMPDIR", "LANG", "LC_ALL", "TERM",
+		"HOME", "USER", "LOGNAME", "PATH", "SHELL", "LANG", "LC_ALL", "TERM",
 		"HTTP_PROXY", "HTTPS_PROXY", "NO_PROXY", "SSL_CERT_FILE", "SSL_CERT_DIR",
 	}
 	environment := make([]string, 0, len(allowed)+6)
@@ -130,13 +138,9 @@ func agentEnvironment(workspace, codexHome, role, lens string, candidate int, re
 		"WRITE_UUTER_CANDIDATE="+strconv.Itoa(candidate),
 		"WRITE_UUTER_REVISION="+revision,
 		"WRITE_UUTER_INVOCATION="+invocation,
+		"WRITE_UUTER_OWNERSHIP_TOKEN="+ownershipToken,
+		"TMPDIR="+filepath.Join(workspace, ".tmp"),
 	)
-	if fakeLogDir != "" {
-		environment = append(environment, "WRITE_UUTER_FAKE_LOG_DIR="+fakeLogDir)
-	}
-	if detachedPIDDir != "" {
-		environment = append(environment, "WRITE_UUTER_TEST_DETACHED_PID_DIR="+detachedPIDDir)
-	}
 	return environment
 }
 

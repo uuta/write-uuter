@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"syscall"
 	"time"
 )
 
@@ -70,6 +71,10 @@ type invocationLog struct {
 }
 
 func main() {
+	if len(os.Args) == 2 && os.Args[1] == "__detached" {
+		time.Sleep(time.Minute)
+		return
+	}
 	prompt, _ := io.ReadAll(os.Stdin)
 	role := os.Getenv("WRITE_UUTER_ROLE")
 	lens := os.Getenv("WRITE_UUTER_LENS")
@@ -81,12 +86,7 @@ func main() {
 	fixtureDir := filepath.Dir(executable)
 	scenarioBytes, _ := os.ReadFile(filepath.Join(fixtureDir, "scenario"))
 	scenario := strings.TrimSpace(string(scenarioBytes))
-	logDir := os.Getenv("WRITE_UUTER_FAKE_LOG_DIR")
-	if logDir == "" {
-		logDir = filepath.Join(fixtureDir, "logs")
-	}
-	_ = os.MkdirAll(logDir, 0o755)
-	logPath := filepath.Join(logDir, fmt.Sprintf("%s-%d.json", invocation, os.Getpid()))
+	logPath := filepath.Join(workDir, ".write-uuter-test-log.json")
 	isolation := map[string]string{}
 	writeLog := func() {
 		writeJSON(logPath, invocationLog{
@@ -107,6 +107,9 @@ func main() {
 		}
 		if scenario == "timeout" || scenario == "timeout_detached" {
 			time.Sleep(time.Minute)
+		}
+		if scenario == "pm_exit_during_worker" {
+			time.Sleep(500 * time.Millisecond)
 		}
 		mustWrite(filepath.Join(workDir, "evidence", "sources.md"), "# Sources\n\nEVIDENCE_ONLY_MARKER\n\n- Local repository documentation, accessed 2026-08-20.\n")
 		mustWrite(filepath.Join(workDir, "claim-ledger.md"), "# Claim ledger\n\n- Fact: supported.\n- Firsthand observation: none.\n- Inference: labeled.\n- Opinion: labeled.\n- Unresolved: none.\n")
@@ -166,6 +169,17 @@ func runReviewer(workDir, scenario string, candidate int, lens, revision string)
 		mustWrite(filepath.Join(workDir, "context", "article.md"), "mutated\n")
 	}
 	result := reviewResult{Status: "clean", Lens: lens, ReviewedRevision: revision, Findings: []finding{}}
+	if candidate == 1 && lens == "evidence" && (scenario == "duplicate_review" || scenario == "unknown_review") {
+		mustWrite(filepath.Join(workDir, "report.md"), "# Review report\n\nNo findings.\n")
+		payload := fmt.Sprintf("{\"status\":\"clean\",\"lens\":%q,\"reviewed_revision\":%q,\"findings\":[]}", lens, revision)
+		if scenario == "duplicate_review" {
+			payload = fmt.Sprintf("{\"status\":\"clean\",\"status\":\"clean\",\"lens\":%q,\"reviewed_revision\":%q,\"findings\":[]}", lens, revision)
+		} else {
+			payload = strings.TrimSuffix(payload, "}") + ",\"unexpected\":true}"
+		}
+		mustWrite(filepath.Join(workDir, "result.json"), payload+"\n")
+		return
+	}
 	if scenario == "stale" && candidate == 1 && lens == "evidence" {
 		result.ReviewedRevision = "sha256:stale"
 	}
@@ -179,6 +193,8 @@ func runReviewer(workDir, scenario string, candidate int, lens, revision string)
 		(scenario == "invalid_no_reason" && candidate == 1 && lens == "evidence") ||
 		(scenario == "mixed" && candidate == 1 && lens == "evidence") ||
 		(scenario == "rewrite_history" && candidate == 1 && lens == "evidence") ||
+		(scenario == "duplicate_pm" && candidate == 1 && lens == "evidence") ||
+		(scenario == "unknown_pm" && candidate == 1 && lens == "evidence") ||
 		(scenario == "detached_child_block" && candidate == 1 && lens == "evidence") ||
 		(scenario == "unbulleted_report" && candidate == 1 && lens == "evidence") ||
 		(scenario == "whitespace_finding" && candidate == 1 && lens == "evidence") ||
@@ -229,6 +245,10 @@ func standardFinding(id string) finding {
 }
 
 func runPM(workDir, scenario string) {
+	if scenario == "pm_exit_during_worker" {
+		time.Sleep(500 * time.Millisecond)
+		os.Exit(23)
+	}
 	for {
 		requestPath, err := nextRequestPath(filepath.Join(workDir, "inbox"))
 		if err != nil {
@@ -298,6 +318,12 @@ func runPM(workDir, scenario string) {
 			time.Sleep(500 * time.Millisecond)
 		}
 		jsonData, _ := json.MarshalIndent(document, "", "  ")
+		if scenario == "duplicate_pm" && current.Lens == "evidence" {
+			jsonData = []byte(strings.Replace(string(jsonData), "{", "{\n  \"reviewed_revision\": \"sha256:contradictory\",", 1))
+		}
+		if scenario == "unknown_pm" && current.Lens == "evidence" {
+			jsonData = []byte(strings.Replace(string(jsonData), "{", "{\n  \"unexpected\": true,", 1))
+		}
 		payload := "```json\n" + string(jsonData) + "\n```\n"
 		if scenario == "multiple_pm_documents" && current.Lens == "evidence" {
 			payload += "```json\n{}\n```\n"
@@ -318,7 +344,7 @@ func probeIsolation(workDir string) {
 	paths := map[string]string{
 		"durable":    filepath.Join(runDir, "brief.md"),
 		"prior_lens": filepath.Join(runDir, "reviews", "article-001", "evidence", "report.md"),
-		"host":       filepath.Join(os.Getenv("HOME"), ".codex", "RTK.md"),
+		"host":       "/etc/hosts",
 	}
 	result := map[string]string{}
 	for label, path := range paths {
@@ -338,19 +364,39 @@ func probeIsolation(workDir string) {
 			result[label] = err.Error()
 		}
 	}
+	if err := syscall.Kill(1, 0); err == nil {
+		result["unrelated_process"] = "SIGNAL_SUCCEEDED"
+	} else {
+		result["unrelated_process"] = err.Error()
+	}
+	for _, name := range []string{"WRITE_UUTER_FAKE_LOG_DIR", "WRITE_UUTER_TEST_DETACHED_PID_DIR"} {
+		if value := os.Getenv(name); value != "" {
+			result[name] = value
+		} else {
+			result[name] = "ABSENT"
+		}
+	}
 	data, _ := json.MarshalIndent(result, "", "  ")
-	mustWrite(filepath.Join(os.Getenv("WRITE_UUTER_FAKE_LOG_DIR"), "isolation-"+os.Getenv("WRITE_UUTER_INVOCATION")+".probe"), string(data)+"\n")
+	mustWrite(filepath.Join(workDir, ".write-uuter-isolation.probe"), string(data)+"\n")
 }
 
 func startDetachedChild() {
-	command := exec.Command("/bin/sh", "-c", "exec sleep 60")
+	executable, err := os.Executable()
+	if err != nil {
+		panic(err)
+	}
+	command := exec.Command(executable, "__detached")
+	command.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
 	if err := command.Start(); err != nil {
 		panic(err)
 	}
-	directory := os.Getenv("WRITE_UUTER_TEST_DETACHED_PID_DIR")
-	if directory != "" {
-		mustWrite(filepath.Join(directory, fmt.Sprintf("%d.pid", command.Process.Pid)), fmt.Sprintf("%d\n", command.Process.Pid))
+	mustWrite(filepath.Join(os.Getenv("WRITE_UUTER_WORK_DIR"), ".write-uuter-detached.pid"), fmt.Sprintf("%d\n", command.Process.Pid))
+	pgid, err := syscall.Getpgid(command.Process.Pid)
+	if err != nil {
+		panic(err)
 	}
+	mustWrite(filepath.Join(os.Getenv("WRITE_UUTER_WORK_DIR"), ".write-uuter-detached.pgid"), fmt.Sprintf("%d\n", pgid))
+	_ = command.Process.Release()
 }
 
 func nextRequestPath(inbox string) (string, error) {

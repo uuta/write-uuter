@@ -307,6 +307,14 @@ func TestBlackBoxTimeoutBoundsPrivateRunnerAndDetachedGroup(t *testing.T) {
 		if parseErr != nil {
 			t.Fatal(parseErr)
 		}
+		pgidData, readErr := os.ReadFile(strings.TrimSuffix(path, ".pid") + ".pgid")
+		if readErr != nil {
+			t.Fatal(readErr)
+		}
+		pgid, parseErr := strconv.Atoi(strings.TrimSpace(string(pgidData)))
+		if parseErr != nil || pgid != pid {
+			t.Fatalf("child did not create a new session/process group: pid=%d pgid=%d err=%v", pid, pgid, parseErr)
+		}
 		assertPIDGone(t, pid)
 	}
 	assertProcessesGone(t, readInvocationRecords(t, fixtureDir))
@@ -540,11 +548,16 @@ func TestBlackBoxAgentWorkspaceCannotReplaceHostLauncher(t *testing.T) {
 }
 
 func TestBlackBoxReviewerHostFilesystemReadsAreDenied(t *testing.T) {
-	run := executeScenario(t, "filesystem_isolation")
-	if run.err != nil {
-		t.Fatalf("CLI failed: %v\n%s", run.err, run.output)
+	binary, fake, runDir, fixtureDir := prepareScenario(t, "filesystem_isolation")
+	command := newRunCommand(t, binary, fake, runDir, "5s", filepath.Join(repositoryRoot(t), "examples", "brief.md"))
+	protectedAncestor := filepath.Dir(runDir)
+	command.Env = replaceCommandEnv(command.Env, "WRITE_UUTER_FAKE_LOG_DIR", protectedAncestor)
+	command.Env = replaceCommandEnv(command.Env, "WRITE_UUTER_TEST_DETACHED_PID_DIR", protectedAncestor)
+	output, runErr := command.CombinedOutput()
+	if runErr != nil {
+		t.Fatalf("CLI failed: %v\n%s", runErr, output)
 	}
-	probePath := filepath.Join(run.fixtureDir, "logs", "isolation-008-reviewer-copy.probe")
+	probePath := filepath.Join(protectedAncestor, "isolation-008-reviewer-copy.probe")
 	data, err := os.ReadFile(probePath)
 	if err != nil {
 		t.Fatal(err)
@@ -553,11 +566,41 @@ func TestBlackBoxReviewerHostFilesystemReadsAreDenied(t *testing.T) {
 	if err := json.Unmarshal(data, &probes); err != nil {
 		t.Fatal(err)
 	}
-	for _, label := range []string{"durable", "prior_lens", "pm_workspace_parent", "controller", "host"} {
+	for _, label := range []string{"durable", "prior_lens", "pm_workspace_parent", "controller", "host", "unrelated_process"} {
 		result := strings.ToLower(probes[label])
-		if result == "" || result == "read_succeeded" || !strings.Contains(result, "not permitted") && !strings.Contains(result, "permission denied") {
+		if result == "" || strings.Contains(result, "succeeded") || !strings.Contains(result, "not permitted") && !strings.Contains(result, "permission denied") && !strings.Contains(result, "operation not permitted") {
 			t.Errorf("copy reviewer was not OS-denied %s read: %q", label, probes[label])
 		}
+	}
+	for _, name := range []string{"WRITE_UUTER_FAKE_LOG_DIR", "WRITE_UUTER_TEST_DETACHED_PID_DIR"} {
+		if probes[name] != "ABSENT" {
+			t.Errorf("controller-only test path leaked into agent environment %s=%q", name, probes[name])
+		}
+	}
+	_ = fixtureDir
+}
+
+func TestBlackBoxStrictRoutingJSONRejectsDuplicatesAndUnknownFields(t *testing.T) {
+	for _, testCase := range []struct {
+		scenario string
+		reason   string
+	}{
+		{"duplicate_review", "duplicate JSON key"},
+		{"unknown_review", "unknown field"},
+		{"duplicate_pm", "duplicate JSON key"},
+		{"unknown_pm", "unknown field"},
+	} {
+		t.Run(testCase.scenario, func(t *testing.T) {
+			run := executeScenario(t, testCase.scenario)
+			if run.err == nil {
+				t.Fatal("CLI unexpectedly accepted ambiguous routing JSON")
+			}
+			state := readWorkflow(t, run.runDir)
+			if state.Status != "blocked" || !strings.Contains(state.BlockReason, testCase.reason) {
+				t.Fatalf("unexpected workflow: %+v", state)
+			}
+			assertNoArticle(t, run.runDir)
+		})
 	}
 }
 
@@ -608,6 +651,10 @@ func TestBlackBoxUnexpectedTmuxProbeFailureIsNotAbsence(t *testing.T) {
 	if strings.Contains(string(listing), "write-uuter-") {
 		t.Fatalf("probe failure left run tmux session: %s", listing)
 	}
+	privatePaths, _ := filepath.Glob(filepath.Join(filepath.Dir(runDir), ".write-uuter-private-*"))
+	if len(privatePaths) != 0 {
+		t.Fatalf("probe failure left copied credentials behind: %v", privatePaths)
+	}
 }
 
 func TestBlackBoxFinalPMExitBlocksPublication(t *testing.T) {
@@ -620,6 +667,21 @@ func TestBlackBoxFinalPMExitBlocksPublication(t *testing.T) {
 		t.Fatalf("unexpected workflow: %+v", state)
 	}
 	assertNoArticle(t, run.runDir)
+	assertProcessesGone(t, readInvocationRecords(t, run.fixtureDir))
+}
+
+func TestBlackBoxWorkerCannotCommitAfterPMExit(t *testing.T) {
+	run := executeScenario(t, "pm_exit_during_worker")
+	if run.err == nil {
+		t.Fatal("CLI unexpectedly accepted work after PM exit")
+	}
+	state := readWorkflow(t, run.runDir)
+	if state.Status != "blocked" || !strings.Contains(state.BlockReason, "PM exited") {
+		t.Fatalf("unexpected workflow: %+v", state)
+	}
+	if _, err := os.Stat(filepath.Join(run.runDir, "evidence", "sources.md")); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("research artifact committed after PM exit: %v", err)
+	}
 	assertProcessesGone(t, readInvocationRecords(t, run.fixtureDir))
 }
 
@@ -647,6 +709,14 @@ func TestBlackBoxDetachedDescendantsAreKilledOnTerminalPaths(t *testing.T) {
 					t.Fatal(readErr)
 				}
 				pid, _ := strconv.Atoi(strings.TrimSpace(string(data)))
+				pgidData, readErr := os.ReadFile(strings.TrimSuffix(path, ".pid") + ".pgid")
+				if readErr != nil {
+					t.Fatal(readErr)
+				}
+				pgid, parseErr := strconv.Atoi(strings.TrimSpace(string(pgidData)))
+				if parseErr != nil || pgid != pid {
+					t.Fatalf("child did not detach into a new process group: pid=%d pgid=%d err=%v", pid, pgid, parseErr)
+				}
 				assertPIDGone(t, pid)
 			}
 		})
@@ -712,6 +782,83 @@ func TestBlackBoxBlockedPersistenceFailureStillRemovesPrivateRuntime(t *testing.
 		t.Fatalf("private runtime survived blocked persistence failure: %v", privatePaths)
 	}
 	assertProcessesGone(t, readInvocationRecords(t, fixtureDir))
+}
+
+func TestBlackBoxPrivateCleanupRetriesAfterRemovalFailure(t *testing.T) {
+	binary, fake, runDir, fixtureDir := prepareScenario(t, "happy")
+	command := newRunCommand(t, binary, fake, runDir, "5s", filepath.Join(repositoryRoot(t), "examples", "brief.md"))
+	command.Env = append(command.Env, "WRITE_UUTER_TEST_FAIL_PRIVATE_REMOVE_ONCE=1")
+	output, err := command.CombinedOutput()
+	if err == nil || !strings.Contains(string(output), "injected private runtime removal failure") {
+		t.Fatalf("missing injected cleanup failure: %v\n%s", err, output)
+	}
+	privatePaths, _ := filepath.Glob(filepath.Join(filepath.Dir(runDir), ".write-uuter-private-*"))
+	if len(privatePaths) != 0 {
+		t.Fatalf("retry left controller credentials behind: %v", privatePaths)
+	}
+	assertProcessesGone(t, readInvocationRecords(t, fixtureDir))
+}
+
+func TestBlackBoxMissingAuditSourcesBlockSuccess(t *testing.T) {
+	for _, source := range []string{"prompt", "log", "exit"} {
+		t.Run(source, func(t *testing.T) {
+			binary, fake, runDir, _ := prepareScenario(t, "happy")
+			command := newRunCommand(t, binary, fake, runDir, "5s", filepath.Join(repositoryRoot(t), "examples", "brief.md"))
+			command.Env = append(command.Env, "WRITE_UUTER_TEST_REMOVE_AUDIT="+source)
+			output, err := command.CombinedOutput()
+			if err == nil {
+				t.Fatalf("CLI succeeded without required %s audit: %s", source, output)
+			}
+			state := readWorkflow(t, runDir)
+			if state.Status != "blocked" || !strings.Contains(state.BlockReason, "archive required") {
+				t.Fatalf("unexpected workflow: %+v", state)
+			}
+			assertNoArticle(t, runDir)
+		})
+	}
+}
+
+func TestBlackBoxInvocationDeadlineStartsBeforePublicationAndLaunch(t *testing.T) {
+	t.Run("worker prelaunch", func(t *testing.T) {
+		binary, fake, runDir, fixtureDir := prepareScenario(t, "happy")
+		command := newRunCommand(t, binary, fake, runDir, "500ms", filepath.Join(repositoryRoot(t), "examples", "brief.md"))
+		command.Env = append(command.Env, "WRITE_UUTER_TEST_BEFORE_WORKER_START_DELAY=700ms")
+		if output, err := command.CombinedOutput(); err == nil {
+			t.Fatalf("CLI accepted a late worker launch: %s", output)
+		}
+		for _, record := range readInvocationRecords(t, fixtureDir) {
+			if record.Role == "researcher" {
+				t.Fatal("researcher started after its absolute deadline")
+			}
+		}
+	})
+	t.Run("PM post-publication", func(t *testing.T) {
+		binary, fake, runDir, _ := prepareScenario(t, "optional_invalid")
+		command := newRunCommand(t, binary, fake, runDir, "1s", filepath.Join(repositoryRoot(t), "examples", "brief.md"))
+		command.Env = append(command.Env, "WRITE_UUTER_TEST_AFTER_PM_REQUEST_DELAY=1200ms")
+		if output, err := command.CombinedOutput(); err == nil {
+			t.Fatalf("CLI accepted a late PM decision: %s", output)
+		}
+		state := readWorkflow(t, runDir)
+		if state.Status != "blocked" || !strings.Contains(state.BlockReason, "PM timed out") {
+			t.Fatalf("unexpected workflow: %+v", state)
+		}
+	})
+}
+
+func TestBlackBoxReadyPublicationTimeoutCleansOwnedRunner(t *testing.T) {
+	binary, fake, runDir, fixtureDir := prepareScenario(t, "happy")
+	command := newRunCommand(t, binary, fake, runDir, "400ms", filepath.Join(repositoryRoot(t), "examples", "brief.md"))
+	command.Env = append(command.Env, "WRITE_UUTER_TEST_READY_MARKER_DELAY=2s")
+	output, err := command.CombinedOutput()
+	if err == nil || !strings.Contains(string(output), "ready marker") {
+		t.Fatalf("missing ready-marker timeout: %v\n%s", err, output)
+	}
+	assertProcessesGone(t, readInvocationRecords(t, fixtureDir))
+	privatePaths, _ := filepath.Glob(filepath.Join(filepath.Dir(runDir), ".write-uuter-private-*"))
+	if len(privatePaths) != 0 {
+		t.Fatalf("unpublished owned runner survived cleanup: %v", privatePaths)
+	}
 }
 
 func TestBlackBoxAssetTreeSymlinksAreRejected(t *testing.T) {
@@ -901,6 +1048,27 @@ func TestBlackBoxInvalidBriefReportsAllProblemsWithoutRun(t *testing.T) {
 	}
 }
 
+func TestBlackBoxExplicitPromptDirectoryNeverFallsBack(t *testing.T) {
+	binary, fake := buildBinaries(t)
+	temporary := t.TempDir()
+	runDir := filepath.Join(temporary, "run")
+	missing := filepath.Join(temporary, "missing-prompts")
+	command := exec.Command(binary, "run",
+		"--brief", filepath.Join(repositoryRoot(t), "examples", "brief.md"),
+		"--run-dir", runDir,
+		"--codex", fake,
+		"--prompts-dir", missing,
+	)
+	command.Dir = repositoryRoot(t)
+	output, err := command.CombinedOutput()
+	if err == nil || !strings.Contains(string(output), "explicit prompt directory") {
+		t.Fatalf("explicit missing override silently fell back: %v\n%s", err, output)
+	}
+	if _, err := os.Stat(runDir); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("invalid explicit prompts created a run: %v", err)
+	}
+}
+
 func TestBlackBoxBriefHeadingsAreCaseInsensitive(t *testing.T) {
 	data, err := os.ReadFile(filepath.Join(repositoryRoot(t), "examples", "brief.md"))
 	if err != nil {
@@ -1008,6 +1176,17 @@ func newRunCommand(t *testing.T, binary, fake, runDir, timeout, briefPath string
 	command.Dir = repositoryRoot(t)
 	command.Env = append(os.Environ(), "WRITE_UUTER_FAKE_LOG_DIR="+filepath.Join(filepath.Dir(fake), "logs"))
 	return command
+}
+
+func replaceCommandEnv(environment []string, name, value string) []string {
+	prefix := name + "="
+	result := make([]string, 0, len(environment)+1)
+	for _, item := range environment {
+		if !strings.HasPrefix(item, prefix) {
+			result = append(result, item)
+		}
+	}
+	return append(result, prefix+value)
 }
 
 func buildBinaries(t *testing.T) (string, string) {

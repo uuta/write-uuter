@@ -110,7 +110,7 @@ truth. Schema version 1 records:
 
 The durable `.control/` directory is controller-owned and preserves audit
 copies of generated prompt assignments, per-invocation logs, and natural exit
-markers. The live runner executable, sandbox profiles, process-group records,
+markers. The live runner executable, sandbox profiles, ready/ownership records,
 PM requests, and agent workspaces exist only in a controller-private sibling
 directory. They are removed after verified tmux/process-group cleanup and are
 never copied into `.control/`. Completion markers are atomically renamed into

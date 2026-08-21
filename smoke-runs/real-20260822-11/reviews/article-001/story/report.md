@@ -1,0 +1,9 @@
+# Story review
+
+status: clean
+
+lens: story
+
+reviewed_revision: sha256:d1d12a512a27490f7d955080de6e81df86d3c6c171914906c87c86320f2aa1c4
+
+findings: []

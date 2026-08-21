@@ -69,11 +69,14 @@ directory. Go stages only its allowed inputs, waits for a natural successful
 exit marker and tmux-window disappearance, validates output without following
 symlinks, and then copies regular files into the run. The marker is published
 by a same-directory temporary-file rename only after the Codex process and its
-descendants are gone. The controller-private runner, process-group records,
+descendants are gone. The controller-private runner, ownership/ready records,
 live PM requests, and other launch-critical state are siblings of—not children
-of—agent workspaces. The macOS native sandbox denies agents access to those
-paths, the durable run, other role workspaces, and host files outside the
-active workspace. Each lens uses a fresh Codex invocation.
+of—agent workspaces. A default-deny macOS native sandbox gives agents only
+system runtime reads plus their current workspace and isolated Codex home; it
+denies unrelated host, durable-run, prior-lens, PM, and controller-private
+access. Controller-only test paths never become sandbox rules or agent
+environment variables.
+Each lens uses a fresh Codex invocation.
 
 Every agent has the configured timeout, and tmux lifecycle commands have their
 own short bound. The controller enforces both a context timer and an absolute
@@ -82,7 +85,7 @@ extend an invocation past its contract. A timeout, premature exit, malformed
 artifact, stale review,
 cleanup failure, human decision, or exhausted candidate budget sets an
 actionable `workflow.json.block_reason`. Go verifies that the dedicated tmux
-session and every recorded invocation process group are gone before either
+session and every unresolved invocation identity are gone before either
 terminal result. On success it requires the persistent PM to still be live,
 then revalidates the candidate hash, every final review, each PM request
 binding, and each accepted classification list before publishing `article.md`

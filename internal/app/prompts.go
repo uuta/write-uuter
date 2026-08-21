@@ -21,10 +21,17 @@ var requiredPromptFiles = []string{
 }
 
 func resolvePromptsDir(configured string) (string, error) {
-	var candidates []string
 	if configured != "" {
-		candidates = append(candidates, configured)
+		absolute, err := filepath.Abs(configured)
+		if err != nil {
+			return "", fmt.Errorf("resolve explicit prompt directory: %w", err)
+		}
+		if err := validatePromptsDir(absolute); err != nil {
+			return "", fmt.Errorf("explicit prompt directory %s: %w", absolute, err)
+		}
+		return absolute, nil
 	}
+	var candidates []string
 	if fromEnvironment := os.Getenv("WRITE_UUTER_PROMPTS_DIR"); fromEnvironment != "" {
 		candidates = append(candidates, fromEnvironment)
 	}
@@ -44,18 +51,24 @@ func resolvePromptsDir(configured string) (string, error) {
 		if err != nil {
 			continue
 		}
-		valid := true
-		for _, name := range requiredPromptFiles {
-			if info, err := os.Stat(filepath.Join(absolute, name)); err != nil || info.IsDir() {
-				valid = false
-				break
-			}
-		}
-		if valid {
+		if validatePromptsDir(absolute) == nil {
 			return absolute, nil
 		}
 	}
 	return "", fmt.Errorf("prompt directory not found or incomplete; use --prompts-dir")
+}
+
+func validatePromptsDir(directory string) error {
+	for _, name := range requiredPromptFiles {
+		info, err := os.Stat(filepath.Join(directory, name))
+		if err != nil {
+			return fmt.Errorf("required prompt %s: %w", name, err)
+		}
+		if !info.Mode().IsRegular() {
+			return fmt.Errorf("required prompt %s is not a regular file", name)
+		}
+	}
+	return nil
 }
 
 func loadPrompt(dir, name string) (string, error) {

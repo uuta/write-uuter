@@ -32,7 +32,7 @@ contain no future lens. The PM response must be exactly one complete fenced
 JSON document. Go independently validates the decision file and applies routing
 and the three-candidate limit. Human judgment takes precedence if a response
 also contains a must-fix decision. A response is accepted only while the
-persistent PM process, tmux window, and process group are all live.
+persistent PM process, tmux window, and ready/ownership identity are all live.
 
 ## Researcher
 
@@ -71,8 +71,9 @@ revision, plus:
 Each owns `reviews/article-00N/<lens>/result.json` and `report.md`. The report
 must contain one complete five-field entry for every JSON finding in the same
 order. The process's filesystem contains only the listed inputs under
-`context/` and its output root. macOS Seatbelt enforcement denies reads of the
-durable run, prior-lens/PM/controller workspaces, and unrelated host files. The
+`context/` and its output root. Default-deny macOS Seatbelt enforcement denies
+unrelated host paths as well as reads of the
+durable run and prior-lens/PM/controller workspaces. The
 controller uses this external boundary instead of nesting Codex's own sandbox,
 which macOS does not permit. This
 implementation omits prior-lens conversation and reports from reviewer

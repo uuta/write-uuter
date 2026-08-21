@@ -4,24 +4,13 @@ package app
 
 import (
 	"fmt"
-	"os"
 	"path/filepath"
 	"strconv"
 	"strings"
 )
 
-func isolationProfile(workspace, codexHome, runDir, privateRoot, codexPath, testLogDir, detachedPIDDir string) (string, error) {
-	home, err := os.UserHomeDir()
-	if err != nil {
-		return "", err
-	}
-	paths := []*string{&home, &workspace, &codexHome, &runDir, &privateRoot, &codexPath}
-	if testLogDir != "" {
-		paths = append(paths, &testLogDir)
-	}
-	if detachedPIDDir != "" {
-		paths = append(paths, &detachedPIDDir)
-	}
+func isolationProfile(workspace, codexHome, codexPath string) (string, error) {
+	paths := []*string{&workspace, &codexHome, &codexPath}
 	for _, path := range paths {
 		canonical, canonicalErr := canonicalIsolationPath(*path)
 		if canonicalErr != nil {
@@ -30,9 +19,13 @@ func isolationProfile(workspace, codexHome, runDir, privateRoot, codexPath, test
 		*path = canonical
 	}
 	var profile strings.Builder
-	profile.WriteString("(version 1)\n(allow default)\n")
-	for _, denied := range []string{home, filepath.Dir(runDir), privateRoot} {
-		fmt.Fprintf(&profile, "(deny file-read* file-write* (subpath %s))\n", strconv.Quote(denied))
+	profile.WriteString("(version 1)\n(deny default)\n(import \"system.sb\")\n")
+	profile.WriteString("(allow process-exec process-fork)\n")
+	profile.WriteString("(allow network*)\n")
+	profile.WriteString("(allow mach-lookup)\n")
+	profile.WriteString("(allow sysctl-read)\n")
+	for _, readable := range []string{"/System", "/usr", "/bin", "/sbin", "/dev", "/Library/Apple", "/private/etc/ssl"} {
+		fmt.Fprintf(&profile, "(allow file-read* (subpath %s))\n", strconv.Quote(readable))
 	}
 	metadataPaths := append(pathAncestors(workspace), pathAncestors(codexHome)...)
 	seenMetadata := make(map[string]bool)
@@ -46,11 +39,6 @@ func isolationProfile(workspace, codexHome, runDir, privateRoot, codexPath, test
 	fmt.Fprintf(&profile, "(allow file-read* file-write* (subpath %s))\n", strconv.Quote(workspace))
 	fmt.Fprintf(&profile, "(allow file-read* file-write* (subpath %s))\n", strconv.Quote(codexHome))
 	fmt.Fprintf(&profile, "(allow file-read* (subpath %s))\n", strconv.Quote(filepath.Dir(codexPath)))
-	for _, writable := range []string{testLogDir, detachedPIDDir} {
-		if writable != "" {
-			fmt.Fprintf(&profile, "(allow file-read* file-write* (subpath %s))\n", strconv.Quote(writable))
-		}
-	}
 	return profile.String(), nil
 }
 
