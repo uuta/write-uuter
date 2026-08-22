@@ -2,6 +2,11 @@
 
 package app
 
-// Darwin has no Linux-style child-subreaper primitive. The stable process
-// handle/identity implementation remains the containment boundary there.
-func enableProcessBoundary() error { return nil }
+import "fmt"
+
+// Darwin does not expose a child-subreaper or equivalent lossless descendant
+// boundary to this stdlib-only controller. Refuse to launch Codex rather than
+// claiming that ancestry sampling is a complete containment mechanism.
+func enableProcessBoundary() error {
+	return fmt.Errorf("lossless process boundary unavailable on darwin; refusing Codex launch")
+}
