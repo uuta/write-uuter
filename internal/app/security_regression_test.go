@@ -2,9 +2,28 @@ package app
 
 import (
 	"os"
+	"os/exec"
 	"path/filepath"
 	"testing"
 )
+
+func TestPrivateRuntimeAuditBlocksRemovalWhileTrackedProcessRemains(t *testing.T) {
+	runtime := &tmuxRuntime{privateRoot: t.TempDir()}
+	command := exec.Command("sleep", "30", runtime.privateRoot)
+	if err := command.Start(); err != nil {
+		t.Fatal(err)
+	}
+	if err := runtime.auditPrivateProcesses(); err == nil {
+		t.Fatal("private runtime audit accepted a launched process")
+	}
+	if err := command.Process.Kill(); err != nil {
+		t.Fatal(err)
+	}
+	_, _ = command.Process.Wait()
+	if err := runtime.auditPrivateProcesses(); err != nil {
+		t.Fatalf("private runtime audit retained a dead process: %v", err)
+	}
+}
 
 func TestProxyWithoutUserinfoAcceptsOnlyCredentialFreeOrigin(t *testing.T) {
 	for _, value := range []string{

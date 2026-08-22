@@ -677,6 +677,9 @@ func (runtime *tmuxRuntime) closeCredentials() error {
 	if runtime == nil {
 		return nil
 	}
+	if err := runtime.auditPrivateProcesses(); err != nil {
+		return err
+	}
 	deadline := time.Now().Add(runtime.commandTimeout)
 	var lastErr error
 	for {
@@ -695,6 +698,33 @@ func (runtime *tmuxRuntime) closeCredentials() error {
 		}
 		time.Sleep(25 * time.Millisecond)
 	}
+}
+
+// auditPrivateProcesses is the final controller-owned boundary before private
+// state is removed. A runner can disappear while a launched client remains
+// reparented; in that case the manifest is no longer sufficient, but the
+// private executable/workspace path is still an exact identity anchor.
+func (runtime *tmuxRuntime) auditPrivateProcesses() error {
+	if runtime == nil || runtime.privateRoot == "" {
+		return nil
+	}
+	output, err := exec.Command("ps", "-axo", "pid=,command=").Output()
+	if err != nil {
+		return fmt.Errorf("audit private runtime processes: %w", err)
+	}
+	self := strconv.Itoa(os.Getpid())
+	var matches []string
+	for _, line := range strings.Split(string(output), "\n") {
+		fields := strings.Fields(line)
+		if len(fields) < 2 || fields[0] == self || !strings.Contains(line, runtime.privateRoot) {
+			continue
+		}
+		matches = append(matches, strings.TrimSpace(line))
+	}
+	if len(matches) != 0 {
+		return fmt.Errorf("private runtime processes remain: %s", strings.Join(matches, "; "))
+	}
+	return nil
 }
 
 func (runtime *tmuxRuntime) sessionExists() (bool, error) {
@@ -930,6 +960,9 @@ func (runtime *tmuxRuntime) closePrivate() error {
 	var closeErr error
 	var lastRemoveErr error
 	for {
+		if auditErr := runtime.auditPrivateProcesses(); auditErr != nil {
+			return errors.Join(closeErr, auditErr)
+		}
 		if !runtime.storeClosed {
 			if err := runtime.controlStore.Close(); err != nil {
 				closeErr = errors.Join(closeErr, err)
