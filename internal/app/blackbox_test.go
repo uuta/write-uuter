@@ -277,17 +277,19 @@ func TestBlackBoxTimeoutBoundsPrivateRunnerAndDetachedGroup(t *testing.T) {
 	t.Setenv("TMUX_TMPDIR", tmuxDirectory)
 	binary, fake, runDir, fixtureDir := prepareScenario(t, "timeout_detached")
 	pidDirectory := t.TempDir()
-	command := newRunCommand(t, binary, fake, runDir, "1s", filepath.Join(repositoryRoot(t), "examples", "brief.md"))
+	command := newRunCommand(t, binary, fake, runDir, "5s", filepath.Join(repositoryRoot(t), "examples", "brief.md"))
 	command.Env = append(command.Env,
 		"WRITE_UUTER_TEST_DETACHED_PID_DIR="+pidDirectory,
 		"WRITE_UUTER_TEST_EXIT_MARKER_DELAY=2s",
+		"WRITE_UUTER_TEST_WORKER_READY_FILE=.write-uuter-detached.ready",
+		"WRITE_UUTER_TEST_WORKER_ACTIVE_TIMEOUT=250ms",
 	)
 	started := time.Now()
 	output, err := command.CombinedOutput()
 	if err == nil {
 		t.Fatalf("CLI unexpectedly succeeded: %s", output)
 	}
-	if elapsed := time.Since(started); elapsed > 5*time.Second {
+	if elapsed := time.Since(started); elapsed > 8*time.Second {
 		t.Fatalf("private runner timeout took %s: %s", elapsed, output)
 	}
 	state := readWorkflow(t, runDir)
@@ -600,11 +602,23 @@ func TestBlackBoxAgentWorkspaceCannotReplaceHostLauncher(t *testing.T) {
 }
 
 func TestBlackBoxReviewerHostFilesystemReadsAreDenied(t *testing.T) {
+	for name, arguments := range map[string][]string{
+		"/usr/bin/security":  {"list-keychains"},
+		"/usr/bin/osascript": {"-e", "use scripting additions", "-e", "clipboard info"},
+	} {
+		probe := exec.Command(name, arguments...)
+		probe.Stdout = nil
+		probe.Stderr = nil
+		if err := probe.Run(); err != nil {
+			t.Fatalf("host service control probe %s is unavailable: %v", name, err)
+		}
+	}
 	binary, fake, runDir, fixtureDir := prepareScenario(t, "filesystem_isolation")
 	command := newRunCommand(t, binary, fake, runDir, "5s", filepath.Join(repositoryRoot(t), "examples", "brief.md"))
 	protectedAncestor := filepath.Dir(runDir)
 	credentialHome := t.TempDir()
 	const credentialSecret = "WRITE_UUTER_TOOL_BOUNDARY_SECRET"
+	const proxySecret = "WRITE_UUTER_PROXY_USERINFO_SECRET"
 	if err := os.WriteFile(filepath.Join(credentialHome, "auth.json"), []byte(credentialSecret+"\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
@@ -612,11 +626,14 @@ func TestBlackBoxReviewerHostFilesystemReadsAreDenied(t *testing.T) {
 		t.Fatal(err)
 	}
 	command.Env = replaceCommandEnv(command.Env, "CODEX_HOME", credentialHome)
+	command.Env = replaceCommandEnv(command.Env, "HTTP_PROXY", "http://probe:"+proxySecret+"@127.0.0.1:9")
+	command.Env = replaceCommandEnv(command.Env, "HTTPS_PROXY", "http://probe:"+proxySecret+"@127.0.0.1:9")
 	command.Env = replaceCommandEnv(command.Env, "WRITE_UUTER_FAKE_LOG_DIR", protectedAncestor)
 	command.Env = replaceCommandEnv(command.Env, "WRITE_UUTER_TEST_DETACHED_PID_DIR", protectedAncestor)
 	output, runErr := command.CombinedOutput()
 	if runErr != nil {
-		t.Fatalf("CLI failed: %v\n%s", runErr, output)
+		pmLog, _ := os.ReadFile(filepath.Join(runDir, ".control", "logs", "001-pm.log"))
+		t.Fatalf("CLI failed: %v\n%s\nPM log:\n%s", runErr, output, pmLog)
 	}
 	probePath := filepath.Join(protectedAncestor, "isolation-008-reviewer-copy.probe")
 	data, err := os.ReadFile(probePath)
@@ -633,8 +650,21 @@ func TestBlackBoxReviewerHostFilesystemReadsAreDenied(t *testing.T) {
 			t.Errorf("copy reviewer was not OS-denied %s read: %q", label, probes[label])
 		}
 	}
-	if strings.Contains(string(data), credentialSecret) {
-		t.Fatal("model-invoked credential probe disclosed staged authentication")
+	for _, label := range []string{"tool_keychain", "tool_pasteboard"} {
+		if result := strings.ToLower(probes[label]); result == "" || strings.Contains(result, "succeeded") {
+			t.Errorf("host control probe succeeded across model-tool boundary: %s=%q", label, probes[label])
+		}
+	}
+	if result := strings.ToLower(probes["exact_client_reexec"]); strings.Contains(result, "succeeded") || !strings.Contains(result, "not permitted") && !strings.Contains(result, "permission denied") && !strings.Contains(result, "operation not permitted") {
+		t.Errorf("single-use privileged client path was reusable: %q", probes["exact_client_reexec"])
+	}
+	if strings.Contains(string(data), credentialSecret) || strings.Contains(string(data), proxySecret) {
+		t.Fatal("model-invoked probe disclosed staged authentication or proxy userinfo")
+	}
+	for _, name := range []string{"proxy_http_proxy", "proxy_https_proxy"} {
+		if probes[name] != "ABSENT" {
+			t.Errorf("credential-bearing ambient proxy survived sanitization: %s=%q", name, probes[name])
+		}
 	}
 	for _, name := range []string{"WRITE_UUTER_FAKE_LOG_DIR", "WRITE_UUTER_TEST_DETACHED_PID_DIR"} {
 		if probes[name] != "ABSENT" {
@@ -657,6 +687,44 @@ func TestBlackBoxPMDecisionRequiresPresentNonNullDecisionArrays(t *testing.T) {
 			}
 			assertNoArticle(t, run.runDir)
 		})
+	}
+}
+
+func TestBlackBoxCopyStyleGuideUsesContentRootNotPromptBundle(t *testing.T) {
+	binary, fake, runDir, fixtureDir := prepareScenario(t, "happy")
+	contentRoot := t.TempDir()
+	const styleMarker = "CONTENT_ROOT_COPY_STYLE_MARKER"
+	if err := os.WriteFile(filepath.Join(contentRoot, "STYLE.md"), []byte("# Style\n\n"+styleMarker+"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	command := newRunCommand(t, binary, fake, runDir, "5s", filepath.Join(repositoryRoot(t), "examples", "brief.md"))
+	command.Dir = contentRoot
+	if output, err := command.CombinedOutput(); err != nil {
+		pmLog, _ := os.ReadFile(filepath.Join(runDir, ".control", "logs", "001-pm.log"))
+		t.Fatalf("CLI failed with external prompt bundle and content-root style guide: %v\n%s\nPM log:\n%s", err, output, pmLog)
+	}
+	seenCopy := false
+	for _, record := range readInvocationRecords(t, fixtureDir) {
+		if !strings.HasPrefix(record.Role, "reviewer_") {
+			continue
+		}
+		hasStyleFile := false
+		for _, relative := range record.WorkspaceFiles {
+			if relative == "context/style-guide.md" {
+				hasStyleFile = true
+			}
+		}
+		if record.Lens == "copy" {
+			seenCopy = true
+			if !strings.Contains(record.Prompt, styleMarker) || !hasStyleFile {
+				t.Errorf("Copy reviewer did not receive content-root style guide: files=%v", record.WorkspaceFiles)
+			}
+		} else if strings.Contains(record.Prompt, styleMarker) || hasStyleFile {
+			t.Errorf("%s reviewer received Copy-only style guide", record.Lens)
+		}
+	}
+	if !seenCopy {
+		t.Fatal("Copy reviewer did not run")
 	}
 }
 

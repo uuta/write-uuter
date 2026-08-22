@@ -3,7 +3,10 @@
 Role instructions are durable files under `prompts/`. Generated assignments
 are created in a controller-private runtime outside the run and combine those
 instructions with the allowed artifact context. They are copied to the run's
-`.control/prompts/` only after all processes are stopped. Go validates role
+`.control/prompts/` after the terminal cleanup attempt. Success and ordinary
+blocked runs verify process absence first; an exceptional cleanup-verification
+failure archives the available audit while preserving non-secret ownership
+state and explicitly does not claim every process is gone. Go validates role
 output and owns every workflow transition. The durable prompt set includes the
 PM polling protocol and the shared reviewer output/filesystem contract; those
 protocols are not embedded as Go string literals.

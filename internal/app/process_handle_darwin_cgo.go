@@ -38,6 +38,7 @@ type stableProcess struct {
 }
 
 var stableSignalTestHook func()
+var stableAcquireTestHook func()
 
 func openStableProcess(identity processIdentity) (*stableProcess, error) {
 	matches, err := identityMatches(identity)
@@ -48,7 +49,17 @@ func openStableProcess(identity processIdentity) (*stableProcess, error) {
 		return nil, errStaleProcessIdentity
 	}
 	process := &stableProcess{identity: identity}
+	if stableAcquireTestHook != nil {
+		stableAcquireTestHook()
+	}
 	if result := C.write_uuter_audit_token(C.pid_t(identity.PID), &process.token); result != 0 {
+		matches, recheckErr := identityMatches(identity)
+		if recheckErr != nil {
+			return nil, recheckErr
+		}
+		if !matches {
+			return nil, errStaleProcessIdentity
+		}
 		return nil, fmt.Errorf("acquire stable audit token for pid %d: mach error %d", identity.PID, int(result))
 	}
 	matches, err = identityMatches(identity)

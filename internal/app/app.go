@@ -35,6 +35,7 @@ type controller struct {
 	brief            briefDocument
 	runDir           string
 	promptsDir       string
+	contentRoot      string
 	workflow         Workflow
 	store            *artifactStore
 	runtime          *tmuxRuntime
@@ -77,8 +78,16 @@ func Run(config Config) error {
 	} else if !errors.Is(err, os.ErrNotExist) {
 		return fmt.Errorf("inspect run directory: %w", err)
 	}
+	contentRoot, err := os.Getwd()
+	if err != nil {
+		return fmt.Errorf("resolve content root: %w", err)
+	}
+	contentRoot, err = filepath.Abs(contentRoot)
+	if err != nil {
+		return fmt.Errorf("resolve content root: %w", err)
+	}
 	control := &controller{
-		config: config, brief: brief, runDir: runDir, promptsDir: promptsDir,
+		config: config, brief: brief, runDir: runDir, promptsDir: promptsDir, contentRoot: contentRoot,
 		reachedLenses: make(map[int][]string), decisionBindings: make(map[int]map[string]decisionBinding),
 	}
 	if err := control.initialize(briefData); err != nil {
@@ -619,7 +628,7 @@ func (control *controller) reviewerContext(candidate int, lens string, candidate
 	case "clarity":
 		files["clarity-fields.md"] = []byte(fmt.Sprintf("Audience:\n%s\n\nConstraints:\n%s\n", control.brief.Sections["Audience"], control.brief.Sections["Constraints"]))
 	case "copy":
-		if stylePath := findStyleGuide(control.promptsDir); stylePath != "" {
+		if stylePath := findStyleGuide(control.contentRoot); stylePath != "" {
 			data, err := os.ReadFile(stylePath)
 			if err != nil {
 				return nil, err
@@ -1074,6 +1083,11 @@ func (control *controller) runWorker(role, lens string, candidate int, revision,
 	if err := control.runtime.startWorker(control.pm, inv, deadlineUnixNano); err != nil {
 		return err
 	}
+	if readyRelative := os.Getenv("WRITE_UUTER_TEST_WORKER_READY_FILE"); readyRelative != "" {
+		if err := waitForTestWorkerArtifact(workspace, readyRelative, deadlineUnixNano); err != nil {
+			return err
+		}
+	}
 	if activeTimeout, parseErr := time.ParseDuration(os.Getenv("WRITE_UUTER_TEST_WORKER_ACTIVE_TIMEOUT")); parseErr == nil && activeTimeout > 0 {
 		deadlineUnixNano = invocationDeadline(activeTimeout)
 	}
@@ -1132,6 +1146,20 @@ func (control *controller) runWorker(role, lens string, candidate int, revision,
 		return rollbackFailure(fmt.Errorf("PM exited across %s workflow commit", role))
 	}
 	return nil
+}
+
+func waitForTestWorkerArtifact(workspace *artifactStore, relative string, deadlineUnixNano int64) error {
+	ticker := time.NewTicker(10 * time.Millisecond)
+	defer ticker.Stop()
+	for time.Now().UnixNano() < deadlineUnixNano {
+		if _, err := workspace.readRegular(relative); err == nil {
+			return nil
+		} else if !errors.Is(err, os.ErrNotExist) {
+			return fmt.Errorf("wait for test worker artifact %s: %w", relative, err)
+		}
+		<-ticker.C
+	}
+	return fmt.Errorf("timed out waiting for test worker artifact %s", relative)
 }
 
 func invocationDeadline(timeout time.Duration) int64 {
@@ -1352,10 +1380,9 @@ func wrappedOptionalError(label string, err error) error {
 	return fmt.Errorf("%s: %w", label, err)
 }
 
-func findStyleGuide(promptsDir string) string {
-	repositoryRoot := filepath.Dir(promptsDir)
+func findStyleGuide(contentRoot string) string {
 	for _, relative := range []string{"STYLE.md", "style-guide.md", "docs/style-guide.md"} {
-		candidate := filepath.Join(repositoryRoot, relative)
+		candidate := filepath.Join(contentRoot, relative)
 		if info, err := os.Stat(candidate); err == nil && !info.IsDir() {
 			return candidate
 		}

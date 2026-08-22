@@ -6,6 +6,7 @@ import (
 	"flag"
 	"fmt"
 	"io"
+	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -66,6 +67,11 @@ func RunAgent(arguments []string) (returnErr error) {
 		return fmt.Errorf("open agent log: %w", err)
 	}
 	defer logFile.Close()
+	defer func() {
+		if returnErr != nil {
+			_, _ = fmt.Fprintf(logFile, "\nwrite-uuter: agent runner failed: %v\n", returnErr)
+		}
+	}()
 	if err := os.MkdirAll(filepath.Join(*workspace, ".tmp"), 0o700); err != nil {
 		return fmt.Errorf("create agent temporary directory: %w", err)
 	}
@@ -138,11 +144,16 @@ func RunAgent(arguments []string) (returnErr error) {
 func agentEnvironment(workspace, codexHome, role, lens string, candidate int, revision, invocation string) []string {
 	allowed := []string{
 		"HOME", "USER", "LOGNAME", "PATH", "SHELL", "LANG", "LC_ALL", "TERM",
-		"HTTP_PROXY", "HTTPS_PROXY", "NO_PROXY", "SSL_CERT_FILE", "SSL_CERT_DIR",
+		"NO_PROXY", "SSL_CERT_FILE", "SSL_CERT_DIR",
 	}
 	environment := make([]string, 0, len(allowed)+6)
 	for _, key := range allowed {
 		if value, found := os.LookupEnv(key); found {
+			environment = append(environment, key+"="+value)
+		}
+	}
+	for _, key := range []string{"HTTP_PROXY", "HTTPS_PROXY"} {
+		if value, found := os.LookupEnv(key); found && proxyWithoutUserinfo(value) {
 			environment = append(environment, key+"="+value)
 		}
 	}
@@ -157,6 +168,16 @@ func agentEnvironment(workspace, codexHome, role, lens string, candidate int, re
 		"TMPDIR="+filepath.Join(workspace, ".tmp"),
 	)
 	return environment
+}
+
+func proxyWithoutUserinfo(value string) bool {
+	parsed, err := url.Parse(value)
+	if err != nil || parsed.User != nil {
+		return false
+	}
+	// url.Parse treats a scheme-less user:password@host proxy as an opaque
+	// value, so reject any remaining authority delimiter conservatively.
+	return !strings.Contains(value, "@")
 }
 
 func publishJSONAtomic(path string, value any) error {

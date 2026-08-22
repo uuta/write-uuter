@@ -7,6 +7,11 @@ import (
 	"syscall"
 )
 
+// A Darwin production binary must use libproc audit tokens for stable process
+// signaling. Keep the build failure explicit instead of producing a binary
+// that starts runs but can never complete cleanup safely.
+var _ = writeUuterDarwinBuildRequiresCGO
+
 type stableProcess struct {
 	identity processIdentity
 }

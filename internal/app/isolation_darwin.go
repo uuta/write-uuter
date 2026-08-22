@@ -26,15 +26,29 @@ func isolationProfile(workspace, codexHome string, runtimeExecutables []string) 
 		runtimeExecutables[index] = canonical
 	}
 	var profile strings.Builder
-	profile.WriteString("(version 1)\n(deny default)\n(import \"system.sb\")\n")
-	profile.WriteString("(allow process-exec)\n")
-	profile.WriteString("(allow mach-lookup)\n")
+	// Import only the dynamic-loader rules, not system.sb: its version-1 XPC
+	// compatibility grant would expose every user-session service to tools.
+	// Runtime services needed by the client are granted explicitly below.
+	profile.WriteString("(version 1)\n(deny default)\n(import \"dyld-support.sb\")\n")
 	profile.WriteString("(allow sysctl-read)\n")
+	// Never expose interactive user secrets to either the client or a spawned
+	// tool. Codex authentication is file-scoped to its staged CODEX_HOME and
+	// does not require the login Keychain or pasteboard services.
+	for _, service := range []string{
+		"com.apple.pasteboard", "com.apple.pasteboard.1",
+		"com.apple.securityd", "com.apple.securityd.xpc", "com.apple.securityd.systemkeychain",
+	} {
+		fmt.Fprintf(&profile, "(deny mach-lookup (global-name %s))\n", strconv.Quote(service))
+		fmt.Fprintf(&profile, "(deny mach-lookup (xpc-service-name %s))\n", strconv.Quote(service))
+	}
 	profile.WriteString("(deny file-read* file-write* (subpath \"/usr/local\"))\n")
 	profile.WriteString("(deny file-read* file-write* (literal \"/dev/zero\"))\n")
 	for _, readable := range []string{"/System", "/usr/bin", "/usr/lib", "/bin", "/Library/Apple", "/private/etc/ssl"} {
 		fmt.Fprintf(&profile, "(allow file-read* (subpath %s))\n", strconv.Quote(readable))
 	}
+	// The installed Codex client has a machine policy at this fixed location.
+	// Permit that file only, not the containing configuration directory.
+	profile.WriteString("(allow file-read* (literal \"/private/etc/codex/requirements.toml\"))\n")
 	for _, readable := range []string{"/dev/null", "/dev/random", "/dev/urandom", "/dev/tty"} {
 		fmt.Fprintf(&profile, "(allow file-read* file-write* (literal %s))\n", strconv.Quote(readable))
 	}
@@ -43,6 +57,10 @@ func isolationProfile(workspace, codexHome string, runtimeExecutables []string) 
 		metadataPaths = append(metadataPaths, pathAncestors(executable)...)
 	}
 	seenMetadata := make(map[string]bool)
+	// macOS presents /var as a symlink to /private/var. Controller paths are
+	// canonicalized for policy rules, while Go may still traverse the spelling
+	// inherited through TMPDIR before reaching the canonical subtree.
+	metadataPaths = append(metadataPaths, "/var", "/etc", "/private/etc/codex")
 	for _, parent := range metadataPaths {
 		if seenMetadata[parent] {
 			continue
@@ -54,13 +72,22 @@ func isolationProfile(workspace, codexHome string, runtimeExecutables []string) 
 	for index, executable := range runtimeExecutables {
 		fmt.Fprintf(&profile, "(allow file-read* (literal %s))\n", strconv.Quote(executable))
 		if index == 0 {
-			// Only the staged Codex client may fork, read authentication, or open
-			// the network. Model-invoked runtimes and tools inherit CODEX_HOME for
-			// compatibility, but the kernel denies them those capabilities. A tool
-			// can replace itself with one executable; it cannot double-fork.
+			// The initial sandbox-exec may enter this invocation's client exactly
+			// once. Sandboxed descendants may execute other tools, but cannot enter
+			// either sandbox-exec or the privileged client target, so path-filtered
+			// authority cannot be reacquired by exec.
+			fmt.Fprintf(&profile, "(allow process-exec (require-all (require-not (literal %s)) (require-not (literal \"/usr/bin/sandbox-exec\"))))\n", strconv.Quote(executable))
+			fmt.Fprintf(&profile, "(with-filter (process-path \"/usr/bin/sandbox-exec\") (allow process-exec (literal %s)))\n", strconv.Quote(executable))
 			fmt.Fprintf(&profile, "(with-filter (process-path %s) (allow process-fork))\n", strconv.Quote(executable))
 			fmt.Fprintf(&profile, "(with-filter (process-path %s) (allow file-read* file-write* (subpath %s)))\n", strconv.Quote(executable), strconv.Quote(codexHome))
 			fmt.Fprintf(&profile, "(with-filter (process-path %s) (allow network*))\n", strconv.Quote(executable))
+			// Revoke every named bootstrap/XPC lookup for model-invoked tools so
+			// Keychain, pasteboard, and other user-session services stay outside
+			// the privileged client boundary.
+			for _, serviceFilter := range []string{"global-name-regex", "local-name-regex", "xpc-service-name-regex"} {
+				fmt.Fprintf(&profile, "(with-filter (require-not (process-path %s)) (deny mach-lookup (%s #\".*\")))\n", strconv.Quote(executable), serviceFilter)
+			}
+			fmt.Fprintf(&profile, "(with-filter (process-path %s) (allow mach-lookup))\n", strconv.Quote(executable))
 		}
 	}
 	return profile.String(), nil

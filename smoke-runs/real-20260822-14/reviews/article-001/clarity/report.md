@@ -1,9 +1,0 @@
-# Clarity Review
-
-status: clean
-
-lens: clarity
-
-reviewed_revision: sha256:94b953876ab2019d9308404fdbefe8dc64506aa5b25aebf30abca863bc0f551c
-
-findings: []

@@ -7,6 +7,8 @@ that produced it.
 ## Requirements
 
 - Go 1.26 or later to build
+- cgo enabled plus the Xcode Command Line Tools to build for macOS; Darwin
+  no-cgo builds are rejected because audit-token signaling is mandatory
 - tmux on the host
 - an installed and authenticated Codex CLI for real runs
 - macOS for real runs; the controller uses the native Seatbelt sandbox to
@@ -63,7 +65,9 @@ Publication target, Constraints, Done when, Source hints
 ```
 
 Relative source-hint paths are resolved from the directory containing the
-input brief.
+input brief. The process working directory is the content root. If present,
+`STYLE.md`, `style-guide.md`, or `docs/style-guide.md` under that root is staged
+only for the Copy reviewer; prompt bundles may live elsewhere.
 
 ## Runtime model
 
@@ -77,8 +81,11 @@ controller-private launch state. Codex's inner sandbox is disabled because
 macOS does not support nesting it inside the stricter controller sandbox. Go
 owns each invocation with native stable process identities (pidfds on Linux and
 audit tokens on macOS). The macOS sandbox permits forks only from the staged
-Codex client, so model-invoked runtimes and tools cannot double-fork out of controller
-ownership; a controller-private manifest tracks the remaining descendants.
+single-use Codex client. Only the original host `sandbox-exec` transition may
+enter that client; sandboxed descendants cannot execute either the privileged
+client or `sandbox-exec` again. Model-invoked runtimes therefore cannot reacquire
+client authority or double-fork out of controller ownership; a
+controller-private manifest tracks the remaining descendants.
 The controller requires a live PM/worker handshake and publishes completion
 through an atomic marker only after descendants are gone.
 Researcher, Story Editor, Writer, then fresh Evidence, Story, Clarity, and Copy

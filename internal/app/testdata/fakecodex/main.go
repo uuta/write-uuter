@@ -79,6 +79,9 @@ func main() {
 		case "__fork_escape_child":
 			startDetachedChild()
 			return
+		case "__privilege_reexec":
+			runPrivilegeReexecProbe()
+			return
 		}
 	}
 	prompt, _ := io.ReadAll(os.Stdin)
@@ -113,6 +116,9 @@ func main() {
 	case "researcher":
 		if scenario == "detached_child_success" || scenario == "detached_child_block" || scenario == "timeout_detached" {
 			startDetachedChild()
+			if scenario == "timeout_detached" {
+				mustWrite(filepath.Join(workDir, ".write-uuter-detached.ready"), "ready\n")
+			}
 		}
 		if scenario == "timeout" || scenario == "timeout_detached" {
 			time.Sleep(time.Minute)
@@ -388,6 +394,14 @@ func probeIsolation(workDir string) {
 		"codex_sibling": filepath.Join(privateRoot, "control", "agent-runner"),
 	}
 	result := map[string]string{}
+	executable, executableErr := os.Executable()
+	if executableErr != nil {
+		result["exact_client_reexec"] = executableErr.Error()
+	} else if output, err := exec.Command(executable, "__privilege_reexec").CombinedOutput(); err == nil {
+		result["exact_client_reexec"] = "REEXEC_SUCCEEDED:" + string(output)
+	} else {
+		result["exact_client_reexec"] = err.Error() + ":" + string(output)
+	}
 	for label, path := range paths {
 		if _, err := os.ReadFile(path); err == nil {
 			result[label] = "READ_SUCCEEDED"
@@ -419,6 +433,34 @@ func probeIsolation(workDir string) {
 	} else {
 		result["tool_network"] = err.Error() + ":" + string(output)
 	}
+	// These commands succeed outside Seatbelt, but their output could contain
+	// user data. Discard it and record only whether the protected lookup crossed
+	// the model-tool boundary.
+	keychainTool := exec.Command("/usr/bin/security", "list-keychains")
+	keychainTool.Stdout = io.Discard
+	var keychainError strings.Builder
+	keychainTool.Stderr = &keychainError
+	if err := keychainTool.Run(); err == nil {
+		result["tool_keychain"] = "LOOKUP_SUCCEEDED"
+	} else {
+		result["tool_keychain"] = err.Error() + ":" + keychainError.String()
+	}
+	pasteboardTool := exec.Command("/usr/bin/osascript", "-e", "use scripting additions", "-e", "clipboard info")
+	pasteboardTool.Stdout = io.Discard
+	var pasteboardError strings.Builder
+	pasteboardTool.Stderr = &pasteboardError
+	if err := pasteboardTool.Run(); err == nil {
+		result["tool_pasteboard"] = "LOOKUP_SUCCEEDED"
+	} else {
+		result["tool_pasteboard"] = err.Error() + ":" + pasteboardError.String()
+	}
+	for _, name := range []string{"HTTP_PROXY", "HTTPS_PROXY"} {
+		if value := os.Getenv(name); value != "" {
+			result["proxy_"+strings.ToLower(name)] = value
+		} else {
+			result["proxy_"+strings.ToLower(name)] = "ABSENT"
+		}
+	}
 	result["double_fork"] = probeForkEscape(workDir)
 	for label, path := range map[string]string{
 		"pm_workspace_parent": filepath.Join(privateRoot, "workspaces"),
@@ -444,6 +486,27 @@ func probeIsolation(workDir string) {
 	}
 	data, _ := json.MarshalIndent(result, "", "  ")
 	mustWrite(filepath.Join(workDir, ".write-uuter-isolation.probe"), string(data)+"\n")
+}
+
+func runPrivilegeReexecProbe() {
+	result := map[string]string{}
+	if err := exec.Command("/bin/true").Run(); err == nil {
+		result["fork"] = "REACQUIRED"
+	} else {
+		result["fork"] = err.Error()
+	}
+	if _, err := os.ReadFile(filepath.Join(os.Getenv("CODEX_HOME"), "auth.json")); err == nil {
+		result["auth"] = "REACQUIRED"
+	} else {
+		result["auth"] = err.Error()
+	}
+	if err := exec.Command("/usr/bin/nc", "-vz", "-w", "1", "127.0.0.1", "9").Run(); err == nil {
+		result["network"] = "REACQUIRED"
+	} else {
+		result["network"] = err.Error()
+	}
+	data, _ := json.Marshal(result)
+	fmt.Println(string(data))
 }
 
 func probeForkEscape(workDir string) string {

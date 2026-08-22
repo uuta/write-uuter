@@ -57,6 +57,7 @@ type invocation struct {
 	ProfileRelative   string
 	WorkspacePath     string
 	CodexHomePath     string
+	ClientPath        string
 	Window            string
 	launchAttempted   bool
 	started           bool
@@ -139,7 +140,7 @@ func newTmuxRuntime(tmuxExecutable, codexExecutable string, agentTimeout time.Du
 		cleanupRoot()
 		return nil, err
 	}
-	for _, directory := range []string{"prompts", "logs", "exits", "ready", "ownership", "profiles"} {
+	for _, directory := range []string{"clients", "prompts", "logs", "exits", "ready", "ownership", "profiles"} {
 		if err := controlStore.mkdirAll(directory, 0o700); err != nil {
 			_ = controlStore.Close()
 			cleanupRoot()
@@ -244,12 +245,53 @@ func (runtime *tmuxRuntime) prepareInvocation(role, lens string, candidate int, 
 			return invocation{}, fmt.Errorf("stage Codex credential %s: %w", credential, err)
 		}
 	}
+	clientDir := filepath.Join(runtime.controlDir, "clients", id)
+	if err := os.Mkdir(clientDir, 0o700); err != nil {
+		_ = os.RemoveAll(workspace)
+		_ = os.RemoveAll(codexHome)
+		return invocation{}, fmt.Errorf("create single-use Codex client directory: %w", err)
+	}
+	clientPath := filepath.Join(clientDir, "codex")
+	if err := installPrivateRunner(runtime.codex, clientPath); err != nil {
+		_ = os.RemoveAll(workspace)
+		_ = os.RemoveAll(codexHome)
+		_ = os.RemoveAll(clientDir)
+		return invocation{}, fmt.Errorf("stage single-use Codex client: %w", err)
+	}
+	runtimeExecutables := []string{clientPath}
+	for _, runtimeSource := range runtime.codexRuntime[1:] {
+		runtimeTarget := filepath.Join(clientDir, filepath.Base(runtimeSource))
+		if err := installPrivateRunner(runtimeSource, runtimeTarget); err != nil {
+			_ = os.RemoveAll(workspace)
+			_ = os.RemoveAll(codexHome)
+			_ = os.RemoveAll(clientDir)
+			return invocation{}, fmt.Errorf("stage single-use Codex runtime %s: %w", filepath.Base(runtimeSource), err)
+		}
+		runtimeExecutables = append(runtimeExecutables, runtimeTarget)
+	}
+	for index, executable := range runtimeExecutables {
+		canonical, canonicalErr := filepath.EvalSymlinks(executable)
+		if canonicalErr != nil {
+			_ = os.RemoveAll(workspace)
+			_ = os.RemoveAll(codexHome)
+			_ = os.RemoveAll(clientDir)
+			return invocation{}, fmt.Errorf("canonicalize single-use Codex runtime: %w", canonicalErr)
+		}
+		runtimeExecutables[index] = canonical
+	}
+	clientPath = runtimeExecutables[0]
+	keepClient := false
+	defer func() {
+		if !keepClient {
+			_ = os.RemoveAll(clientDir)
+		}
+	}()
 	promptRelative := filepath.Join("prompts", id+".md")
 	if err := runtime.controlStore.writeAtomic(promptRelative, []byte(prompt), 0o400); err != nil {
 		_ = os.RemoveAll(workspace)
 		return invocation{}, err
 	}
-	profile, err := isolationProfile(workspace, codexHome, runtime.codexRuntime)
+	profile, err := isolationProfile(workspace, codexHome, runtimeExecutables)
 	if err != nil {
 		_ = os.RemoveAll(workspace)
 		return invocation{}, err
@@ -264,9 +306,11 @@ func (runtime *tmuxRuntime) prepareInvocation(role, lens string, candidate int, 
 		PromptRelative: promptRelative, ExitRelative: filepath.Join("exits", id+".exit"),
 		LogRelative: filepath.Join("logs", id+".log"), ReadyRelative: filepath.Join("ready", id+".ready"),
 		OwnershipRelative: filepath.Join("ownership", id+".json"),
-		ProfileRelative:   profileRelative, WorkspacePath: workspace, CodexHomePath: codexHome, Window: id,
+		ProfileRelative:   profileRelative, WorkspacePath: workspace, CodexHomePath: codexHome,
+		ClientPath: clientPath, Window: id,
 	}
 	runtime.invocations = append(runtime.invocations, inv)
+	keepClient = true
 	return inv, nil
 }
 
@@ -319,7 +363,7 @@ func (runtime *tmuxRuntime) command(inv invocation) string {
 		readyDelay = ""
 	}
 	arguments := []string{
-		runtime.runner, "__agent", "--codex", runtime.codex, "--workspace", inv.WorkspacePath,
+		runtime.runner, "__agent", "--codex", inv.ClientPath, "--workspace", inv.WorkspacePath,
 		"--prompt", filepath.Join(runtime.controlDir, inv.PromptRelative), "--log", filepath.Join(runtime.controlDir, inv.LogRelative),
 		"--exit", filepath.Join(runtime.controlDir, inv.ExitRelative), "--ready", filepath.Join(runtime.controlDir, inv.ReadyRelative),
 		"--ownership", filepath.Join(runtime.controlDir, inv.OwnershipRelative),

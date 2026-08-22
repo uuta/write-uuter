@@ -93,15 +93,20 @@ wall-clock deadline, so host sleep or a missing runner completion marker cannot
 extend an invocation past its contract. A timeout, premature exit, malformed
 artifact, stale review,
 cleanup failure, human decision, or exhausted candidate budget sets an
-actionable `workflow.json.block_reason`. Go verifies that the dedicated tmux
-session and every unresolved invocation identity are gone before either
-terminal result. On success it requires the persistent PM to still be live,
+actionable `workflow.json.block_reason`. Success requires verified absence of
+the dedicated tmux session and every invocation identity. On success the
+controller also requires the persistent PM to still be live,
 then revalidates the candidate hash, every final review, each PM request
 binding, and each accepted classification list before publishing `article.md`
 and durably persisting the succeeded state. A failure during that terminal
 transition removes `article.md`, records blocked state, attempts private-state
-cleanup even if blocked-state persistence fails, and leaves no PM, worker, or
-detached descendant process for the run.
+cleanup even if blocked-state persistence fails. Ordinarily the blocked path
+also verifies that no PM, worker, or detached descendant remains. If signaling
+or absence verification itself fails, the controller records that cleanup
+failure, deletes every staged Codex credential, archives the available audit
+files, and preserves only non-secret ownership/control state so cleanup can be
+diagnosed and retried. That exceptional blocked result does not claim process
+absence.
 
 Parallel runs, resume after controller restart, and editing completed runs are
 not implemented.

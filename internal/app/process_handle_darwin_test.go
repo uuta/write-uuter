@@ -50,3 +50,26 @@ func TestDarwinStableSignalCannotCrossFinalExitBoundary(t *testing.T) {
 	}
 	time.Sleep(10 * time.Millisecond)
 }
+
+func TestDarwinNaturalExitDuringAuditTokenAcquisitionIsStale(t *testing.T) {
+	target := exec.Command("/bin/sleep", "30")
+	if err := target.Start(); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		_ = target.Process.Kill()
+		_, _ = target.Process.Wait()
+	})
+	identity, found, err := currentProcessIdentity(target.Process.Pid)
+	if err != nil || !found {
+		t.Fatalf("capture target identity: found=%v err=%v", found, err)
+	}
+	stableAcquireTestHook = func() {
+		_ = target.Process.Kill()
+		_, _ = target.Process.Wait()
+	}
+	defer func() { stableAcquireTestHook = nil }()
+	if _, err := openStableProcess(identity); !errors.Is(err, errStaleProcessIdentity) {
+		t.Fatalf("natural exit during audit-token acquisition was not stale: %v", err)
+	}
+}
