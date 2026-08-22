@@ -42,6 +42,9 @@ func configureProcessGroup(command *exec.Cmd) {
 }
 
 func startProcessTracker(path string, rootPID int) (*processTracker, error) {
+	if err := enableProcessBoundary(); err != nil {
+		return nil, err
+	}
 	tracker := &processTracker{
 		path: path, rootPID: rootPID, processes: make(map[int]processIdentity),
 		stop: make(chan struct{}), done: make(chan struct{}),
@@ -146,7 +149,16 @@ func (tracker *processTracker) waitFor(pid int, deadline time.Time) (processIden
 
 func (tracker *processTracker) terminate(timeout time.Duration) error {
 	tracker.close()
-	_ = tracker.refresh()
+	// Drain the kernel-adopted child boundary before signaling. A detached
+	// setsid child can be reparented to the runner exactly as its original
+	// parent exits; one final refresh is otherwise a lossy race.
+	stableUntil := time.Now().Add(100 * time.Millisecond)
+	for time.Now().Before(stableUntil) {
+		if err := tracker.refresh(); err != nil {
+			return err
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
 	return terminateOwnedProcesses(tracker.path, timeout, os.Getpid())
 }
 

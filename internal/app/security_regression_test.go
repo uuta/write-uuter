@@ -1,0 +1,60 @@
+package app
+
+import (
+	"os"
+	"path/filepath"
+	"testing"
+)
+
+func TestProxyWithoutUserinfoAcceptsOnlyCredentialFreeOrigin(t *testing.T) {
+	for _, value := range []string{
+		"http://proxy.example:8080", "https://proxy.example",
+	} {
+		if !proxyWithoutUserinfo(value) {
+			t.Errorf("valid proxy rejected: %q", value)
+		}
+	}
+	for _, value := range []string{
+		"http://proxy.example/path", "http://proxy.example/?secret=1",
+		"http://proxy.example/#secret", "http:user:pass", "http://user:pass@proxy.example",
+		"http://proxy.example/%73ecret", "http://proxy.example\nsecret",
+	} {
+		if proxyWithoutUserinfo(value) {
+			t.Errorf("unsafe proxy accepted: %q", value)
+		}
+	}
+}
+
+func TestPromptAndStyleReadsRejectSymlinkComponents(t *testing.T) {
+	root := t.TempDir()
+	outside := t.TempDir()
+	if err := os.WriteFile(filepath.Join(outside, "STYLE.md"), []byte("outside sentinel"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(outside, filepath.Join(root, "docs")); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := findStyleGuide(root); err == nil {
+		t.Fatal("style guide read followed a symlinked parent")
+	}
+	if _, err := loadPrompt(root, "docs/prompt.md"); err == nil {
+		t.Fatal("prompt read followed a symlinked parent")
+	}
+}
+
+func TestPMDecisionRequiresExactFenceLines(t *testing.T) {
+	valid := []byte("```json\n{\"reviewed_revision\":\"r\",\"lenses\":{}}\n```\n")
+	if _, err := parsePMDecisionDocument(valid); err != nil {
+		t.Fatalf("valid fenced PM decision rejected: %v", err)
+	}
+	for _, malformed := range [][]byte{
+		[]byte("```json {\"reviewed_revision\":\"r\",\"lenses\":{}} ```"),
+		[]byte("```json suffix\n{}\n```"),
+		[]byte("```json\n{}\n``` trailing"),
+		[]byte("```json\n{}\n```\n```json\n{}\n```"),
+	} {
+		if _, err := parsePMDecisionDocument(malformed); err == nil {
+			t.Fatalf("malformed PM fence accepted: %q", malformed)
+		}
+	}
+}

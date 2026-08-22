@@ -62,12 +62,20 @@ func resolvePromptsDir(configured string, explicit bool) (string, error) {
 }
 
 func validatePromptsDir(directory string) error {
+	root, err := os.OpenRoot(directory)
+	if err != nil {
+		return err
+	}
+	defer root.Close()
 	for _, name := range requiredPromptFiles {
-		info, err := os.Stat(filepath.Join(directory, name))
+		if err := validateRootParents(root, name); err != nil {
+			return fmt.Errorf("required prompt %s: %w", name, err)
+		}
+		info, err := root.Lstat(name)
 		if err != nil {
 			return fmt.Errorf("required prompt %s: %w", name, err)
 		}
-		if !info.Mode().IsRegular() {
+		if info.Mode()&os.ModeSymlink != 0 || !info.Mode().IsRegular() {
 			return fmt.Errorf("required prompt %s is not a regular file", name)
 		}
 	}
@@ -75,7 +83,22 @@ func validatePromptsDir(directory string) error {
 }
 
 func loadPrompt(dir, name string) (string, error) {
-	data, err := os.ReadFile(filepath.Join(dir, name))
+	root, err := os.OpenRoot(dir)
+	if err != nil {
+		return "", err
+	}
+	defer root.Close()
+	if err := validateRootParents(root, name); err != nil {
+		return "", err
+	}
+	info, err := root.Lstat(name)
+	if err != nil {
+		return "", err
+	}
+	if info.Mode()&os.ModeSymlink != 0 || !info.Mode().IsRegular() {
+		return "", fmt.Errorf("prompt is not a regular no-follow file: %s", name)
+	}
+	data, err := root.ReadFile(name)
 	if err != nil {
 		return "", err
 	}
@@ -83,6 +106,33 @@ func loadPrompt(dir, name string) (string, error) {
 		return "", fmt.Errorf("prompt is empty: %s", name)
 	}
 	return string(data), nil
+}
+
+func validateRootParents(root *os.Root, name string) error {
+	clean := filepath.Clean(name)
+	if filepath.IsAbs(name) || clean == "." || clean == ".." || strings.HasPrefix(clean, ".."+string(filepath.Separator)) {
+		return fmt.Errorf("path escapes root: %s", name)
+	}
+	parent := filepath.Dir(clean)
+	if parent == "." {
+		return nil
+	}
+	current := ""
+	for _, component := range strings.Split(parent, string(filepath.Separator)) {
+		if current == "" {
+			current = component
+		} else {
+			current = filepath.Join(current, component)
+		}
+		info, err := root.Lstat(current)
+		if err != nil {
+			return err
+		}
+		if info.Mode()&os.ModeSymlink != 0 || !info.IsDir() {
+			return fmt.Errorf("path component is not a directory: %s", current)
+		}
+	}
+	return nil
 }
 
 func contextBlock(label string, content []byte) string {

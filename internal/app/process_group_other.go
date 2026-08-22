@@ -17,3 +17,5 @@ func ownedProcessIDs(_ string) ([]int, error) {
 func terminateOwnedProcesses(_ string, _ time.Duration, _ int) error {
 	return fmt.Errorf("process ownership is unsupported")
 }
+
+func enableProcessBoundary() error { return fmt.Errorf("process ownership is unsupported") }

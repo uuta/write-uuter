@@ -628,12 +628,14 @@ func (control *controller) reviewerContext(candidate int, lens string, candidate
 	case "clarity":
 		files["clarity-fields.md"] = []byte(fmt.Sprintf("Audience:\n%s\n\nConstraints:\n%s\n", control.brief.Sections["Audience"], control.brief.Sections["Constraints"]))
 	case "copy":
-		if stylePath := findStyleGuide(control.contentRoot); stylePath != "" {
-			data, err := os.ReadFile(stylePath)
+		if stylePath, styleErr := findStyleGuide(control.contentRoot); styleErr != nil {
+			return nil, styleErr
+		} else if stylePath != "" {
+			style, err := loadPrompt(control.contentRoot, stylePath)
 			if err != nil {
 				return nil, err
 			}
-			files["style-guide.md"] = data
+			files["style-guide.md"] = []byte(style)
 		}
 	}
 	return files, nil
@@ -979,13 +981,20 @@ func (control *controller) validatePMDecisionData(data []byte, candidate int, le
 func parsePMDecisionDocument(data []byte) (PMDecisionDocument, error) {
 	var document PMDecisionDocument
 	trimmed := strings.TrimSpace(string(data))
-	if !strings.HasSuffix(trimmed, "```") {
-		return document, errNotReady
-	}
-	if strings.Count(trimmed, "```") != 2 || !strings.HasPrefix(trimmed, "```json") {
+	lines := strings.Split(trimmed, "\n")
+	if len(lines) < 3 || lines[0] != "```json" || lines[len(lines)-1] != "```" {
 		return document, fmt.Errorf("PM decision must contain exactly one complete fenced JSON document")
 	}
-	payload := strings.TrimSpace(strings.TrimSuffix(strings.TrimPrefix(trimmed, "```json"), "```"))
+	bodyLines := lines[1 : len(lines)-1]
+	for _, line := range bodyLines {
+		if strings.Contains(line, "```") {
+			return document, fmt.Errorf("PM decision must contain exactly one complete fenced JSON document")
+		}
+	}
+	if strings.TrimSpace(strings.Join(bodyLines, "\n")) == "" {
+		return document, fmt.Errorf("PM decision must contain exactly one complete fenced JSON document")
+	}
+	payload := strings.TrimSpace(strings.Join(bodyLines, "\n"))
 	if !strings.HasPrefix(payload, "{") || !strings.HasSuffix(payload, "}") {
 		return document, fmt.Errorf("PM decision must contain exactly one complete fenced JSON document")
 	}
@@ -1380,12 +1389,30 @@ func wrappedOptionalError(label string, err error) error {
 	return fmt.Errorf("%s: %w", label, err)
 }
 
-func findStyleGuide(contentRoot string) string {
-	for _, relative := range []string{"STYLE.md", "style-guide.md", "docs/style-guide.md"} {
-		candidate := filepath.Join(contentRoot, relative)
-		if info, err := os.Stat(candidate); err == nil && !info.IsDir() {
-			return candidate
-		}
+func findStyleGuide(contentRoot string) (string, error) {
+	root, err := os.OpenRoot(contentRoot)
+	if err != nil {
+		return "", err
 	}
-	return ""
+	defer root.Close()
+	for _, relative := range []string{"STYLE.md", "style-guide.md", "docs/style-guide.md"} {
+		if parentErr := validateRootParents(root, relative); parentErr != nil {
+			return "", parentErr
+		}
+		info, statErr := root.Lstat(relative)
+		if errors.Is(statErr, os.ErrNotExist) {
+			continue
+		}
+		if statErr != nil {
+			return "", statErr
+		}
+		if info.Mode()&os.ModeSymlink != 0 {
+			return "", fmt.Errorf("style guide is a symlink: %s", relative)
+		}
+		if !info.Mode().IsRegular() {
+			return "", fmt.Errorf("style guide is not a regular file: %s", relative)
+		}
+		return relative, nil
+	}
+	return "", nil
 }

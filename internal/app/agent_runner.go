@@ -171,13 +171,17 @@ func agentEnvironment(workspace, codexHome, role, lens string, candidate int, re
 }
 
 func proxyWithoutUserinfo(value string) bool {
-	parsed, err := url.Parse(value)
-	if err != nil || parsed.User != nil {
+	if value == "" || strings.IndexFunc(value, func(r rune) bool { return r < 0x20 || r == 0x7f }) >= 0 {
 		return false
 	}
-	// url.Parse treats a scheme-less user:password@host proxy as an opaque
-	// value, so reject any remaining authority delimiter conservatively.
-	return !strings.Contains(value, "@")
+	parsed, err := url.Parse(value)
+	if err != nil || parsed.User != nil || parsed.Opaque != "" || parsed.Host == "" || parsed.Hostname() == "" {
+		return false
+	}
+	if parsed.Scheme != "http" && parsed.Scheme != "https" || parsed.Path != "" || parsed.RawPath != "" || parsed.RawQuery != "" || parsed.Fragment != "" || parsed.RawFragment != "" || parsed.ForceQuery {
+		return false
+	}
+	return !strings.ContainsAny(value, "@%")
 }
 
 func publishJSONAtomic(path string, value any) error {
