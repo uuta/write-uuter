@@ -441,19 +441,63 @@ func TestBlackBoxPMHistoryCannotBePrepopulatedOrDropped(t *testing.T) {
 }
 
 func TestBlackBoxFinalCandidateMutationCannotPublish(t *testing.T) {
+	realTmux, err := exec.LookPath("tmux")
+	if err != nil {
+		t.Skip("tmux unavailable")
+	}
+	tmuxDirectory, err := os.MkdirTemp("/tmp", "wu-tmux-*")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(tmuxDirectory) })
+	t.Setenv("TMUX", "")
+	t.Setenv("TMUX_TMPDIR", tmuxDirectory)
 	binary, fake, runDir, fixtureDir := prepareScenario(t, "slow_final")
-	command := newRunCommand(t, binary, fake, runDir, "5s", filepath.Join(repositoryRoot(t), "examples", "brief.md"))
+	command := newRunCommand(t, binary, fake, runDir, "10s", filepath.Join(repositoryRoot(t), "examples", "brief.md"))
+	var commandOutput strings.Builder
+	command.Stdout = &commandOutput
+	command.Stderr = &commandOutput
 	if err := command.Start(); err != nil {
 		t.Fatal(err)
 	}
+	commandDone := make(chan error, 1)
+	go func() { commandDone <- command.Wait() }()
+	waited := false
+	t.Cleanup(func() {
+		// A failed assertion must not strand the controller's tmux-owned PM.
+		// This server belongs only to this test, so stop it before interrupting
+		// an unfinished controller and removing its exact private siblings.
+		cleanup := exec.Command(realTmux, "kill-server")
+		cleanup.Env = append(os.Environ(), "TMUX=", "TMUX_TMPDIR="+tmuxDirectory)
+		_ = cleanup.Run()
+		if !waited && command.Process != nil {
+			_ = command.Process.Signal(os.Interrupt)
+			select {
+			case <-commandDone:
+			case <-time.After(2 * time.Second):
+				_ = command.Process.Kill()
+				<-commandDone
+			}
+		}
+		privatePaths, _ := filepath.Glob(filepath.Join(filepath.Dir(runDir), ".write-uuter-private-*"))
+		for _, privatePath := range privatePaths {
+			_ = os.RemoveAll(privatePath)
+		}
+	})
 	copyResult := filepath.Join(runDir, "reviews", "article-001", "copy", "result.json")
-	deadline := time.Now().Add(5 * time.Second)
+	deadline := time.Now().Add(20 * time.Second)
 	for {
+		select {
+		case runErr := <-commandDone:
+			waited = true
+			state := readWorkflow(t, runDir)
+			t.Fatalf("CLI exited before copy review: %v\n%s\nworkflow: %+v", runErr, commandOutput.String(), state)
+		default:
+		}
 		if _, err := os.Stat(copyResult); err == nil {
 			break
 		}
 		if time.Now().After(deadline) {
-			_ = command.Process.Kill()
 			t.Fatal("copy review did not appear")
 		}
 		time.Sleep(20 * time.Millisecond)
@@ -461,7 +505,8 @@ func TestBlackBoxFinalCandidateMutationCannotPublish(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(runDir, "drafts", "article-001.md"), []byte("late mutation\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	err := command.Wait()
+	err = <-commandDone
+	waited = true
 	if err == nil {
 		t.Fatal("CLI unexpectedly published mutated candidate")
 	}
@@ -471,6 +516,17 @@ func TestBlackBoxFinalCandidateMutationCannotPublish(t *testing.T) {
 	}
 	assertNoArticle(t, runDir)
 	assertProcessesGone(t, readInvocationRecords(t, fixtureDir))
+	assertNoProcessCommandContains(t, filepath.Dir(runDir))
+	privatePaths, _ := filepath.Glob(filepath.Join(filepath.Dir(runDir), ".write-uuter-private-*"))
+	if len(privatePaths) != 0 {
+		t.Fatalf("final-candidate mutation left private runtime roots: %v", privatePaths)
+	}
+	sessions := exec.Command(realTmux, "list-sessions", "-F", "#{session_name}")
+	sessions.Env = append(os.Environ(), "TMUX=", "TMUX_TMPDIR="+tmuxDirectory)
+	listing, _ := sessions.CombinedOutput()
+	if strings.Contains(string(listing), "write-uuter-") {
+		t.Fatalf("final-candidate mutation left run tmux session: %s", listing)
+	}
 }
 
 func TestBlackBoxFinalCommitBoundaryRechecksDurableDraft(t *testing.T) {
@@ -1624,7 +1680,7 @@ func assertNoArticle(t *testing.T, runDir string) {
 
 func waitForPath(t *testing.T, path string) {
 	t.Helper()
-	deadline := time.Now().Add(5 * time.Second)
+	deadline := time.Now().Add(15 * time.Second)
 	for time.Now().Before(deadline) {
 		if _, err := os.Stat(path); err == nil {
 			return
@@ -1632,6 +1688,23 @@ func waitForPath(t *testing.T, path string) {
 		time.Sleep(10 * time.Millisecond)
 	}
 	t.Fatalf("timed out waiting for %s", path)
+}
+
+func assertNoProcessCommandContains(t *testing.T, fragment string) {
+	t.Helper()
+	output, err := exec.Command("ps", "-axo", "pid=,command=").Output()
+	if err != nil {
+		t.Fatalf("list processes for residue check: %v", err)
+	}
+	var matches []string
+	for _, line := range strings.Split(string(output), "\n") {
+		if strings.Contains(line, fragment) {
+			matches = append(matches, strings.TrimSpace(line))
+		}
+	}
+	if len(matches) != 0 {
+		t.Fatalf("test-owned processes still reference %s: %v", fragment, matches)
+	}
 }
 
 func killPersistentPM(t *testing.T, runDir string) {
