@@ -2,11 +2,7 @@
 
 package app
 
-import "fmt"
-
-// Darwin does not expose a child-subreaper or equivalent lossless descendant
-// boundary to this stdlib-only controller. Refuse to launch Codex rather than
-// claiming that ancestry sampling is a complete containment mechanism.
-func enableProcessBoundary() error {
-	return fmt.Errorf("lossless process boundary unavailable on darwin; refusing Codex launch")
-}
+// macOS uses stable libproc-backed identities for the controller-launched
+// processes it can track. Intentional ancestry escapes are outside this slice's
+// guarantee and are audited after termination.
+func enableProcessBoundary() error { return nil }

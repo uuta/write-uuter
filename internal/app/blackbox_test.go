@@ -464,12 +464,8 @@ func TestBlackBoxFinalCandidateMutationCannotPublish(t *testing.T) {
 	go func() { commandDone <- command.Wait() }()
 	waited := false
 	t.Cleanup(func() {
-		// A failed assertion must not strand the controller's tmux-owned PM.
-		// This server belongs only to this test, so stop it before interrupting
-		// an unfinished controller and removing its exact private siblings.
-		cleanup := exec.Command(realTmux, "kill-server")
-		cleanup.Env = append(os.Environ(), "TMUX=", "TMUX_TMPDIR="+tmuxDirectory)
-		_ = cleanup.Run()
+		// Give the controller its bounded cleanup opportunity first. Never delete
+		// ownership/credential state while a retained identity may still run.
 		if !waited && command.Process != nil {
 			_ = command.Process.Signal(os.Interrupt)
 			select {
@@ -477,6 +473,20 @@ func TestBlackBoxFinalCandidateMutationCannotPublish(t *testing.T) {
 			case <-time.After(2 * time.Second):
 				_ = command.Process.Kill()
 				<-commandDone
+			}
+		}
+		for _, record := range readInvocationRecords(t, fixtureDir) {
+			assertProcessesGone(t, []invocationRecord{record})
+		}
+		sessions := exec.Command(realTmux, "list-sessions", "-F", "#{session_name}")
+		sessions.Env = append(os.Environ(), "TMUX=", "TMUX_TMPDIR="+tmuxDirectory)
+		if listing, err := sessions.Output(); err == nil {
+			for _, name := range strings.Fields(string(listing)) {
+				if strings.HasPrefix(name, "write-uuter-") {
+					kill := exec.Command(realTmux, "kill-session", "-t", name)
+					kill.Env = sessions.Env
+					_ = kill.Run()
+				}
 			}
 		}
 		privatePaths, _ := filepath.Glob(filepath.Join(filepath.Dir(runDir), ".write-uuter-private-*"))

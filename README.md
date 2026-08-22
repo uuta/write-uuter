@@ -87,7 +87,10 @@ client or `sandbox-exec` again. Model-invoked runtimes therefore cannot reacquir
 client authority or double-fork out of controller ownership; a
 controller-private manifest tracks the remaining descendants.
 The controller requires a live PM/worker handshake and publishes completion
-through an atomic marker only after descendants are gone.
+through an atomic marker after controller-launched and controller-trackable
+descendants are gone. An intentionally ancestry-escaping hostile process is
+outside this slice's guarantee; complete containment is deferred to a future
+container/VM design.
 Researcher, Story Editor, Writer, then fresh Evidence, Story, Clarity, and Copy
 reviewer processes run sequentially. Reviewers never receive the run directory
 or edit candidates. Only PM-validated must-fix findings create a new candidate;

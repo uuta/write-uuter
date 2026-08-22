@@ -81,8 +81,10 @@ denies unrelated host, durable-run, prior-lens, PM, and controller-private
 access. Controller-only test paths never become sandbox rules or agent
 environment variables. The private runner follows parent/child edges through
 the native process table and durably records precise kernel process identities
-for the invocation ancestry, including children that create a new session or
-process group, clear their environment, or execute a protected system binary.
+for controller-launched and controller-trackable descendants, including
+children that create a new session or process group. An intentionally
+ancestry-escaping hostile process is outside this slice's guarantee; complete
+containment is deferred to a future container/VM design.
 Cleanup opens stable kernel process handles before signaling each recorded
 identity, so a reused bare PID is never treated as owned. Each lens uses a
 fresh Codex invocation.

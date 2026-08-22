@@ -121,8 +121,11 @@ directory. Worker `0` markers record natural successful exits. The persistent
 PM is controller-terminated after final validation, so its durable `143`
 marker is explicitly controller-synthesized cleanup evidence rather than a
 natural PM exit; interrupted workers likewise retain a nonzero terminal marker.
-Private state is removed after verified tmux/process-ownership cleanup and is
-never copied into `.control/`. Completion markers are atomically renamed into
+Private state is removed after verified cleanup of controller-launched and
+controller-trackable tmux/process identities and is never copied into
+`.control/`. An intentionally ancestry-escaping hostile process is outside
+this slice's guarantee; complete containment is deferred to a future
+container/VM design. Completion markers are atomically renamed into
 place; a partial marker cannot advance the workflow. Controller artifact access
 rejects symlink path components, symlinked tree roots/directories, and
 non-regular files. Editorial completion never depends on tmux scrollback or

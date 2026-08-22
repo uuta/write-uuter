@@ -78,7 +78,10 @@ order. The process's filesystem contains only the listed inputs under
 unrelated host paths as well as reads of the
 durable run and prior-lens/PM/controller workspaces. The
 controller uses this external boundary instead of nesting Codex's own sandbox,
-which macOS does not permit. This
+which macOS does not permit. The controller tracks and audits the tmux session,
+process groups, and descendants it launches; intentional ancestry escapes are
+outside this slice's guarantee and complete containment is deferred to a future
+container/VM design. This
 implementation omits prior-lens conversation and reports from reviewer
 assignments; a reviewer process has no inherited conversation from another
 lens.
