@@ -56,6 +56,26 @@ Operational options:
 --prompts-dir <path> Checked-in prompt directory; an explicit value is binding
 ```
 
+`--codex` and `--tmux` fall back to a `PATH` lookup only when the flag is
+omitted. Passing the flag with an empty value (`--codex=`) is rejected before
+the run is initialized rather than silently using the default.
+
+The prompt bundle is resolved once, before the run starts, in this order:
+
+```text
+1. --prompts-dir <path>          explicit and binding; an invalid or empty
+                                 value fails the run and never falls back
+2. $WRITE_UUTER_PROMPTS_DIR      ambient override; outranks both bundles below
+3. <working directory>/prompts
+4. <executable directory>/prompts, ../prompts,
+   ../share/write-uuter/prompts
+```
+
+The first candidate that contains every required prompt as a regular
+no-follow file wins. That directory and each prompt file are then held open
+for the whole run, so replacing the directory, one of its ancestors, or a
+prompt file afterwards cannot change the content the controller uses.
+
 The brief requires these case-insensitive level-two headings; all except
 `Source hints` need non-whitespace content:
 

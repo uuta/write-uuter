@@ -30,6 +30,7 @@ type tmuxRuntime struct {
 	detachedPIDDir  string
 	exitDelay       string
 	readyDelay      string
+	readyWaitBudget time.Duration
 	removeAudit     string
 	auditRemoved    bool
 	failRemoveOnce  bool
@@ -172,7 +173,8 @@ func newTmuxRuntime(tmuxExecutable, codexExecutable string, agentTimeout time.Du
 		controlStore: controlStore, commandTimeout: commandTimeout,
 		fakeLogDir: os.Getenv("WRITE_UUTER_FAKE_LOG_DIR"), detachedPIDDir: os.Getenv("WRITE_UUTER_TEST_DETACHED_PID_DIR"),
 		exitDelay: os.Getenv("WRITE_UUTER_TEST_EXIT_MARKER_DELAY"), readyDelay: os.Getenv("WRITE_UUTER_TEST_READY_MARKER_DELAY"),
-		removeAudit: os.Getenv("WRITE_UUTER_TEST_REMOVE_AUDIT"), failRemoveOnce: os.Getenv("WRITE_UUTER_TEST_FAIL_PRIVATE_REMOVE_ONCE") == "1",
+		readyWaitBudget: testReadyWaitBudget(),
+		removeAudit:     os.Getenv("WRITE_UUTER_TEST_REMOVE_AUDIT"), failRemoveOnce: os.Getenv("WRITE_UUTER_TEST_FAIL_PRIVATE_REMOVE_ONCE") == "1",
 		failCleanup:  os.Getenv("WRITE_UUTER_TEST_FAIL_CLEANUP_PERSISTENT") == "1",
 		testScenario: testScenario,
 		session:      "write-uuter-" + revisionFor([]byte(seed))[7:19],
@@ -386,6 +388,14 @@ func (runtime *tmuxRuntime) markLaunchAttempted(id string) {
 	}
 }
 
+// launchAttempted reports whether tmux was asked to start this invocation, so
+// callers can conservatively account for a process that may exist even when
+// the launch command itself failed.
+func (runtime *tmuxRuntime) launchAttempted(id string) bool {
+	record := runtime.invocationRecord(id)
+	return record != nil && record.launchAttempted
+}
+
 func (runtime *tmuxRuntime) markStarted(id string) {
 	if record := runtime.invocationRecord(id); record != nil {
 		record.started = true
@@ -401,7 +411,30 @@ func (runtime *tmuxRuntime) invocationRecord(id string) *invocation {
 	return nil
 }
 
+// testReadyWaitBudget reads the test-only handshake budget. It bounds only the
+// ready wait, measured from the moment the launch command returns, so slow
+// launch preparation under load cannot consume the budget a readiness test
+// intends to exercise.
+func testReadyWaitBudget() time.Duration {
+	budget, err := time.ParseDuration(os.Getenv("WRITE_UUTER_TEST_READY_WAIT_TIMEOUT"))
+	if err != nil || budget <= 0 {
+		return 0
+	}
+	return budget
+}
+
+// readyDeadline bounds a worker ready handshake. The persistent PM keeps the
+// full invocation deadline so that a readiness test targets exactly the worker
+// it delays.
+func (runtime *tmuxRuntime) readyDeadline(inv invocation, deadlineUnixNano int64) int64 {
+	if runtime.readyWaitBudget <= 0 || inv.Role == "pm" {
+		return deadlineUnixNano
+	}
+	return time.Now().Add(runtime.readyWaitBudget).UnixNano()
+}
+
 func (runtime *tmuxRuntime) waitInvocationReady(inv invocation, deadlineUnixNano int64, requireLive bool) error {
+	deadlineUnixNano = runtime.readyDeadline(inv, deadlineUnixNano)
 	ticker := time.NewTicker(20 * time.Millisecond)
 	defer ticker.Stop()
 	for time.Now().UnixNano() < deadlineUnixNano {
@@ -677,9 +710,17 @@ func (runtime *tmuxRuntime) cleanup(requirePMLive bool, pm invocation) error {
 	return errors.Join(failures...)
 }
 
+// closeCredentials removes the staged Codex credentials. Staged auth must
+// outlive every process that could still read it, so removal happens only
+// after all retained stable ownership identities have exited and the
+// private-path scan is clean; otherwise the credentials are kept and the
+// blocking identities are reported.
 func (runtime *tmuxRuntime) closeCredentials() error {
 	if runtime == nil {
 		return nil
+	}
+	if err := runtime.awaitOwnedProcessExit(); err != nil {
+		return err
 	}
 	if err := runtime.auditPrivateProcesses(); err != nil {
 		return err
@@ -702,6 +743,45 @@ func (runtime *tmuxRuntime) closeCredentials() error {
 		}
 		time.Sleep(25 * time.Millisecond)
 	}
+}
+
+// awaitOwnedProcessExit waits, within the cleanup window, for every retained
+// stable ownership identity of every launched invocation to exit. Unlike the
+// argv/private-path scan it proves absence from the identities the controller
+// recorded, which survive argv rewrites and reparenting.
+func (runtime *tmuxRuntime) awaitOwnedProcessExit() error {
+	if runtime == nil {
+		return nil
+	}
+	window := runtime.commandTimeout
+	if window < 5*time.Second {
+		window = 5 * time.Second
+	}
+	deadline := time.Now().Add(window)
+	for {
+		err := runtime.auditOwnedIdentities()
+		if err == nil {
+			return nil
+		}
+		if time.Now().After(deadline) {
+			return err
+		}
+		time.Sleep(25 * time.Millisecond)
+	}
+}
+
+func (runtime *tmuxRuntime) auditOwnedIdentities() error {
+	var failures []error
+	for index := range runtime.invocations {
+		inv := runtime.invocations[index]
+		if !inv.started {
+			continue
+		}
+		if err := runtime.ensureInvocationStopped(inv); err != nil {
+			failures = append(failures, err)
+		}
+	}
+	return errors.Join(failures...)
 }
 
 // auditPrivateProcesses is the final controller-owned boundary before private
@@ -968,7 +1048,7 @@ func (runtime *tmuxRuntime) closePrivate() error {
 	var closeErr error
 	var lastRemoveErr error
 	for {
-		if auditErr := runtime.auditPrivateProcesses(); auditErr != nil {
+		if auditErr := errors.Join(runtime.auditOwnedIdentities(), runtime.auditPrivateProcesses()); auditErr != nil {
 			return errors.Join(closeErr, auditErr)
 		}
 		if !runtime.storeClosed {

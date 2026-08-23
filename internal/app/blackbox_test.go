@@ -623,6 +623,98 @@ func TestBlackBoxAtomicCommitDoesNotReplaceCompetingTarget(t *testing.T) {
 	}
 }
 
+func TestBlackBoxFinalPublicationNeverDisturbsCompetingArticle(t *testing.T) {
+	binary, fake, runDir, fixtureDir := prepareScenario(t, "happy")
+	barrier := filepath.Join(t.TempDir(), "final-article-boundary")
+	command := newRunCommand(t, binary, fake, runDir, "5s", filepath.Join(repositoryRoot(t), "examples", "brief.md"))
+	command.Env = append(command.Env, "WRITE_UUTER_TEST_FINAL_BOUNDARY_BARRIER="+barrier)
+	if err := command.Start(); err != nil {
+		t.Fatal(err)
+	}
+	waitForPath(t, barrier+".ready")
+	competitor := filepath.Join(runDir, "article.md")
+	if err := os.WriteFile(competitor, []byte("competing article\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	before, err := os.Lstat(competitor)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(barrier+".continue", []byte("continue\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := command.Wait(); err == nil {
+		t.Fatal("CLI published over a competing article")
+	}
+	state := readWorkflow(t, runDir)
+	if state.Status != "blocked" || !strings.Contains(state.BlockReason, "stage final article") {
+		t.Fatalf("unexpected workflow: %+v", state)
+	}
+	data, err := os.ReadFile(competitor)
+	if err != nil || string(data) != "competing article\n" {
+		t.Fatalf("competing article was replaced or deleted: %q, %v", data, err)
+	}
+	after, err := os.Lstat(competitor)
+	if err != nil || !os.SameFile(before, after) {
+		t.Fatalf("competing article identity changed: %v", err)
+	}
+	assertProcessesGone(t, readInvocationRecords(t, fixtureDir))
+}
+
+func TestBlackBoxReviewAttemptCountExcludesPreLaunchFailure(t *testing.T) {
+	binary, fake, runDir, fixtureDir := prepareScenario(t, "happy")
+	command := newRunCommand(t, binary, fake, runDir, "5s", filepath.Join(repositoryRoot(t), "examples", "brief.md"))
+	command.Env = append(command.Env, "WRITE_UUTER_TEST_FAIL_BEFORE_LAUNCH=reviewer_evidence")
+	output, err := command.CombinedOutput()
+	if err == nil {
+		t.Fatalf("CLI ignored an injected reviewer pre-launch failure\n%s", output)
+	}
+	state := readWorkflow(t, runDir)
+	if state.Status != "blocked" || !strings.Contains(state.BlockReason, "reviewer_evidence pre-launch failure") {
+		t.Fatalf("unexpected workflow: %+v", state)
+	}
+	if state.ReviewAttemptCount != 0 {
+		t.Fatalf("review_attempt_count claimed %d reviewer processes before any reviewer launched", state.ReviewAttemptCount)
+	}
+	records := readInvocationRecords(t, fixtureDir)
+	for _, record := range records {
+		if strings.HasPrefix(record.Role, "reviewer_") {
+			t.Fatalf("reviewer process %s ran despite a pre-launch failure", record.Role)
+		}
+	}
+	assertProcessesGone(t, records)
+}
+
+func TestBlackBoxExplicitEmptyExecutableOverridesFailBeforeRunInitialization(t *testing.T) {
+	for _, testCase := range []struct{ flag, reason string }{
+		{"--codex=", "--codex was given an empty value"},
+		{"--tmux=", "--tmux was given an empty value"},
+	} {
+		t.Run(strings.Trim(testCase.flag, "-="), func(t *testing.T) {
+			binary, fake := buildBinaries(t)
+			runDir := filepath.Join(t.TempDir(), "run")
+			arguments := []string{"run",
+				"--brief", filepath.Join(repositoryRoot(t), "examples", "brief.md"),
+				"--run-dir", runDir,
+				"--prompts-dir", filepath.Join(repositoryRoot(t), "prompts"),
+			}
+			if testCase.flag != "--codex=" {
+				arguments = append(arguments, "--codex", fake)
+			}
+			arguments = append(arguments, testCase.flag)
+			command := exec.Command(binary, arguments...)
+			command.Dir = repositoryRoot(t)
+			output, err := command.CombinedOutput()
+			if err == nil || !strings.Contains(string(output), testCase.reason) {
+				t.Fatalf("explicit empty override silently fell back to the PATH default: %v\n%s", err, output)
+			}
+			if _, err := os.Stat(runDir); !errors.Is(err, os.ErrNotExist) {
+				t.Fatalf("explicit empty override initialized a run: %v", err)
+			}
+		})
+	}
+}
+
 func TestBlackBoxHappyPathWithIsolatedTmuxServer(t *testing.T) {
 	tmuxDirectory, err := os.MkdirTemp("/tmp", "wu-tmux-*")
 	if err != nil {
@@ -1216,8 +1308,14 @@ func TestBlackBoxAmbiguousTmuxLaunchIsReconciledAndCleaned(t *testing.T) {
 
 func TestBlackBoxReadyPublicationTimeoutCleansOwnedRunner(t *testing.T) {
 	binary, fake, runDir, fixtureDir := prepareScenario(t, "happy")
-	command := newRunCommand(t, binary, fake, runDir, "400ms", filepath.Join(repositoryRoot(t), "examples", "brief.md"))
-	command.Env = append(command.Env, "WRITE_UUTER_TEST_READY_MARKER_DELAY=2s")
+	// The invocation budget stays generous so launch preparation never
+	// competes with the handshake budget under full race-suite load. Only the
+	// worker ready wait is bounded, and it starts after the tmux launch
+	// returns, so the delayed runner can never publish inside it.
+	command := newRunCommand(t, binary, fake, runDir, "20s", filepath.Join(repositoryRoot(t), "examples", "brief.md"))
+	command.Env = append(command.Env,
+		"WRITE_UUTER_TEST_READY_MARKER_DELAY=30s",
+		"WRITE_UUTER_TEST_READY_WAIT_TIMEOUT=300ms")
 	output, err := command.CombinedOutput()
 	if err == nil || !strings.Contains(string(output), "ready marker") {
 		t.Fatalf("missing ready-marker timeout: %v\n%s", err, output)

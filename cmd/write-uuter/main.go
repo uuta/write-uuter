@@ -37,21 +37,21 @@ func main() {
 		fmt.Fprintln(os.Stderr, "unexpected positional arguments")
 		os.Exit(2)
 	}
-	promptsDirSet := false
-	flags.Visit(func(parsed *flag.Flag) {
-		if parsed.Name == "prompts-dir" {
-			promptsDirSet = true
-		}
-	})
+	// Record which overrides were given explicitly so that an explicit empty
+	// value is rejected instead of falling back to the PATH default.
+	explicit := map[string]bool{}
+	flags.Visit(func(parsed *flag.Flag) { explicit[parsed.Name] = true })
 
 	err := app.Run(app.Config{
-		BriefPath:       *brief,
-		RunDir:          *runDir,
-		CodexExecutable: *codex,
-		TmuxExecutable:  *tmux,
-		AgentTimeout:    *timeout,
-		PromptsDir:      *promptsDir,
-		PromptsDirSet:   promptsDirSet,
+		BriefPath:          *brief,
+		RunDir:             *runDir,
+		CodexExecutable:    *codex,
+		TmuxExecutable:     *tmux,
+		AgentTimeout:       *timeout,
+		PromptsDir:         *promptsDir,
+		PromptsDirSet:      explicit["prompts-dir"],
+		CodexExecutableSet: explicit["codex"],
+		TmuxExecutableSet:  explicit["tmux"],
 	})
 	if err != nil {
 		fmt.Fprintln(os.Stderr, err)

@@ -4,8 +4,6 @@ package app
 
 import (
 	"fmt"
-	"os"
-	"path/filepath"
 	"runtime"
 	"syscall"
 	"unsafe"
@@ -13,34 +11,26 @@ import (
 
 const renameNoReplaceFlag = 1
 
-func renameNoReplace(oldPath, newPath string) error {
+// renameNoReplaceAt renames oldName to newName relative to an open directory
+// descriptor and fails with EEXIST rather than replacing an existing entry.
+func renameNoReplaceAt(directory uintptr, oldName, newName string) error {
 	syscallNumber, err := renameat2SyscallNumber()
 	if err != nil {
 		return err
 	}
-	oldPointer, err := syscall.BytePtrFromString(oldPath)
+	oldPointer, err := syscall.BytePtrFromString(oldName)
 	if err != nil {
 		return err
 	}
-	newPointer, err := syscall.BytePtrFromString(newPath)
+	newPointer, err := syscall.BytePtrFromString(newName)
 	if err != nil {
 		return err
 	}
-	atFDCWD := ^uintptr(99)
-	_, _, errno := syscall.Syscall6(syscallNumber, atFDCWD, uintptr(unsafe.Pointer(oldPointer)), atFDCWD, uintptr(unsafe.Pointer(newPointer)), renameNoReplaceFlag, 0)
+	_, _, errno := syscall.Syscall6(syscallNumber, directory, uintptr(unsafe.Pointer(oldPointer)), directory, uintptr(unsafe.Pointer(newPointer)), renameNoReplaceFlag, 0)
 	if errno != 0 {
 		return errno
 	}
-	return syncDirectory(filepath.Dir(newPath))
-}
-
-func syncDirectory(path string) error {
-	directory, err := os.Open(path)
-	if err != nil {
-		return err
-	}
-	defer directory.Close()
-	return directory.Sync()
+	return nil
 }
 
 func renameat2SyscallNumber() (uintptr, error) {

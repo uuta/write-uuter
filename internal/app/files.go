@@ -150,23 +150,140 @@ func syncRootDir(root *os.Root, name string) error {
 	return directory.Sync()
 }
 
-func (store *artifactStore) writeAtomicNoReplace(name string, data []byte, mode os.FileMode) error {
+// writeAtomicNoReplace commits name only if no entry exists at that name. The
+// commit is a single root-relative no-replace rename, so a competitor that
+// creates the same name concurrently is never replaced and never observed
+// through a check that a later rename could invalidate. It returns the exact
+// identity of the committed file, which is what rollback is allowed to remove.
+func (store *artifactStore) writeAtomicNoReplace(name string, data []byte, mode os.FileMode) (os.FileInfo, error) {
+	name, err := cleanLocalPath(name)
+	if err != nil {
+		return nil, err
+	}
+	parent := filepath.Dir(name)
+	if err := store.mkdirAll(parent, 0o755); err != nil {
+		return nil, err
+	}
+	if err := store.validateParents(name); err != nil {
+		return nil, err
+	}
+	directory, err := store.root.Open(parent)
+	if err != nil {
+		return nil, err
+	}
+	defer directory.Close()
+	parentInfo, err := directory.Stat()
+	if err != nil {
+		return nil, err
+	}
+	if !parentInfo.IsDir() {
+		return nil, fmt.Errorf("artifact parent is not a directory: %s", parent)
+	}
+	temporary := ".write-uuter-" + randomToken()
+	file, err := store.root.OpenFile(filepath.Join(parent, temporary), os.O_CREATE|os.O_EXCL|os.O_WRONLY, mode.Perm())
+	if err != nil {
+		return nil, err
+	}
+	keep := false
+	defer func() {
+		_ = file.Close()
+		if !keep {
+			_ = store.root.Remove(filepath.Join(parent, temporary))
+		}
+	}()
+	if _, err := file.Write(data); err != nil {
+		return nil, err
+	}
+	if err := file.Sync(); err != nil {
+		return nil, err
+	}
+	// The rename preserves this identity, so it names the committed file even
+	// if the directory entry is later taken over by something else.
+	committed, err := file.Stat()
+	if err != nil {
+		return nil, err
+	}
+	if err := file.Close(); err != nil {
+		return nil, err
+	}
+	if err := renameNoReplaceIn(directory, temporary, filepath.Base(name)); err != nil {
+		if errors.Is(err, os.ErrExist) {
+			return nil, fmt.Errorf("target already exists: %s", name)
+		}
+		return nil, err
+	}
+	if err := directory.Sync(); err != nil {
+		return nil, err
+	}
+	keep = true
+	return committed, nil
+}
+
+// renameNoReplaceIn performs the platform no-replace rename relative to an
+// already-open directory handle, so no path component is resolved again.
+func renameNoReplaceIn(directory *os.File, oldName, newName string) error {
+	connection, err := directory.SyscallConn()
+	if err != nil {
+		return err
+	}
+	var renameErr error
+	if controlErr := connection.Control(func(descriptor uintptr) {
+		renameErr = renameNoReplaceAt(descriptor, oldName, newName)
+	}); controlErr != nil {
+		return controlErr
+	}
+	return renameErr
+}
+
+// renameNoReplacePath commits a no-replace rename between two paths that share
+// a parent directory, binding that parent as an open handle first.
+func renameNoReplacePath(oldPath, newPath string) error {
+	parent := filepath.Dir(newPath)
+	if filepath.Dir(oldPath) != parent {
+		return fmt.Errorf("no-replace rename requires a shared parent directory")
+	}
+	directory, err := os.Open(parent)
+	if err != nil {
+		return err
+	}
+	defer directory.Close()
+	if err := renameNoReplaceIn(directory, filepath.Base(oldPath), filepath.Base(newPath)); err != nil {
+		return err
+	}
+	return directory.Sync()
+}
+
+// removeOwned deletes name only while it is still the exact file identity this
+// controller committed. A competing file that took the name is left alone.
+func (store *artifactStore) removeOwned(name string, owned os.FileInfo) error {
+	if owned == nil {
+		return nil
+	}
 	name, err := cleanLocalPath(name)
 	if err != nil {
 		return err
 	}
-	if err := store.mkdirAll(filepath.Dir(name), 0o755); err != nil {
+	if err := store.validateParents(name); err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return nil
+		}
 		return err
 	}
-	if err := store.validateTarget(name); err != nil {
+	current, err := store.root.Lstat(name)
+	if errors.Is(err, os.ErrNotExist) {
+		return nil
+	}
+	if err != nil {
 		return err
 	}
-	if _, err := store.root.Lstat(name); err == nil {
-		return fmt.Errorf("target already exists: %s", name)
-	} else if !errors.Is(err, os.ErrNotExist) {
-		return err
+	if !os.SameFile(owned, current) {
+		return fmt.Errorf("refuse to remove a competing artifact: %s", name)
 	}
-	return store.writeAtomic(name, data, mode)
+	err = store.root.Remove(name)
+	if errors.Is(err, os.ErrNotExist) {
+		return nil
+	}
+	return err
 }
 
 func (store *artifactStore) writeJSON(name string, value any) error {

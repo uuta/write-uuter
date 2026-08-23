@@ -69,6 +69,14 @@ func TestPromptAndStyleReadsRejectSymlinkComponents(t *testing.T) {
 	if _, err := loadPrompt(root, "docs/prompt.md"); err == nil {
 		t.Fatal("prompt read followed a symlinked parent")
 	}
+	contentRoot, err := os.OpenRoot(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer contentRoot.Close()
+	if err := validateRootParents(contentRoot, "docs/prompt.md"); err == nil {
+		t.Fatal("root parent validation accepted a symlinked parent")
+	}
 }
 
 func TestPMDecisionRequiresExactFenceLines(t *testing.T) {

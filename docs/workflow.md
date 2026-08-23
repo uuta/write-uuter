@@ -100,15 +100,23 @@ the dedicated tmux session and every invocation identity. On success the
 controller also requires the persistent PM to still be live,
 then revalidates the candidate hash, every final review, each PM request
 binding, and each accepted classification list before publishing `article.md`
-and durably persisting the succeeded state. A failure during that terminal
-transition removes `article.md`, records blocked state, attempts private-state
-cleanup even if blocked-state persistence fails. Ordinarily the blocked path
-also verifies that no PM, worker, or detached descendant remains. If signaling
-or absence verification itself fails, the controller records that cleanup
-failure, deletes every staged Codex credential, archives the available audit
-files, and preserves only non-secret ownership/control state so cleanup can be
-diagnosed and retried. That exceptional blocked result does not claim process
-absence.
+and durably persisting the succeeded state. Publication is a single
+root-relative atomic no-replace rename inside the run directory, so a competing
+`article.md` created concurrently is never replaced and the run blocks instead.
+A failure during that terminal transition removes `article.md` only while it is
+still the exact file identity this controller committed, records blocked state,
+and attempts private-state cleanup even if blocked-state persistence fails; an
+`article.md` this run never committed is left untouched. Ordinarily the blocked
+path also verifies that no PM, worker, or detached descendant remains. If
+signaling or absence verification itself fails, the controller records that
+cleanup failure, archives the available audit files, and preserves only
+non-secret ownership/control state so cleanup can be diagnosed and retried.
+Staged Codex credentials are deleted on that exceptional path only after every
+retained stable process-ownership identity the controller recorded has exited
+and the private-path scan is clean, and the deletion is then verified; while
+any owned identity is still live the credential copies are kept and the
+blocking identities are reported. That exceptional blocked result does not
+claim process absence.
 
 Parallel runs, resume after controller restart, and editing completed runs are
 not implemented.

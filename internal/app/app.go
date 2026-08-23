@@ -19,9 +19,14 @@ type Config struct {
 	RunDir          string
 	CodexExecutable string
 	TmuxExecutable  string
-	AgentTimeout    time.Duration
-	PromptsDir      string
-	PromptsDirSet   bool
+	// CodexExecutableSet/TmuxExecutableSet record that the caller passed the
+	// override explicitly, so an explicit empty value fails instead of
+	// silently falling back to the PATH default.
+	CodexExecutableSet bool
+	TmuxExecutableSet  bool
+	AgentTimeout       time.Duration
+	PromptsDir         string
+	PromptsDirSet      bool
 }
 
 type decisionBinding struct {
@@ -34,7 +39,7 @@ type controller struct {
 	config           Config
 	brief            briefDocument
 	runDir           string
-	promptsDir       string
+	prompts          *promptBundle
 	contentRoot      string
 	workflow         Workflow
 	store            *artifactStore
@@ -42,6 +47,9 @@ type controller struct {
 	pm               invocation
 	reachedLenses    map[int][]string
 	decisionBindings map[int]map[string]decisionBinding
+	// publishedArticle is the exact file identity this controller committed as
+	// article.md. Rollback removes only that identity.
+	publishedArticle os.FileInfo
 }
 
 func Run(config Config) error {
@@ -50,6 +58,12 @@ func Run(config Config) error {
 	}
 	if config.AgentTimeout <= 0 {
 		return fmt.Errorf("--timeout must be greater than zero")
+	}
+	if config.CodexExecutableSet && strings.TrimSpace(config.CodexExecutable) == "" {
+		return fmt.Errorf("--codex was given an empty value")
+	}
+	if config.TmuxExecutableSet && strings.TrimSpace(config.TmuxExecutable) == "" {
+		return fmt.Errorf("--tmux was given an empty value")
 	}
 	if config.CodexExecutable == "" {
 		config.CodexExecutable = "codex"
@@ -65,10 +79,11 @@ func Run(config Config) error {
 	if err != nil {
 		return err
 	}
-	promptsDir, err := resolvePromptsDir(config.PromptsDir, config.PromptsDirSet || config.PromptsDir != "")
+	prompts, err := openPromptsBundle(config.PromptsDir, config.PromptsDirSet || config.PromptsDir != "")
 	if err != nil {
 		return err
 	}
+	defer prompts.Close()
 	runDir, err := filepath.Abs(config.RunDir)
 	if err != nil {
 		return fmt.Errorf("resolve run directory: %w", err)
@@ -87,7 +102,7 @@ func Run(config Config) error {
 		return fmt.Errorf("resolve content root: %w", err)
 	}
 	control := &controller{
-		config: config, brief: brief, runDir: runDir, promptsDir: promptsDir, contentRoot: contentRoot,
+		config: config, brief: brief, runDir: runDir, prompts: prompts, contentRoot: contentRoot,
 		reachedLenses: make(map[int][]string), decisionBindings: make(map[int]map[string]decisionBinding),
 	}
 	if err := control.initialize(briefData); err != nil {
@@ -147,7 +162,7 @@ func (control *controller) initialize(briefData []byte) error {
 	if err := waitForCommitBarrier(); err != nil {
 		return err
 	}
-	if err := renameNoReplace(temporary, control.runDir); err != nil {
+	if err := renameNoReplacePath(temporary, control.runDir); err != nil {
 		if _, targetErr := os.Lstat(control.runDir); targetErr == nil {
 			return fmt.Errorf("run directory already exists: %s", control.runDir)
 		}
@@ -243,7 +258,7 @@ func (control *controller) execute() error {
 }
 
 func (control *controller) runResearcher() error {
-	base, err := loadPrompt(control.promptsDir, "researcher.md")
+	base, err := control.prompts.load("researcher.md")
 	if err != nil {
 		return err
 	}
@@ -354,7 +369,7 @@ func sourceHintValue(line string) string {
 }
 
 func (control *controller) runStoryEditor() error {
-	base, err := loadPrompt(control.promptsDir, "story-editor.md")
+	base, err := control.prompts.load("story-editor.md")
 	if err != nil {
 		return err
 	}
@@ -406,7 +421,7 @@ func (control *controller) runStoryEditor() error {
 }
 
 func (control *controller) runWriter(candidate int) error {
-	base, err := loadPrompt(control.promptsDir, "writer.md")
+	base, err := control.prompts.load("writer.md")
 	if err != nil {
 		return err
 	}
@@ -512,11 +527,11 @@ func decisionOutcome(decisions []PMDecision) (bool, *PMDecision) {
 
 func (control *controller) runReviewer(candidate int, lens string) (ReviewResult, error) {
 	var result ReviewResult
-	base, err := loadPrompt(control.promptsDir, "reviewer-"+lens+".md")
+	base, err := control.prompts.load("reviewer-" + lens + ".md")
 	if err != nil {
 		return result, err
 	}
-	outputContract, err := loadPrompt(control.promptsDir, "reviewer-output.md")
+	outputContract, err := control.prompts.load("reviewer-output.md")
 	if err != nil {
 		return result, err
 	}
@@ -1109,12 +1124,6 @@ func (control *controller) runWorker(role, lens string, candidate int, revision,
 	if err != nil {
 		return err
 	}
-	if strings.HasPrefix(role, "reviewer_") {
-		control.workflow.ReviewAttemptCount++
-		if err := control.saveWorkflow(); err != nil {
-			return err
-		}
-	}
 	workspace, err := control.runtime.workspaceStore(inv)
 	if err != nil {
 		return err
@@ -1131,8 +1140,21 @@ func (control *controller) runWorker(role, lens string, candidate int, revision,
 	if err := ensureInvocationDeadline(deadlineUnixNano, role+" launch"); err != nil {
 		return err
 	}
-	if err := control.runtime.startWorker(control.pm, inv, deadlineUnixNano); err != nil {
-		return err
+	if os.Getenv("WRITE_UUTER_TEST_FAIL_BEFORE_LAUNCH") == role {
+		return fmt.Errorf("injected %s pre-launch failure", role)
+	}
+	launchErr := control.runtime.startWorker(control.pm, inv, deadlineUnixNano)
+	// Count a reviewer only once tmux has been asked to launch it. A launch
+	// request that timed out ambiguously may still have started a process, so
+	// it is counted; every failure before the request is not.
+	if strings.HasPrefix(role, "reviewer_") && control.runtime.launchAttempted(inv.ID) {
+		control.workflow.ReviewAttemptCount++
+		if err := control.saveWorkflow(); err != nil {
+			return errors.Join(launchErr, err)
+		}
+	}
+	if launchErr != nil {
+		return launchErr
 	}
 	if readyRelative := os.Getenv("WRITE_UUTER_TEST_WORKER_READY_FILE"); readyRelative != "" {
 		if err := waitForTestWorkerArtifact(workspace, readyRelative, deadlineUnixNano); err != nil {
@@ -1276,13 +1298,15 @@ func (control *controller) succeed(candidate int) error {
 	if got := revisionFor(finalCandidateData); got != control.workflow.CurrentRevision {
 		return control.block(fmt.Sprintf("accepted candidate changed at publication boundary: got %s, want %s", got, control.workflow.CurrentRevision))
 	}
-	if err := control.store.writeAtomicNoReplace("article.md", finalCandidateData, 0o644); err != nil {
+	published, err := control.store.writeAtomicNoReplace("article.md", finalCandidateData, 0o644)
+	if err != nil {
 		return control.block(fmt.Sprintf("stage final article: %v", err))
 	}
+	control.publishedArticle = published
 	committedCandidate, candidateErr := control.store.readRegular(fmt.Sprintf("drafts/article-%03d.md", candidate))
 	committedArticle, articleErr := control.store.readRegular("article.md")
 	if candidateErr != nil || articleErr != nil || revisionFor(committedCandidate) != control.workflow.CurrentRevision || !bytes.Equal(committedCandidate, committedArticle) {
-		_ = control.store.remove("article.md")
+		_ = control.rollbackPublishedArticle()
 		return control.block(fmt.Sprintf("accepted candidate/article changed at final commit boundary: candidate=%v article=%v", candidateErr, articleErr))
 	}
 	now := time.Now().UTC()
@@ -1292,17 +1316,17 @@ func (control *controller) succeed(candidate int) error {
 	control.workflow.CompletedAt = &now
 	control.workflow.BlockReason = ""
 	if err := control.saveWorkflow(); err != nil {
-		_ = control.store.remove("article.md")
+		_ = control.rollbackPublishedArticle()
 		return control.block(fmt.Sprintf("persist succeeded workflow: %v", err))
 	}
 	committedCandidate, candidateErr = control.store.readRegular(fmt.Sprintf("drafts/article-%03d.md", candidate))
 	committedArticle, articleErr = control.store.readRegular("article.md")
 	if candidateErr != nil || articleErr != nil || revisionFor(committedCandidate) != control.workflow.CurrentRevision || !bytes.Equal(committedCandidate, committedArticle) {
-		_ = control.store.remove("article.md")
+		_ = control.rollbackPublishedArticle()
 		return control.block(fmt.Sprintf("accepted candidate/article changed across succeeded-state commit: candidate=%v article=%v", candidateErr, articleErr))
 	}
 	if err := control.validateFinalAudit(candidate); err != nil {
-		_ = control.store.remove("article.md")
+		_ = control.rollbackPublishedArticle()
 		return control.block(fmt.Sprintf("final review audit changed across succeeded-state commit: %v", err))
 	}
 	return nil
@@ -1358,11 +1382,11 @@ func (control *controller) validateFinalAudit(candidate int) error {
 }
 
 func (control *controller) buildPMPrompt() (string, error) {
-	base, err := loadPrompt(control.promptsDir, "pm.md")
+	base, err := control.prompts.load("pm.md")
 	if err != nil {
 		return "", err
 	}
-	runtimeProtocol, err := loadPrompt(control.promptsDir, "pm-runtime.md")
+	runtimeProtocol, err := control.prompts.load("pm-runtime.md")
 	if err != nil {
 		return "", err
 	}
@@ -1391,7 +1415,9 @@ func (control *controller) block(reason string) error {
 			reason += fmt.Sprintf("; audit archive failed: %v", archiveErr)
 		}
 	}
-	if removeErr := control.store.remove("article.md"); removeErr != nil {
+	// Roll back only the article identity this controller published. A
+	// competing article.md that this run never committed is left untouched.
+	if removeErr := control.rollbackPublishedArticle(); removeErr != nil {
 		reason += fmt.Sprintf("; failed to remove success-only article: %v", removeErr)
 	}
 	now := time.Now().UTC()
@@ -1417,6 +1443,19 @@ func (control *controller) block(reason string) error {
 			wrappedOptionalError("private runtime cleanup", privateErr))
 	}
 	return errors.New(reason)
+}
+
+// rollbackPublishedArticle removes article.md while it is still the identity
+// this controller committed, and forgets that identity once it is gone.
+func (control *controller) rollbackPublishedArticle() error {
+	if control.publishedArticle == nil {
+		return nil
+	}
+	if err := control.store.removeOwned("article.md", control.publishedArticle); err != nil {
+		return err
+	}
+	control.publishedArticle = nil
+	return nil
 }
 
 func wrappedOptionalError(label string, err error) error {

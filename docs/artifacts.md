@@ -109,7 +109,10 @@ truth. Schema version 1 records:
 - `current_candidate` and `current_revision` (`sha256:<hex>`);
 - `active_role`;
 - stable relative `artifact_paths`;
-- `review_attempt_count` (one per reviewer process);
+- `review_attempt_count` (one per launched reviewer process; it is incremented
+  only after tmux has been asked to start that reviewer, so a failure before
+  the launch request never claims a reviewer process, while a launch request
+  that timed out ambiguously is counted conservatively);
 - `started_at`, `updated_at`, and terminal `completed_at` timestamps;
 - terminal `block_reason` when blocked.
 
