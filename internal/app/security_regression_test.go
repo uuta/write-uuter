@@ -10,7 +10,7 @@ import (
 
 func TestPrivateRuntimeAuditBlocksRemovalWhileTrackedProcessRemains(t *testing.T) {
 	runtime := &tmuxRuntime{privateRoot: t.TempDir()}
-	command := exec.Command("sh", "-c", "sleep 30 # "+runtime.privateRoot)
+	command := exec.Command("sh", "-c", "exec -a '"+runtime.privateRoot+"' sleep 30")
 	if err := command.Start(); err != nil {
 		t.Fatal(err)
 	}

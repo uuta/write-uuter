@@ -1037,6 +1037,9 @@ func parsePMDecisionDocument(data []byte) (PMDecisionDocument, error) {
 func rejectNullControlFields(value any, path string) error {
 	switch current := value.(type) {
 	case nil:
+		if strings.HasSuffix(path, ".decisions") {
+			return fmt.Errorf("PM decision must contain a non-null decisions array")
+		}
 		return fmt.Errorf("PM decision control field %s must not be null", path)
 	case map[string]any:
 		for key, child := range current {
