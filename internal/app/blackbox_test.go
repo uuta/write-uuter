@@ -1197,8 +1197,14 @@ func TestBlackBoxAmbiguousTmuxLaunchIsReconciledAndCleaned(t *testing.T) {
 				}
 				if time.Now().After(deadline) {
 					state := readWorkflow(t, runDir)
-					if state.Status != "blocked" || strings.TrimSpace(state.BlockReason) == "" {
+					reason := strings.ToLower(state.BlockReason)
+					if state.Status != "blocked" || !strings.Contains(reason, "cleanup") && !strings.Contains(reason, "private") && !strings.Contains(reason, "audit") {
 						t.Fatalf("ambiguous launch left unexplained private state: %v; workflow=%+v", privatePaths, state)
+					}
+					for _, privatePath := range privatePaths {
+						if _, err := os.Stat(filepath.Join(privatePath, "codex-homes")); !os.IsNotExist(err) {
+							t.Fatalf("ambiguous cleanup retained credentials: %s", privatePath)
+						}
 					}
 					break
 				}
