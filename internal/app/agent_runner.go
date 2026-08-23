@@ -144,7 +144,7 @@ func RunAgent(arguments []string) (returnErr error) {
 func agentEnvironment(workspace, codexHome, role, lens string, candidate int, revision, invocation string) []string {
 	allowed := []string{
 		"HOME", "USER", "LOGNAME", "PATH", "SHELL", "LANG", "LC_ALL", "TERM",
-		"NO_PROXY", "SSL_CERT_FILE", "SSL_CERT_DIR",
+		"SSL_CERT_FILE", "SSL_CERT_DIR",
 	}
 	environment := make([]string, 0, len(allowed)+6)
 	for _, key := range allowed {

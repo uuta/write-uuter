@@ -29,6 +29,11 @@ func resolvePromptsDir(configured string, explicit bool) (string, error) {
 		if err != nil {
 			return "", fmt.Errorf("resolve explicit prompt directory: %w", err)
 		}
+		if info, statErr := os.Lstat(absolute); statErr != nil {
+			return "", fmt.Errorf("inspect explicit prompt directory: %w", statErr)
+		} else if info.Mode()&os.ModeSymlink != 0 || !info.IsDir() {
+			return "", fmt.Errorf("explicit prompt directory is not a real directory: %s", absolute)
+		}
 		if err := validatePromptsDir(absolute); err != nil {
 			return "", fmt.Errorf("explicit prompt directory %s: %w", absolute, err)
 		}

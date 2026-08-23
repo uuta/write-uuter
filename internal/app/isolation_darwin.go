@@ -79,7 +79,9 @@ func isolationProfile(workspace, codexHome string, runtimeExecutables []string) 
 			fmt.Fprintf(&profile, "(allow process-exec (require-all (require-not (literal %s)) (require-not (literal \"/usr/bin/sandbox-exec\"))))\n", strconv.Quote(executable))
 			fmt.Fprintf(&profile, "(with-filter (process-path \"/usr/bin/sandbox-exec\") (allow process-exec (literal %s)))\n", strconv.Quote(executable))
 			fmt.Fprintf(&profile, "(with-filter (process-path %s) (allow process-fork))\n", strconv.Quote(executable))
-			fmt.Fprintf(&profile, "(with-filter (process-path %s) (allow file-read* file-write* (subpath %s)))\n", strconv.Quote(executable), strconv.Quote(codexHome))
+			// Do not grant the model-facing in-process tool the staged CODEX_HOME.
+			// Authentication is controller-owned; generic tools must not read or
+			// mutate auth.json/installation_id through the client process.
 			fmt.Fprintf(&profile, "(with-filter (process-path %s) (allow network*))\n", strconv.Quote(executable))
 			// Revoke every named bootstrap/XPC lookup for model-invoked tools so
 			// Keychain, pasteboard, and other user-session services stay outside

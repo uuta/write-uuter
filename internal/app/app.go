@@ -178,17 +178,24 @@ func waitForCommitBarrier() error {
 }
 
 func (control *controller) execute() error {
+	pmDeadline := invocationDeadline(control.config.AgentTimeout)
 	runtime, err := newTmuxRuntime(control.config.TmuxExecutable, control.config.CodexExecutable, control.config.AgentTimeout, control.runDir)
 	if err != nil {
 		return control.block(err.Error())
 	}
 	control.runtime = runtime
+	if err := ensureInvocationDeadline(pmDeadline, "PM launch preparation"); err != nil {
+		return control.block(err.Error())
+	}
 	pmPrompt, err := control.buildPMPrompt()
 	if err != nil {
 		return control.block(err.Error())
 	}
 	control.pm, err = control.runtime.prepareInvocation("pm", "", 0, "", pmPrompt)
 	if err != nil {
+		return control.block(err.Error())
+	}
+	if err := ensureInvocationDeadline(pmDeadline, "PM launch preparation"); err != nil {
 		return control.block(err.Error())
 	}
 	pmStore, err := control.runtime.workspaceStore(control.pm)
@@ -202,7 +209,6 @@ func (control *controller) execute() error {
 	if err != nil {
 		return control.block(err.Error())
 	}
-	pmDeadline := invocationDeadline(control.config.AgentTimeout)
 	if err := control.runtime.startPM(control.pm, pmDeadline); err != nil {
 		return control.block(err.Error())
 	}
@@ -998,6 +1004,13 @@ func parsePMDecisionDocument(data []byte) (PMDecisionDocument, error) {
 	if !strings.HasPrefix(payload, "{") || !strings.HasSuffix(payload, "}") {
 		return document, fmt.Errorf("PM decision must contain exactly one complete fenced JSON document")
 	}
+	var raw any
+	if err := json.Unmarshal([]byte(payload), &raw); err != nil {
+		return document, fmt.Errorf("invalid PM decision JSON: %w", err)
+	}
+	if err := rejectNullControlFields(raw, "$"); err != nil {
+		return document, err
+	}
 	var shape struct {
 		ReviewedRevision string `json:"reviewed_revision"`
 		Lenses           map[string]struct {
@@ -1019,6 +1032,26 @@ func parsePMDecisionDocument(data []byte) (PMDecisionDocument, error) {
 		return document, fmt.Errorf("invalid PM decision JSON: %w", err)
 	}
 	return document, nil
+}
+
+func rejectNullControlFields(value any, path string) error {
+	switch current := value.(type) {
+	case nil:
+		return fmt.Errorf("PM decision control field %s must not be null", path)
+	case map[string]any:
+		for key, child := range current {
+			if err := rejectNullControlFields(child, path+"."+key); err != nil {
+				return err
+			}
+		}
+	case []any:
+		for index, child := range current {
+			if err := rejectNullControlFields(child, fmt.Sprintf("%s[%d]", path, index)); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
 }
 
 func decisionListDigest(decisions []PMDecision) string {
@@ -1073,6 +1106,12 @@ func (control *controller) runWorker(role, lens string, candidate int, revision,
 	if err != nil {
 		return err
 	}
+	if strings.HasPrefix(role, "reviewer_") {
+		control.workflow.ReviewAttemptCount++
+		if err := control.saveWorkflow(); err != nil {
+			return err
+		}
+	}
 	workspace, err := control.runtime.workspaceStore(inv)
 	if err != nil {
 		return err
@@ -1099,12 +1138,6 @@ func (control *controller) runWorker(role, lens string, candidate int, revision,
 	}
 	if activeTimeout, parseErr := time.ParseDuration(os.Getenv("WRITE_UUTER_TEST_WORKER_ACTIVE_TIMEOUT")); parseErr == nil && activeTimeout > 0 {
 		deadlineUnixNano = invocationDeadline(activeTimeout)
-	}
-	if strings.HasPrefix(role, "reviewer_") {
-		control.workflow.ReviewAttemptCount++
-		if err := control.saveWorkflow(); err != nil {
-			return err
-		}
 	}
 	ctx, cancel := context.WithDeadline(context.Background(), time.Unix(0, deadlineUnixNano))
 	defer cancel()
@@ -1240,7 +1273,7 @@ func (control *controller) succeed(candidate int) error {
 	if got := revisionFor(finalCandidateData); got != control.workflow.CurrentRevision {
 		return control.block(fmt.Sprintf("accepted candidate changed at publication boundary: got %s, want %s", got, control.workflow.CurrentRevision))
 	}
-	if err := control.store.writeAtomic("article.md", finalCandidateData, 0o644); err != nil {
+	if err := control.store.writeAtomicNoReplace("article.md", finalCandidateData, 0o644); err != nil {
 		return control.block(fmt.Sprintf("stage final article: %v", err))
 	}
 	committedCandidate, candidateErr := control.store.readRegular(fmt.Sprintf("drafts/article-%03d.md", candidate))
@@ -1346,11 +1379,12 @@ func (control *controller) saveWorkflow() error {
 
 func (control *controller) block(reason string) error {
 	var cleanupErr error
+	var archiveErr error
 	if control.runtime != nil {
 		if cleanupErr = control.runtime.cleanup(false, control.pm); cleanupErr != nil {
 			reason += fmt.Sprintf("; cleanup failed: %v", cleanupErr)
 		}
-		if archiveErr := control.runtime.archiveAll(control.store); archiveErr != nil {
+		if archiveErr = control.runtime.archiveAll(control.store); archiveErr != nil {
 			reason += fmt.Sprintf("; audit archive failed: %v", archiveErr)
 		}
 	}
@@ -1366,7 +1400,7 @@ func (control *controller) block(reason string) error {
 	persistErr := control.saveWorkflow()
 	var privateErr error
 	if control.runtime != nil {
-		if cleanupErr == nil {
+		if cleanupErr == nil && archiveErr == nil {
 			privateErr = control.runtime.closePrivate()
 		} else {
 			// Preserve controller-owned process identities for a later verified
@@ -1396,7 +1430,7 @@ func findStyleGuide(contentRoot string) (string, error) {
 	}
 	defer root.Close()
 	for _, relative := range []string{"STYLE.md", "style-guide.md", "docs/style-guide.md"} {
-		if parentErr := validateRootParents(root, relative); parentErr != nil {
+		if parentErr := validateRootParents(root, relative); parentErr != nil && !errors.Is(parentErr, os.ErrNotExist) {
 			return "", parentErr
 		}
 		info, statErr := root.Lstat(relative)

@@ -134,8 +134,39 @@ func (store *artifactStore) writeAtomic(name string, data []byte, mode os.FileMo
 	if err := store.root.Rename(temporary, name); err != nil {
 		return err
 	}
+	if err := syncRootDir(store.root, parent); err != nil {
+		return err
+	}
 	keep = true
 	return nil
+}
+
+func syncRootDir(root *os.Root, name string) error {
+	directory, err := root.Open(name)
+	if err != nil {
+		return err
+	}
+	defer directory.Close()
+	return directory.Sync()
+}
+
+func (store *artifactStore) writeAtomicNoReplace(name string, data []byte, mode os.FileMode) error {
+	name, err := cleanLocalPath(name)
+	if err != nil {
+		return err
+	}
+	if err := store.mkdirAll(filepath.Dir(name), 0o755); err != nil {
+		return err
+	}
+	if err := store.validateTarget(name); err != nil {
+		return err
+	}
+	if _, err := store.root.Lstat(name); err == nil {
+		return fmt.Errorf("target already exists: %s", name)
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return err
+	}
+	return store.writeAtomic(name, data, mode)
 }
 
 func (store *artifactStore) writeJSON(name string, value any) error {
