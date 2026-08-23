@@ -1283,7 +1283,7 @@ func TestBlackBoxHumanReportAcceptsEquivalentFieldLayout(t *testing.T) {
 }
 
 func TestBlackBoxMultiplePMDocumentsAreRejected(t *testing.T) {
-	run := executeScenario(t, "multiple_pm_documents")
+	run := executeScenarioWithTimeout(t, "multiple_pm_documents", "20s")
 	if run.err == nil {
 		t.Fatal("CLI unexpectedly accepted multiple PM documents")
 	}
