@@ -1020,7 +1020,7 @@ func parsePMDecisionDocument(data []byte) (PMDecisionDocument, error) {
 		} `json:"lenses"`
 	}
 	if err := decodeStrictJSON([]byte(payload), &shape); err != nil {
-		return document, fmt.Errorf("invalid PM decision JSON: %w", err)
+		return document, fmt.Errorf("PM decision must contain exactly one complete fenced JSON document: %w", err)
 	}
 	for lens, record := range shape.Lenses {
 		decisions := bytes.TrimSpace(record.Decisions)
@@ -1029,7 +1029,7 @@ func parsePMDecisionDocument(data []byte) (PMDecisionDocument, error) {
 		}
 	}
 	if err := decodeStrictJSON([]byte(payload), &document); err != nil {
-		return document, fmt.Errorf("invalid PM decision JSON: %w", err)
+		return document, fmt.Errorf("PM decision must contain exactly one complete fenced JSON document: %w", err)
 	}
 	return document, nil
 }

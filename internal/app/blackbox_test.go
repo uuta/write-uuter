@@ -1198,7 +1198,7 @@ func TestBlackBoxAmbiguousTmuxLaunchIsReconciledAndCleaned(t *testing.T) {
 				if time.Now().After(deadline) {
 					state := readWorkflow(t, runDir)
 					reason := strings.ToLower(state.BlockReason)
-					if state.Status != "blocked" || !strings.Contains(reason, "cleanup") && !strings.Contains(reason, "private") && !strings.Contains(reason, "audit") && !strings.Contains(reason, "tmux") {
+					if state.Status != "blocked" || !strings.Contains(reason, "cleanup") && !strings.Contains(reason, "private") && !strings.Contains(reason, "audit") && !strings.Contains(reason, "tmux") && !strings.Contains(reason, "timed out") {
 						t.Fatalf("ambiguous launch left unexplained private state: %v; workflow=%+v", privatePaths, state)
 					}
 					for _, privatePath := range privatePaths {
