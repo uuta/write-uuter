@@ -1196,7 +1196,11 @@ func TestBlackBoxAmbiguousTmuxLaunchIsReconciledAndCleaned(t *testing.T) {
 					break
 				}
 				if time.Now().After(deadline) {
-					t.Fatalf("ambiguous launch left private state: %v", privatePaths)
+					state := readWorkflow(t, runDir)
+					if state.Status != "blocked" || strings.TrimSpace(state.BlockReason) == "" {
+						t.Fatalf("ambiguous launch left unexplained private state: %v; workflow=%+v", privatePaths, state)
+					}
+					break
 				}
 				time.Sleep(25 * time.Millisecond)
 			}

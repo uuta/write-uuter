@@ -10,7 +10,6 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
-	"syscall"
 	"time"
 )
 
@@ -732,26 +731,6 @@ func (runtime *tmuxRuntime) auditPrivateProcesses() error {
 	return nil
 }
 
-func (runtime *tmuxRuntime) terminatePrivateProcesses() error {
-	output, err := exec.Command("ps", "-axo", "pid=,command=").Output()
-	if err != nil {
-		return err
-	}
-	self := strconv.Itoa(os.Getpid())
-	for _, line := range strings.Split(string(output), "\n") {
-		fields := strings.Fields(line)
-		if len(fields) < 2 || fields[0] == self || !strings.Contains(line, runtime.privateRoot) {
-			continue
-		}
-		pid, parseErr := strconv.Atoi(fields[0])
-		if parseErr != nil {
-			continue
-		}
-		_ = syscall.Kill(pid, syscall.SIGTERM)
-	}
-	return nil
-}
-
 func (runtime *tmuxRuntime) sessionExists() (bool, error) {
 	output, err := runtime.runCommand("has-session", "-t", runtime.session)
 	if err == nil {
@@ -990,10 +969,7 @@ func (runtime *tmuxRuntime) closePrivate() error {
 	var lastRemoveErr error
 	for {
 		if auditErr := runtime.auditPrivateProcesses(); auditErr != nil {
-			_ = runtime.terminatePrivateProcesses()
-			if retryErr := runtime.auditPrivateProcesses(); retryErr != nil {
-				return errors.Join(closeErr, retryErr)
-			}
+			return errors.Join(closeErr, auditErr)
 		}
 		if !runtime.storeClosed {
 			if err := runtime.controlStore.Close(); err != nil {
