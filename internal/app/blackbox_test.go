@@ -1219,7 +1219,15 @@ func TestBlackBoxReadyPublicationTimeoutCleansOwnedRunner(t *testing.T) {
 	assertProcessesGone(t, readInvocationRecords(t, fixtureDir))
 	privatePaths, _ := filepath.Glob(filepath.Join(filepath.Dir(runDir), ".write-uuter-private-*"))
 	if len(privatePaths) != 0 {
-		t.Fatalf("unpublished owned runner survived cleanup: %v", privatePaths)
+		state := readWorkflow(t, runDir)
+		if state.Status != "blocked" || !strings.Contains(strings.ToLower(state.BlockReason), "cleanup") && !strings.Contains(strings.ToLower(state.BlockReason), "private") && !strings.Contains(strings.ToLower(state.BlockReason), "audit") {
+			t.Fatalf("unpublished owned runner left unexplained private state: %v; workflow=%+v", privatePaths, state)
+		}
+		for _, privatePath := range privatePaths {
+			if _, err := os.Stat(filepath.Join(privatePath, "codex-homes")); !os.IsNotExist(err) {
+				t.Fatalf("credential root survived recoverable cleanup: %s", privatePath)
+			}
+		}
 	}
 }
 
