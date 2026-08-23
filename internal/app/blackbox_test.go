@@ -1189,7 +1189,7 @@ func TestBlackBoxAmbiguousTmuxLaunchIsReconciledAndCleaned(t *testing.T) {
 				t.Fatalf("ambiguous launch was not reconciled as an indeterminate start: %v\n%s", err, output)
 			}
 			assertProcessesGone(t, readInvocationRecords(t, fixtureDir))
-			deadline := time.Now().Add(5 * time.Second)
+			deadline := time.Now().Add(12 * time.Second)
 			for {
 				privatePaths, _ := filepath.Glob(filepath.Join(filepath.Dir(runDir), ".write-uuter-private-*"))
 				if len(privatePaths) == 0 {

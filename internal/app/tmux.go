@@ -647,7 +647,11 @@ func (runtime *tmuxRuntime) cleanup(requirePMLive bool, pm invocation) error {
 			inv.retired = true
 		}
 	}
-	deadline := time.Now().Add(runtime.commandTimeout)
+	cleanupWindow := runtime.commandTimeout
+	if cleanupWindow < 5*time.Second {
+		cleanupWindow = 5 * time.Second
+	}
+	deadline := time.Now().Add(cleanupWindow)
 	verifiedAbsent := false
 	for time.Now().Before(deadline) {
 		exists, err := runtime.sessionExists()
@@ -956,7 +960,11 @@ func (runtime *tmuxRuntime) closePrivate() error {
 	if runtime == nil || runtime.closed {
 		return nil
 	}
-	deadline := time.Now().Add(runtime.commandTimeout)
+	cleanupWindow := runtime.commandTimeout
+	if cleanupWindow < 5*time.Second {
+		cleanupWindow = 5 * time.Second
+	}
+	deadline := time.Now().Add(cleanupWindow)
 	var closeErr error
 	var lastRemoveErr error
 	for {
