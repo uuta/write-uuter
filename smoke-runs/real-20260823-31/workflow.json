@@ -1,0 +1,25 @@
+{
+  "schema_version": 1,
+  "status": "succeeded",
+  "phase": "complete",
+  "current_candidate": 1,
+  "current_revision": "sha256:41600af0875720e5c11343daefeceed60ccd9c158c1442347b8e0d00f620d63e",
+  "active_role": "",
+  "artifact_paths": {
+    "article": "article.md",
+    "assets": "evidence/assets",
+    "brief": "brief.md",
+    "claim_ledger": "claim-ledger.md",
+    "drafts": "drafts",
+    "firsthand": "evidence/firsthand.md",
+    "outline": "outline.md",
+    "pm_decisions": "pm-decisions",
+    "reviews": "reviews",
+    "sources": "evidence/sources.md",
+    "workflow": "workflow.json"
+  },
+  "review_attempt_count": 4,
+  "started_at": "2026-08-23T05:15:10.077246Z",
+  "updated_at": "2026-08-23T05:24:46.773573Z",
+  "completed_at": "2026-08-23T05:24:46.773573Z"
+}
