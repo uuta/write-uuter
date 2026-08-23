@@ -1409,6 +1409,9 @@ func (control *controller) block(reason string) error {
 			// Preserve controller-owned process identities for a later verified
 			// cleanup attempt, while removing staged credentials immediately.
 			privateErr = control.runtime.closeCredentials()
+			if privateErr == nil && archiveErr == nil {
+				privateErr = control.runtime.closePrivate()
+			}
 		}
 	}
 	if persistErr != nil || privateErr != nil {
