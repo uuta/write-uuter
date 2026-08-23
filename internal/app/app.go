@@ -170,9 +170,15 @@ func (control *controller) initialize(briefData []byte) error {
 	}
 	if err != nil {
 		if committed {
-			// Only the durability barrier failed. Report that rather than
-			// blaming a competing target for this run's own commit.
-			return fmt.Errorf("durably commit run workspace at %s: %w", control.runDir, err)
+			// The rename already made the target visible, so this run owns the
+			// committed identity even though the durability barrier failed.
+			// Adopt the store and terminalize through the ordinary blocked
+			// path; leaving the visible target at running/initializing would
+			// strand it, since a retry refuses an existing run directory.
+			// keepStore stays false on purpose: the deferred cleanup closes the
+			// adopted store once the terminal state has been persisted.
+			control.store = store
+			return control.block(fmt.Sprintf("durably commit run workspace at %s: %v", control.runDir, err))
 		}
 		if _, targetErr := os.Lstat(control.runDir); targetErr == nil {
 			return fmt.Errorf("run directory already exists: %s", control.runDir)

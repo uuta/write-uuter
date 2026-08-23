@@ -24,8 +24,12 @@ type workflowState struct {
 	Phase              string `json:"phase"`
 	CurrentCandidate   int    `json:"current_candidate"`
 	CurrentRevision    string `json:"current_revision"`
+	ActiveRole         string `json:"active_role"`
 	ReviewAttemptCount int    `json:"review_attempt_count"`
 	BlockReason        string `json:"block_reason"`
+	StartedAt          string `json:"started_at"`
+	UpdatedAt          string `json:"updated_at"`
+	CompletedAt        string `json:"completed_at"`
 }
 
 type invocationRecord struct {
@@ -711,6 +715,45 @@ func TestBlackBoxUnsyncedRunWorkspaceCommitIsNotBlamedOnACompetitor(t *testing.T
 	leftovers, _ := filepath.Glob(filepath.Join(filepath.Dir(runDir), "."+filepath.Base(runDir)+".tmp-*"))
 	if len(leftovers) != 0 {
 		t.Fatalf("temporary workspace name was recreated or left behind: %v", leftovers)
+	}
+
+	// The target is visible, so the run owns it and must not be left at
+	// running/initializing: that state is indistinguishable from a live run
+	// and can never be retried, because a retry refuses an existing target.
+	state := readWorkflow(t, runDir)
+	if state.Status != "blocked" || state.Phase != "blocked" {
+		t.Fatalf("committed workspace was left non-terminal: %+v", state)
+	}
+	if !strings.Contains(state.BlockReason, "durably commit run workspace") {
+		t.Fatalf("durability failure was not recorded as the block reason: %+v", state)
+	}
+	if state.ActiveRole != "" || state.CurrentCandidate != 0 || state.ReviewAttemptCount != 0 {
+		t.Fatalf("terminal fields are inconsistent for a pre-launch failure: %+v", state)
+	}
+	if state.CompletedAt == "" || state.StartedAt == "" || state.UpdatedAt == "" {
+		t.Fatalf("terminal timestamps are missing: %+v", state)
+	}
+	assertNoArticle(t, runDir)
+	if _, statErr := os.Lstat(filepath.Join(runDir, "brief.md")); statErr != nil {
+		t.Fatalf("committed workspace lost its initialized contents: %v", statErr)
+	}
+
+	// Retrying the same target must still refuse it rather than replace or
+	// delete what is already committed there.
+	retry := exec.Command(binary, "run",
+		"--brief", filepath.Join(repositoryRoot(t), "examples", "brief.md"),
+		"--run-dir", runDir,
+		"--codex", fake,
+		"--timeout", "5s",
+		"--prompts-dir", filepath.Join(repositoryRoot(t), "prompts"),
+	)
+	retry.Dir = repositoryRoot(t)
+	retryOutput, retryErr := retry.CombinedOutput()
+	if retryErr == nil || !strings.Contains(string(retryOutput), "run directory already exists") {
+		t.Fatalf("retry did not refuse the committed target: %v\n%s", retryErr, retryOutput)
+	}
+	if after := readWorkflow(t, runDir); after != state {
+		t.Fatalf("refused retry changed the committed terminal state: %+v -> %+v", state, after)
 	}
 }
 
