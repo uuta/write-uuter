@@ -162,7 +162,18 @@ func (control *controller) initialize(briefData []byte) error {
 	if err := waitForCommitBarrier(); err != nil {
 		return err
 	}
-	if err := renameNoReplacePath(temporary, control.runDir); err != nil {
+	committed, err := renameNoReplacePath(temporary, control.runDir)
+	if committed {
+		// The rename consumed the temporary name. Never remove that name
+		// again: anything reappearing under it is no longer this workspace.
+		keepTemporary = true
+	}
+	if err != nil {
+		if committed {
+			// Only the durability barrier failed. Report that rather than
+			// blaming a competing target for this run's own commit.
+			return fmt.Errorf("durably commit run workspace at %s: %w", control.runDir, err)
+		}
 		if _, targetErr := os.Lstat(control.runDir); targetErr == nil {
 			return fmt.Errorf("run directory already exists: %s", control.runDir)
 		}
@@ -1117,8 +1128,18 @@ func validateDecisionList(decisions []PMDecision, result ReviewResult) error {
 	return nil
 }
 
+// workerLaunchDeadline bounds one worker invocation. A test may bound the
+// launch transition independently of the PM setup budget, so a slow host
+// cannot retarget the boundary the test intends to exercise.
+func (control *controller) workerLaunchDeadline() int64 {
+	if budget, err := time.ParseDuration(os.Getenv("WRITE_UUTER_TEST_WORKER_LAUNCH_TIMEOUT")); err == nil && budget > 0 {
+		return invocationDeadline(budget)
+	}
+	return invocationDeadline(control.config.AgentTimeout)
+}
+
 func (control *controller) runWorker(role, lens string, candidate int, revision, phase, prompt string, prepare, validate, commit func(*artifactStore) error, rollback func() error) error {
-	deadlineUnixNano := invocationDeadline(control.config.AgentTimeout)
+	deadlineUnixNano := control.workerLaunchDeadline()
 	testInvocationDelay("WRITE_UUTER_TEST_BEFORE_WORKER_START_DELAY")
 	inv, err := control.runtime.prepareInvocation(role, lens, candidate, revision, prompt)
 	if err != nil {
@@ -1299,10 +1320,13 @@ func (control *controller) succeed(candidate int) error {
 		return control.block(fmt.Sprintf("accepted candidate changed at publication boundary: got %s, want %s", got, control.workflow.CurrentRevision))
 	}
 	published, err := control.store.writeAtomicNoReplace("article.md", finalCandidateData, 0o644)
+	// Record the identity before handling the error. A failure after the
+	// rename still created the article, and only a recorded identity can be
+	// rolled back out of a blocked run.
+	control.publishedArticle = published
 	if err != nil {
 		return control.block(fmt.Sprintf("stage final article: %v", err))
 	}
-	control.publishedArticle = published
 	committedCandidate, candidateErr := control.store.readRegular(fmt.Sprintf("drafts/article-%03d.md", candidate))
 	committedArticle, articleErr := control.store.readRegular("article.md")
 	if candidateErr != nil || articleErr != nil || revisionFor(committedCandidate) != control.workflow.CurrentRevision || !bytes.Equal(committedCandidate, committedArticle) {
@@ -1432,8 +1456,11 @@ func (control *controller) block(reason string) error {
 		if cleanupErr == nil && archiveErr == nil {
 			privateErr = control.runtime.closePrivate()
 		} else {
-			// Preserve controller-owned process identities for a later verified
-			// cleanup attempt, while removing staged credentials immediately.
+			// Preserve controller-owned process identities for a later
+			// verified cleanup attempt. closeCredentials keeps the staged
+			// credentials until every owned identity has exited, then removes
+			// and verifies them; the non-secret ownership and control state
+			// stays behind either way so the failure can be diagnosed.
 			privateErr = control.runtime.closeCredentials()
 		}
 	}
@@ -1451,11 +1478,13 @@ func (control *controller) rollbackPublishedArticle() error {
 	if control.publishedArticle == nil {
 		return nil
 	}
-	if err := control.store.removeOwned("article.md", control.publishedArticle); err != nil {
-		return err
+	err := control.store.removeOwned("article.md", control.publishedArticle)
+	if err == nil || errors.Is(err, errCompetingArtifact) {
+		// Either the article this run created is gone, or the name belongs to
+		// someone else and this run has nothing left at it to remove.
+		control.publishedArticle = nil
 	}
-	control.publishedArticle = nil
-	return nil
+	return err
 }
 
 func wrappedOptionalError(label string, err error) error {

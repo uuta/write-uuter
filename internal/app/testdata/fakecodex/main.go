@@ -625,27 +625,48 @@ func mustJSON(path string, value any) {
 	mustWrite(path, string(data)+"\n")
 }
 
+// writeJSON publishes the invocation log. The controller archives this file
+// while the fake may still be rewriting it, so truncating in place can hand
+// the test harness a partial document; publish it atomically instead.
 func writeJSON(path string, value any) {
-	data, _ := json.MarshalIndent(value, "", "  ")
-	_ = os.WriteFile(path, data, 0o644)
+	data, err := json.MarshalIndent(value, "", "  ")
+	if err != nil {
+		return
+	}
+	_ = writeAtomicFile(path, string(data))
 }
 
 func mustWrite(path, content string) {
-	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+	if err := writeAtomicFile(path, content); err != nil {
 		panic(err)
+	}
+}
+
+func writeAtomicFile(path, content string) error {
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		return err
 	}
 	temporary, err := os.CreateTemp(filepath.Dir(path), ".fake-*")
 	if err != nil {
-		panic(err)
+		return err
 	}
 	name := temporary.Name()
+	keep := false
+	defer func() {
+		_ = temporary.Close()
+		if !keep {
+			_ = os.Remove(name)
+		}
+	}()
 	if _, err := temporary.WriteString(content); err != nil {
-		panic(err)
+		return err
 	}
 	if err := temporary.Close(); err != nil {
-		panic(err)
+		return err
 	}
 	if err := os.Rename(name, path); err != nil {
-		panic(err)
+		return err
 	}
+	keep = true
+	return nil
 }

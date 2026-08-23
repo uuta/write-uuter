@@ -109,14 +109,15 @@ and attempts private-state cleanup even if blocked-state persistence fails; an
 `article.md` this run never committed is left untouched. Ordinarily the blocked
 path also verifies that no PM, worker, or detached descendant remains. If
 signaling or absence verification itself fails, the controller records that
-cleanup failure, archives the available audit files, and preserves only
-non-secret ownership/control state so cleanup can be diagnosed and retried.
-Staged Codex credentials are deleted on that exceptional path only after every
+cleanup failure and archives the available audit files. Staged Codex
+credentials are not removed at that point. They are retained until every
 retained stable process-ownership identity the controller recorded has exited
-and the private-path scan is clean, and the deletion is then verified; while
-any owned identity is still live the credential copies are kept and the
-blocking identities are reported. That exceptional blocked result does not
-claim process absence.
+and the private-path scan is clean; only then are they removed, and the
+removal is verified. While any owned identity is still live the credential
+copies stay in place and the blocking identities are reported instead. The
+non-secret ownership and control state is retained across both outcomes, so
+cleanup can be diagnosed and retried after the credentials are gone. That
+exceptional blocked result does not claim process absence.
 
 Parallel runs, resume after controller restart, and editing completed runs are
 not implemented.

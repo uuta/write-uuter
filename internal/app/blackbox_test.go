@@ -661,6 +661,59 @@ func TestBlackBoxFinalPublicationNeverDisturbsCompetingArticle(t *testing.T) {
 	assertProcessesGone(t, readInvocationRecords(t, fixtureDir))
 }
 
+func TestBlackBoxUnsyncedPublicationRollsBackTheOwnedArticle(t *testing.T) {
+	binary, fake, runDir, fixtureDir := prepareScenario(t, "happy")
+	command := newRunCommand(t, binary, fake, runDir, "5s", filepath.Join(repositoryRoot(t), "examples", "brief.md"))
+	command.Env = append(command.Env, "WRITE_UUTER_TEST_FAIL_COMMIT_SYNC=article.md")
+	output, err := command.CombinedOutput()
+	if err == nil {
+		t.Fatalf("CLI succeeded despite a failed publication durability barrier\n%s", output)
+	}
+	state := readWorkflow(t, runDir)
+	if state.Status != "blocked" || !strings.Contains(state.BlockReason, "stage final article") {
+		t.Fatalf("unexpected workflow: %+v", state)
+	}
+	// The rename committed the article before the barrier failed, so the
+	// blocked run must have rolled its own article back.
+	assertNoArticle(t, runDir)
+	residue, _ := filepath.Glob(filepath.Join(runDir, ".write-uuter-*"))
+	if len(residue) != 0 {
+		t.Fatalf("publication rollback left private residue: %v", residue)
+	}
+	assertProcessesGone(t, readInvocationRecords(t, fixtureDir))
+}
+
+func TestBlackBoxUnsyncedRunWorkspaceCommitIsNotBlamedOnACompetitor(t *testing.T) {
+	binary, fake := buildBinaries(t)
+	runDir := filepath.Join(t.TempDir(), "run")
+	command := exec.Command(binary, "run",
+		"--brief", filepath.Join(repositoryRoot(t), "examples", "brief.md"),
+		"--run-dir", runDir,
+		"--codex", fake,
+		"--timeout", "5s",
+		"--prompts-dir", filepath.Join(repositoryRoot(t), "prompts"),
+	)
+	command.Dir = repositoryRoot(t)
+	command.Env = append(os.Environ(), "WRITE_UUTER_TEST_FAIL_COMMIT_SYNC=run-workspace")
+	output, err := command.CombinedOutput()
+	if err == nil {
+		t.Fatalf("CLI succeeded despite a failed workspace durability barrier\n%s", output)
+	}
+	if strings.Contains(string(output), "run directory already exists") {
+		t.Fatalf("this run's own commit was reported as a competing target: %s", output)
+	}
+	if !strings.Contains(string(output), "durably commit run workspace") {
+		t.Fatalf("committed-but-unsynced workspace was not reported as committed: %s", output)
+	}
+	if info, statErr := os.Lstat(runDir); statErr != nil || !info.IsDir() {
+		t.Fatalf("committed run workspace is missing: %v", statErr)
+	}
+	leftovers, _ := filepath.Glob(filepath.Join(filepath.Dir(runDir), "."+filepath.Base(runDir)+".tmp-*"))
+	if len(leftovers) != 0 {
+		t.Fatalf("temporary workspace name was recreated or left behind: %v", leftovers)
+	}
+}
+
 func TestBlackBoxReviewAttemptCountExcludesPreLaunchFailure(t *testing.T) {
 	binary, fake, runDir, fixtureDir := prepareScenario(t, "happy")
 	command := newRunCommand(t, binary, fake, runDir, "5s", filepath.Join(repositoryRoot(t), "examples", "brief.md"))
@@ -1233,8 +1286,13 @@ func TestBlackBoxMissingAuditSourcesBlockSuccess(t *testing.T) {
 func TestBlackBoxInvocationDeadlineStartsBeforePublicationAndLaunch(t *testing.T) {
 	t.Run("worker prelaunch", func(t *testing.T) {
 		binary, fake, runDir, fixtureDir := prepareScenario(t, "happy")
-		command := newRunCommand(t, binary, fake, runDir, "500ms", filepath.Join(repositoryRoot(t), "examples", "brief.md"))
-		command.Env = append(command.Env, "WRITE_UUTER_TEST_BEFORE_WORKER_START_DELAY=700ms")
+		// PM setup keeps a generous budget so a loaded host cannot fail the
+		// run before the boundary under test. The worker launch transition
+		// gets its own budget, which the injected delay always exceeds.
+		command := newRunCommand(t, binary, fake, runDir, "20s", filepath.Join(repositoryRoot(t), "examples", "brief.md"))
+		command.Env = append(command.Env,
+			"WRITE_UUTER_TEST_WORKER_LAUNCH_TIMEOUT=200ms",
+			"WRITE_UUTER_TEST_BEFORE_WORKER_START_DELAY=600ms")
 		if output, err := command.CombinedOutput(); err == nil {
 			t.Fatalf("CLI accepted a late worker launch: %s", output)
 		}

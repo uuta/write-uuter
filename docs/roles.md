@@ -5,8 +5,10 @@ are created in a controller-private runtime outside the run and combine those
 instructions with the allowed artifact context. They are copied to the run's
 `.control/prompts/` after the terminal cleanup attempt. Success and ordinary
 blocked runs verify process absence first; an exceptional cleanup-verification
-failure archives the available audit while preserving non-secret ownership
-state and explicitly does not claim every process is gone. Go validates role
+failure archives the available audit, keeps the staged Codex credentials until
+every owned identity has exited and only then removes and verifies them,
+retains the non-secret ownership state afterwards, and explicitly does not
+claim every process is gone. Go validates role
 output and owns every workflow transition. The durable prompt set includes the
 PM polling protocol and the shared reviewer output/filesystem contract; those
 protocols are not embedded as Go string literals.

@@ -17,6 +17,10 @@ var errNotReady = errors.New("artifact not ready")
 
 type artifactStore struct {
 	root *os.Root
+	// afterRollbackClaim is a test seam invoked once a rollback has atomically
+	// claimed the target name and before it inspects what it claimed. It is
+	// the only way to drive a competitor takeover into that exact window.
+	afterRollbackClaim func()
 }
 
 func openArtifactStore(path string) (*artifactStore, error) {
@@ -212,11 +216,25 @@ func (store *artifactStore) writeAtomicNoReplace(name string, data []byte, mode 
 		}
 		return nil, err
 	}
-	if err := directory.Sync(); err != nil {
-		return nil, err
-	}
 	keep = true
+	// The artifact exists from here on. Report its identity even when the
+	// durability barrier fails, so the caller rolls back what it created
+	// instead of leaving an unowned success-only artifact behind.
+	if err := syncCommittedDir(directory, name); err != nil {
+		return committed, fmt.Errorf("sync committed artifact %s: %w", name, err)
+	}
 	return committed, nil
+}
+
+// syncCommittedDir is the durability barrier applied after a no-replace commit
+// has already taken effect. The label identifies the commit site so a test can
+// inject a barrier failure at exactly one of them; that committed-but-unsynced
+// outcome is otherwise unreachable deterministically.
+func syncCommittedDir(directory *os.File, label string) error {
+	if os.Getenv("WRITE_UUTER_TEST_FAIL_COMMIT_SYNC") == label {
+		return fmt.Errorf("injected %s commit sync failure", label)
+	}
+	return directory.Sync()
 }
 
 // renameNoReplaceIn performs the platform no-replace rename relative to an
@@ -236,25 +254,38 @@ func renameNoReplaceIn(directory *os.File, oldName, newName string) error {
 }
 
 // renameNoReplacePath commits a no-replace rename between two paths that share
-// a parent directory, binding that parent as an open handle first.
-func renameNoReplacePath(oldPath, newPath string) error {
+// a parent directory, binding that parent as an open handle first. It reports
+// whether the rename committed, so a caller can tell its own successful commit
+// from a competing target when the durability barrier afterwards fails.
+func renameNoReplacePath(oldPath, newPath string) (bool, error) {
 	parent := filepath.Dir(newPath)
 	if filepath.Dir(oldPath) != parent {
-		return fmt.Errorf("no-replace rename requires a shared parent directory")
+		return false, fmt.Errorf("no-replace rename requires a shared parent directory")
 	}
 	directory, err := os.Open(parent)
 	if err != nil {
-		return err
+		return false, err
 	}
 	defer directory.Close()
 	if err := renameNoReplaceIn(directory, filepath.Base(oldPath), filepath.Base(newPath)); err != nil {
-		return err
+		return false, err
 	}
-	return directory.Sync()
+	if err := syncCommittedDir(directory, "run-workspace"); err != nil {
+		return true, fmt.Errorf("sync committed directory %s: %w", newPath, err)
+	}
+	return true, nil
 }
 
-// removeOwned deletes name only while it is still the exact file identity this
-// controller committed. A competing file that took the name is left alone.
+// errCompetingArtifact reports that the artifact name is held by a file this
+// controller did not create, so there is nothing of ours left to roll back.
+var errCompetingArtifact = errors.New("artifact name is held by a competitor")
+
+// removeOwned rolls back an artifact this controller committed, and only that
+// artifact. Checking identity and then unlinking by name are two operations: a
+// competitor that takes the name in between has its file deleted. Instead the
+// name is first claimed atomically into a fresh private name that only this
+// call knows, and only then inspected. A claimed file that turns out to belong
+// to a competitor is put back rather than destroyed.
 func (store *artifactStore) removeOwned(name string, owned os.FileInfo) error {
 	if owned == nil {
 		return nil
@@ -269,21 +300,49 @@ func (store *artifactStore) removeOwned(name string, owned os.FileInfo) error {
 		}
 		return err
 	}
-	current, err := store.root.Lstat(name)
+	parent := filepath.Dir(name)
+	directory, err := store.root.Open(parent)
 	if errors.Is(err, os.ErrNotExist) {
 		return nil
 	}
 	if err != nil {
 		return err
 	}
-	if !os.SameFile(owned, current) {
-		return fmt.Errorf("refuse to remove a competing artifact: %s", name)
+	defer directory.Close()
+	claimed := filepath.Join(parent, ".write-uuter-rollback-"+randomToken())
+	if err := renameNoReplaceIn(directory, filepath.Base(name), filepath.Base(claimed)); err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return nil
+		}
+		return fmt.Errorf("claim %s for rollback: %w", name, err)
 	}
-	err = store.root.Remove(name)
-	if errors.Is(err, os.ErrNotExist) {
-		return nil
+	if store.afterRollbackClaim != nil {
+		store.afterRollbackClaim()
 	}
-	return err
+	info, err := store.root.Lstat(claimed)
+	if err != nil {
+		return errors.Join(fmt.Errorf("inspect %s claimed for rollback", name), err,
+			store.restoreClaim(directory, claimed, name))
+	}
+	if !os.SameFile(owned, info) {
+		if restoreErr := store.restoreClaim(directory, claimed, name); restoreErr != nil {
+			return errors.Join(fmt.Errorf("%w: %s", errCompetingArtifact, name), restoreErr)
+		}
+		return fmt.Errorf("%w: %s", errCompetingArtifact, name)
+	}
+	if err := store.root.Remove(claimed); err != nil && !errors.Is(err, os.ErrNotExist) {
+		return err
+	}
+	return syncCommittedDir(directory, "rollback:"+name)
+}
+
+// restoreClaim returns a claimed file to its original name after a rollback
+// decides it is not ours to remove.
+func (store *artifactStore) restoreClaim(directory *os.File, claimed, name string) error {
+	if err := renameNoReplaceIn(directory, filepath.Base(claimed), filepath.Base(name)); err != nil {
+		return fmt.Errorf("restore %s claimed for rollback from %s: %w", name, claimed, err)
+	}
+	return nil
 }
 
 func (store *artifactStore) writeJSON(name string, value any) error {

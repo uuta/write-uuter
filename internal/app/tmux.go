@@ -1,6 +1,7 @@
 package app
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -317,12 +318,10 @@ func (runtime *tmuxRuntime) prepareInvocation(role, lens string, candidate int, 
 }
 
 func (runtime *tmuxRuntime) startPM(inv invocation, deadlineUnixNano int64) error {
-	runtime.markLaunchAttempted(inv.ID)
-	output, err := runtime.runCommand("new-session", "-d", "-s", runtime.session, "-n", inv.Window, runtime.command(inv))
-	if err != nil {
-		return errors.Join(fmt.Errorf("start PM tmux session: %w: %s", err, strings.TrimSpace(string(output))), runtime.stopInvocation(inv))
+	if err := runtime.requestLaunch(inv, "start PM tmux session",
+		"new-session", "-d", "-s", runtime.session, "-n", inv.Window, runtime.command(inv)); err != nil {
+		return err
 	}
-	runtime.markStarted(inv.ID)
 	if err := runtime.waitInvocationReady(inv, deadlineUnixNano, true); err != nil {
 		return errors.Join(err, runtime.stopInvocation(inv))
 	}
@@ -340,12 +339,10 @@ func (runtime *tmuxRuntime) startWorker(pm, inv invocation, deadlineUnixNano int
 	if !live {
 		return fmt.Errorf("PM exited before %s launch", inv.Role)
 	}
-	runtime.markLaunchAttempted(inv.ID)
-	output, err := runtime.runCommand("new-window", "-d", "-t", runtime.session, "-n", inv.Window, runtime.command(inv))
-	if err != nil {
-		return errors.Join(fmt.Errorf("start %s worker: %w: %s", inv.Role, err, strings.TrimSpace(string(output))), runtime.stopInvocation(inv))
+	if err := runtime.requestLaunch(inv, fmt.Sprintf("start %s worker", inv.Role),
+		"new-window", "-d", "-t", runtime.session, "-n", inv.Window, runtime.command(inv)); err != nil {
+		return err
 	}
-	runtime.markStarted(inv.ID)
 	if err := runtime.waitInvocationReady(inv, deadlineUnixNano, false); err != nil {
 		return errors.Join(err, runtime.stopInvocation(inv))
 	}
@@ -381,6 +378,28 @@ func (runtime *tmuxRuntime) command(inv invocation) string {
 	return strings.Join(parts, " ")
 }
 
+// requestLaunch issues one tmux launch request for an invocation and records
+// ownership only once the client is known to have started. A failure before
+// that point is purely local, so no request reached the tmux server: nothing
+// exists to terminate, no audit file can ever appear, and no launch may be
+// counted. Once the client has started the outcome is ambiguous, and tmux may
+// have applied the request, so ownership is claimed conservatively.
+func (runtime *tmuxRuntime) requestLaunch(inv invocation, label string, arguments ...string) error {
+	output, started, err := runtime.runClient(arguments...)
+	if err != nil && !started {
+		return fmt.Errorf("%s: %w: %s", label, err, strings.TrimSpace(string(output)))
+	}
+	runtime.markLaunchAttempted(inv.ID)
+	if err != nil {
+		return errors.Join(fmt.Errorf("%s: %w: %s", label, err, strings.TrimSpace(string(output))), runtime.stopInvocation(inv))
+	}
+	runtime.markStarted(inv.ID)
+	return nil
+}
+
+// markLaunchAttempted records that a tmux client actually issued a launch
+// request for this invocation. tmux may apply a request even when the client
+// later fails, so ownership is claimed conservatively from this point on.
 func (runtime *tmuxRuntime) markLaunchAttempted(id string) {
 	if record := runtime.invocationRecord(id); record != nil {
 		record.launchAttempted = true
@@ -932,13 +951,30 @@ func (runtime *tmuxRuntime) markNaturalExit(id string) {
 }
 
 func (runtime *tmuxRuntime) runCommand(arguments ...string) ([]byte, error) {
+	output, _, err := runtime.runClient(arguments...)
+	return output, err
+}
+
+// runClient runs one tmux client command and reports whether the client
+// process actually began executing. A failure before that point is purely
+// local: no request can have reached the tmux server, so the caller owns
+// nothing to terminate, archive, or account for. Once the client has started,
+// any failure is ambiguous and must be treated as a possible launch.
+func (runtime *tmuxRuntime) runClient(arguments ...string) ([]byte, bool, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), runtime.commandTimeout)
 	defer cancel()
-	output, err := exec.CommandContext(ctx, runtime.executable, arguments...).CombinedOutput()
-	if ctx.Err() != nil {
-		return output, fmt.Errorf("tmux command timed out: %w", ctx.Err())
+	command := exec.CommandContext(ctx, runtime.executable, arguments...)
+	var combined bytes.Buffer
+	command.Stdout = &combined
+	command.Stderr = &combined
+	if err := command.Start(); err != nil {
+		return combined.Bytes(), false, fmt.Errorf("start tmux client: %w", err)
 	}
-	return output, err
+	err := command.Wait()
+	if ctx.Err() != nil {
+		return combined.Bytes(), true, fmt.Errorf("tmux command timed out: %w", ctx.Err())
+	}
+	return combined.Bytes(), true, err
 }
 
 func (runtime *tmuxRuntime) workspaceStore(inv invocation) (*artifactStore, error) {
