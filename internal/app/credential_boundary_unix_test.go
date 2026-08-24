@@ -17,8 +17,8 @@ import (
 func TestCloseCredentialsWaitsForOwnedIdentityExit(t *testing.T) {
 	privateRoot := t.TempDir()
 	controlDir := filepath.Join(privateRoot, "control")
-	codexHomesDir := filepath.Join(privateRoot, "codex-homes")
-	authPath := filepath.Join(codexHomesDir, "001-pm", "auth.json")
+	providerHomesDir := filepath.Join(privateRoot, "provider-homes")
+	authPath := filepath.Join(providerHomesDir, "001-pm", "auth.json")
 	if err := os.MkdirAll(filepath.Dir(authPath), 0o700); err != nil {
 		t.Fatal(err)
 	}
@@ -47,7 +47,7 @@ func TestCloseCredentialsWaitsForOwnedIdentityExit(t *testing.T) {
 	}
 
 	runtime := &tmuxRuntime{
-		privateRoot: privateRoot, controlDir: controlDir, codexHomesDir: codexHomesDir,
+		privateRoot: privateRoot, controlDir: controlDir, providerHomesDir: providerHomesDir,
 		commandTimeout: 200 * time.Millisecond,
 		invocations: []invocation{{
 			ID: "001-pm", Role: "pm", OwnershipRelative: ownershipRelative, started: true,
@@ -71,7 +71,7 @@ func TestCloseCredentialsWaitsForOwnedIdentityExit(t *testing.T) {
 	if err := runtime.closeCredentials(); err != nil {
 		t.Fatalf("credential cleanup blocked after every owned identity exited: %v", err)
 	}
-	if _, err := os.Lstat(codexHomesDir); !errors.Is(err, os.ErrNotExist) {
+	if _, err := os.Lstat(providerHomesDir); !errors.Is(err, os.ErrNotExist) {
 		t.Fatalf("credential root survived verified cleanup: %v", err)
 	}
 }

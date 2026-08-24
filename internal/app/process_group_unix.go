@@ -323,3 +323,17 @@ func withoutPID(pids []int, excluded int) []int {
 	}
 	return result
 }
+
+// terminateProcessGroup kills a process group started by configureProcessGroup,
+// where the leader's pid is also the group id. It is used for short-lived
+// controller probes whose descendants must not outlive them; longer-lived
+// invocations are owned by the ownership tracker instead.
+func terminateProcessGroup(pid int) error {
+	if pid <= 0 {
+		return nil
+	}
+	if err := syscall.Kill(-pid, syscall.SIGKILL); err != nil && !errors.Is(err, syscall.ESRCH) {
+		return err
+	}
+	return nil
+}

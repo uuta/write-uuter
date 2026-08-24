@@ -27,6 +27,7 @@ func main() {
 	brief := flags.String("brief", "", "path to the Markdown brief")
 	runDir := flags.String("run-dir", "", "new directory for run artifacts")
 	codex := flags.String("codex", "codex", "Codex CLI executable path")
+	claude := flags.String("claude", "claude", "Claude Code CLI executable path")
 	tmux := flags.String("tmux", "tmux", "tmux executable path")
 	timeout := flags.Duration("timeout", 10*time.Minute, "timeout for each agent contract")
 	promptsDir := flags.String("prompts-dir", "", "directory containing version-controlled role prompts")
@@ -43,15 +44,17 @@ func main() {
 	flags.Visit(func(parsed *flag.Flag) { explicit[parsed.Name] = true })
 
 	err := app.Run(app.Config{
-		BriefPath:          *brief,
-		RunDir:             *runDir,
-		CodexExecutable:    *codex,
-		TmuxExecutable:     *tmux,
-		AgentTimeout:       *timeout,
-		PromptsDir:         *promptsDir,
-		PromptsDirSet:      explicit["prompts-dir"],
-		CodexExecutableSet: explicit["codex"],
-		TmuxExecutableSet:  explicit["tmux"],
+		BriefPath:           *brief,
+		RunDir:              *runDir,
+		CodexExecutable:     *codex,
+		ClaudeExecutable:    *claude,
+		TmuxExecutable:      *tmux,
+		AgentTimeout:        *timeout,
+		PromptsDir:          *promptsDir,
+		PromptsDirSet:       explicit["prompts-dir"],
+		CodexExecutableSet:  explicit["codex"],
+		ClaudeExecutableSet: explicit["claude"],
+		TmuxExecutableSet:   explicit["tmux"],
 	})
 	if err != nil {
 		fmt.Fprintln(os.Stderr, err)

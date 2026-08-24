@@ -1,5 +1,54 @@
 # Roles
 
+## Model policy
+
+`prompts/models.json` is part of the durable bundle and declares the agent
+backend, model, and reasoning effort of every role. The controller validates it
+completely before creating a run and resolves each invocation by its role key,
+so no role inherits another role's profile and no invocation reaches a CLI
+without an explicit profile.
+
+| Role | Lifecycle | Provider | Model | Effort |
+| --- | --- | --- | --- | --- |
+| PM | One persistent process per run | Codex | `gpt-5.6-sol` | `high` |
+| Researcher | Once before the first candidate | Claude Code | `claude-sonnet-5` | `medium` |
+| Story Editor | Once before the first candidate | Claude Code | `claude-opus-5` | `high` |
+| Writer | Once per candidate or revision | Claude Code | `claude-opus-5` | `medium` |
+| Evidence Reviewer | Fresh process per candidate | Codex | `gpt-5.6-sol` | `medium` |
+| Story Reviewer | Fresh process per candidate | Claude Code | `claude-sonnet-5` | `medium` |
+| Clarity Reviewer | Fresh process per candidate | Claude Code | `claude-sonnet-5` | `medium` |
+| Copy Reviewer | Fresh process per candidate | Codex | `gpt-5.6-luna` | `low` |
+
+Reviewer profiles are selected by the combined `reviewer_<lens>` key, so the
+four lenses are independent. Retries and revised candidates reuse the same
+declared profile; a different policy means a different version-controlled
+prompt bundle. Human Editor has no profile.
+
+A provider-neutral runner gives both providers the same immutable role and task
+prompt, workspace boundary, timeout and cancellation signal, and audit
+identity. Codex invocations add explicit `--model` and
+`--config model_reasoning_effort=...` to the existing
+`exec --ephemeral --ignore-user-config` boundary. Claude Code invocations are
+non-interactive (`--print` with the prompt on stdin) and use `--safe-mode`,
+`--dangerously-skip-permissions`, `--no-session-persistence`, and explicit
+`--model`/`--effort`. `--bare` is never used, because it disables the OAuth and
+keychain reads the Max session depends on.
+
+Claude processes keep the real `HOME`: the Max session is resolved from the
+user's account record, so that record has to stay reachable. Only
+`CLAUDE_CODE_TMPDIR` is run-owned, pointing at a per-invocation scratch
+directory that is removed with the run. The OS sandbox is what enforces the
+rest. The exact staged Claude client for a single invocation is the only
+process path permitted to read `~/.claude.json` and to start the system
+keychain client on the narrowly granted keychain path; `--safe-mode`
+additionally stops it loading non-managed customizations. User Claude
+configuration under `~/.claude`, history, plugins, skills, hooks, MCP
+configuration, session and project state, the rest of the home directory, and
+the admin-managed settings tree are denied to the client as well. A
+model-invoked tool runs from a different process path, so it can read neither
+the account record nor the keychain, cannot start the keychain client, and
+cannot reach the user's home.
+
 Role instructions are durable files under `prompts/`. Generated assignments
 are created in a controller-private runtime outside the run and combine those
 instructions with the allowed artifact context. They are copied to the run's
@@ -21,7 +70,8 @@ artifacts support a later inspected retry in a new run directory.
 
 ## PM
 
-The PM is one long-lived Codex process in its own isolated workspace. It watches
+The PM is one long-lived Codex process (`gpt-5.6-sol`, `high` effort) in its
+own isolated workspace. It watches
 private, request-ID-specific review requests; Go validates and records the
 result as `pm-decisions/article-00N.md`. It classifies every finding as:
 
@@ -62,7 +112,9 @@ The Writer cannot classify findings, change earlier candidates, or create
 ## Reviewers
 
 Evidence, Story, Clarity, and Copy reviewers run in that order as four fresh,
-sequential Codex processes. They never edit candidates. Every reviewer gets
+sequential processes. Evidence and Copy run on Codex and Story and Clarity run
+on Claude Code, so a candidate is not reviewed only by the Writer's own
+provider. They never edit candidates. Every reviewer gets
 only its durable lens prompt, full brief, exact candidate, and candidate
 revision, plus:
 

@@ -1,0 +1,10 @@
+{
+  "invocation": "005-reviewer-evidence",
+  "role": "reviewer",
+  "lens": "evidence",
+  "candidate": 1,
+  "provider": "codex",
+  "model": "gpt-5.6-sol",
+  "reasoning_effort": "medium",
+  "model_policy_digest": "sha256:f5a91c462dea2aebe51b2870213c4a193ce0c1576f95ec983b018ae30b16752b"
+}

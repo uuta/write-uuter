@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"sort"
 	"strconv"
@@ -15,18 +16,20 @@ import (
 )
 
 type Config struct {
-	BriefPath       string
-	RunDir          string
-	CodexExecutable string
-	TmuxExecutable  string
-	// CodexExecutableSet/TmuxExecutableSet record that the caller passed the
-	// override explicitly, so an explicit empty value fails instead of
-	// silently falling back to the PATH default.
-	CodexExecutableSet bool
-	TmuxExecutableSet  bool
-	AgentTimeout       time.Duration
-	PromptsDir         string
-	PromptsDirSet      bool
+	BriefPath        string
+	RunDir           string
+	CodexExecutable  string
+	ClaudeExecutable string
+	TmuxExecutable   string
+	// CodexExecutableSet/ClaudeExecutableSet/TmuxExecutableSet record that the
+	// caller passed the override explicitly, so an explicit empty value fails
+	// instead of silently falling back to the PATH default.
+	CodexExecutableSet  bool
+	ClaudeExecutableSet bool
+	TmuxExecutableSet   bool
+	AgentTimeout        time.Duration
+	PromptsDir          string
+	PromptsDirSet       bool
 }
 
 type decisionBinding struct {
@@ -36,17 +39,21 @@ type decisionBinding struct {
 }
 
 type controller struct {
-	config           Config
-	brief            briefDocument
-	runDir           string
-	prompts          *promptBundle
-	contentRoot      string
-	workflow         Workflow
-	store            *artifactStore
-	runtime          *tmuxRuntime
-	pm               invocation
-	reachedLenses    map[int][]string
-	decisionBindings map[int]map[string]decisionBinding
+	config  Config
+	brief   briefDocument
+	runDir  string
+	prompts *promptBundle
+	policy  *modelPolicy
+	// providerExecutables holds the resolved executable for every provider the
+	// validated policy references, and nothing else.
+	providerExecutables map[string]string
+	contentRoot         string
+	workflow            Workflow
+	store               *artifactStore
+	runtime             *tmuxRuntime
+	pm                  invocation
+	reachedLenses       map[int][]string
+	decisionBindings    map[int]map[string]decisionBinding
 	// publishedArticle is the exact file identity this controller committed as
 	// article.md. Rollback removes only that identity.
 	publishedArticle os.FileInfo
@@ -62,11 +69,17 @@ func Run(config Config) error {
 	if config.CodexExecutableSet && strings.TrimSpace(config.CodexExecutable) == "" {
 		return fmt.Errorf("--codex was given an empty value")
 	}
+	if config.ClaudeExecutableSet && strings.TrimSpace(config.ClaudeExecutable) == "" {
+		return fmt.Errorf("--claude was given an empty value")
+	}
 	if config.TmuxExecutableSet && strings.TrimSpace(config.TmuxExecutable) == "" {
 		return fmt.Errorf("--tmux was given an empty value")
 	}
 	if config.CodexExecutable == "" {
 		config.CodexExecutable = "codex"
+	}
+	if config.ClaudeExecutable == "" {
+		config.ClaudeExecutable = "claude"
 	}
 	if config.TmuxExecutable == "" {
 		config.TmuxExecutable = "tmux"
@@ -84,6 +97,18 @@ func Run(config Config) error {
 		return err
 	}
 	defer prompts.Close()
+	// The policy is bound to the same no-follow bundle boundary as the role
+	// prompts and validated completely before anything is created. Every
+	// rejection below therefore happens before the run directory exists and
+	// before tmux is started.
+	policyData, err := prompts.load(modelPolicyFile)
+	if err != nil {
+		return fmt.Errorf("required model policy %s: %w", modelPolicyFile, err)
+	}
+	policy, err := parseModelPolicy([]byte(policyData))
+	if err != nil {
+		return err
+	}
 	runDir, err := filepath.Abs(config.RunDir)
 	if err != nil {
 		return fmt.Errorf("resolve run directory: %w", err)
@@ -92,6 +117,22 @@ func Run(config Config) error {
 		return fmt.Errorf("run directory already exists: %s", runDir)
 	} else if !errors.Is(err, os.ErrNotExist) {
 		return fmt.Errorf("inspect run directory: %w", err)
+	}
+	providerExecutables := map[string]string{}
+	if policy.usesProvider(providerCodex) {
+		providerExecutables[providerCodex] = config.CodexExecutable
+	}
+	if policy.usesProvider(providerClaudeCode) {
+		claudePath, resolveErr := resolveClaudeExecutable(config.ClaudeExecutable)
+		if resolveErr != nil {
+			return resolveErr
+		}
+		// The exact executable that passes the Max preflight is the one that is
+		// staged and launched.
+		if err := verifyClaudeMaxSubscription(claudePath); err != nil {
+			return err
+		}
+		providerExecutables[providerClaudeCode] = claudePath
 	}
 	contentRoot, err := os.Getwd()
 	if err != nil {
@@ -103,6 +144,7 @@ func Run(config Config) error {
 	}
 	control := &controller{
 		config: config, brief: brief, runDir: runDir, prompts: prompts, contentRoot: contentRoot,
+		policy: policy, providerExecutables: providerExecutables,
 		reachedLenses: make(map[int][]string), decisionBindings: make(map[int]map[string]decisionBinding),
 	}
 	if err := control.initialize(briefData); err != nil {
@@ -137,7 +179,7 @@ func (control *controller) initialize(briefData []byte) error {
 			_ = store.Close()
 		}
 	}()
-	for _, relative := range []string{"evidence/assets", "drafts", "reviews", "pm-decisions", ".control/prompts", ".control/exits", ".control/logs"} {
+	for _, relative := range []string{"evidence/assets", "drafts", "reviews", "pm-decisions", ".control/prompts", ".control/exits", ".control/logs", ".control/invocations"} {
 		if err := store.mkdirAll(relative, 0o755); err != nil {
 			return fmt.Errorf("initialize workspace: %w", err)
 		}
@@ -145,11 +187,19 @@ func (control *controller) initialize(briefData []byte) error {
 	if err := store.writeAtomic("brief.md", briefData, 0o644); err != nil {
 		return fmt.Errorf("copy brief: %w", err)
 	}
+	// The run keeps the exact validated policy bytes, and workflow.json keeps
+	// their digest, so a completed or blocked run can prove which policy
+	// produced it.
+	if err := store.writeAtomic(modelPolicyArtifact, control.policy.data, 0o444); err != nil {
+		return fmt.Errorf("copy model policy: %w", err)
+	}
 	now := time.Now().UTC()
 	control.workflow = Workflow{
 		SchemaVersion: workflowSchemaVersion, Status: "running", Phase: "initializing",
+		ModelPolicyDigest: control.policy.digest,
 		ArtifactPaths: map[string]string{
 			"brief": "brief.md", "workflow": "workflow.json", "sources": "evidence/sources.md",
+			"model_policy": modelPolicyArtifact, "invocations": ".control/invocations",
 			"firsthand": "evidence/firsthand.md", "assets": "evidence/assets", "claim_ledger": "claim-ledger.md",
 			"outline": "outline.md", "drafts": "drafts", "reviews": "reviews",
 			"pm_decisions": "pm-decisions", "article": "article.md",
@@ -211,7 +261,7 @@ func waitForCommitBarrier() error {
 
 func (control *controller) execute() error {
 	pmDeadline := invocationDeadline(control.config.AgentTimeout)
-	runtime, err := newTmuxRuntime(control.config.TmuxExecutable, control.config.CodexExecutable, control.config.AgentTimeout, control.runDir)
+	runtime, err := newTmuxRuntime(control.config.TmuxExecutable, control.providerExecutables, control.config.AgentTimeout, control.runDir)
 	if err != nil {
 		return control.block(err.Error())
 	}
@@ -223,8 +273,15 @@ func (control *controller) execute() error {
 	if err != nil {
 		return control.block(err.Error())
 	}
-	control.pm, err = control.runtime.prepareInvocation("pm", "", 0, "", pmPrompt)
+	pmProfile, err := control.policy.profileFor("pm")
 	if err != nil {
+		return control.block(err.Error())
+	}
+	control.pm, err = control.runtime.prepareInvocation("pm", "", 0, "", pmPrompt, pmProfile)
+	if err != nil {
+		return control.block(err.Error())
+	}
+	if err := control.publishInvocationAudit(control.pm); err != nil {
 		return control.block(err.Error())
 	}
 	if err := ensureInvocationDeadline(pmDeadline, "PM launch preparation"); err != nil {
@@ -1146,9 +1203,16 @@ func (control *controller) workerLaunchDeadline() int64 {
 
 func (control *controller) runWorker(role, lens string, candidate int, revision, phase, prompt string, prepare, validate, commit func(*artifactStore) error, rollback func() error) error {
 	deadlineUnixNano := control.workerLaunchDeadline()
-	testInvocationDelay("WRITE_UUTER_TEST_BEFORE_WORKER_START_DELAY")
-	inv, err := control.runtime.prepareInvocation(role, lens, candidate, revision, prompt)
+	profile, err := control.policy.profileFor(role)
 	if err != nil {
+		return err
+	}
+	testInvocationDelay("WRITE_UUTER_TEST_BEFORE_WORKER_START_DELAY")
+	inv, err := control.runtime.prepareInvocation(role, lens, candidate, revision, prompt, profile)
+	if err != nil {
+		return err
+	}
+	if err := control.publishInvocationAudit(inv); err != nil {
 		return err
 	}
 	workspace, err := control.runtime.workspaceStore(inv)
@@ -1526,4 +1590,43 @@ func findStyleGuide(contentRoot string) (string, error) {
 		return relative, nil
 	}
 	return "", nil
+}
+
+// resolveClaudeExecutable resolves and canonicalizes the Claude client before
+// the run directory exists, so a missing executable is a pre-run failure.
+func resolveClaudeExecutable(configured string) (string, error) {
+	path, err := exec.LookPath(configured)
+	if err != nil {
+		return "", fmt.Errorf("locate Claude Code executable %q: %w", configured, err)
+	}
+	canonical, err := filepath.EvalSymlinks(path)
+	if err != nil {
+		return "", fmt.Errorf("resolve Claude Code executable %q: %w", configured, err)
+	}
+	return canonical, nil
+}
+
+// publishInvocationAudit atomically publishes one immutable invocation record
+// before the process can be considered ready. The record is written from the
+// invocation's own bound profile, which is the profile that built its argument
+// vector, so the artifact and the launched command cannot disagree.
+func (control *controller) publishInvocationAudit(inv invocation) error {
+	role := inv.Role
+	if inv.Lens != "" {
+		role = strings.TrimSuffix(role, "_"+inv.Lens)
+	}
+	record := InvocationAudit{
+		Invocation: inv.ID, Role: role, Lens: inv.Lens, Candidate: inv.Candidate,
+		Provider: inv.Profile.Provider, Model: inv.Profile.Model,
+		ReasoningEffort: inv.Profile.ReasoningEffort, ModelPolicyDigest: control.policy.digest,
+	}
+	data, err := json.MarshalIndent(record, "", "  ")
+	if err != nil {
+		return fmt.Errorf("encode invocation audit for %s: %w", inv.ID, err)
+	}
+	data = append(data, '\n')
+	if _, err := control.store.writeAtomicNoReplace(filepath.Join(".control", "invocations", inv.ID+".json"), data, 0o444); err != nil {
+		return fmt.Errorf("publish invocation audit for %s: %w", inv.ID, err)
+	}
+	return nil
 }

@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io/fs"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -43,6 +44,34 @@ type invocationRecord struct {
 	Workspace      string            `json:"workspace"`
 	WorkspaceFiles []string          `json:"workspace_files"`
 	Isolation      map[string]string `json:"isolation"`
+	Args           []string          `json:"args"`
+	Executable     string            `json:"executable"`
+	ExecutableTag  string            `json:"executable_tag"`
+	Environment    map[string]string `json:"environment"`
+}
+
+type auditRecord struct {
+	Invocation        string `json:"invocation"`
+	Role              string `json:"role"`
+	Lens              string `json:"lens"`
+	Candidate         int    `json:"candidate"`
+	Provider          string `json:"provider"`
+	Model             string `json:"model"`
+	ReasoningEffort   string `json:"reasoning_effort"`
+	ModelPolicyDigest string `json:"model_policy_digest"`
+}
+
+// checkedInPolicy is the profile table the repository bundle declares. The
+// tests assert the launched arguments and the audit records against it.
+var checkedInPolicy = map[string]auditRecord{
+	"pm":                {Provider: "codex", Model: "gpt-5.6-sol", ReasoningEffort: "high"},
+	"researcher":        {Provider: "claude_code", Model: "claude-sonnet-5", ReasoningEffort: "medium"},
+	"story_editor":      {Provider: "claude_code", Model: "claude-opus-5", ReasoningEffort: "high"},
+	"writer":            {Provider: "claude_code", Model: "claude-opus-5", ReasoningEffort: "medium"},
+	"reviewer_evidence": {Provider: "codex", Model: "gpt-5.6-sol", ReasoningEffort: "medium"},
+	"reviewer_story":    {Provider: "claude_code", Model: "claude-sonnet-5", ReasoningEffort: "medium"},
+	"reviewer_clarity":  {Provider: "claude_code", Model: "claude-sonnet-5", ReasoningEffort: "medium"},
+	"reviewer_copy":     {Provider: "codex", Model: "gpt-5.6-luna", ReasoningEffort: "low"},
 }
 
 var (
@@ -694,6 +723,7 @@ func TestBlackBoxUnsyncedRunWorkspaceCommitIsNotBlamedOnACompetitor(t *testing.T
 		"--brief", filepath.Join(repositoryRoot(t), "examples", "brief.md"),
 		"--run-dir", runDir,
 		"--codex", fake,
+		"--claude", fakeClaudePath(fake),
 		"--timeout", "5s",
 		"--prompts-dir", filepath.Join(repositoryRoot(t), "prompts"),
 	)
@@ -744,6 +774,7 @@ func TestBlackBoxUnsyncedRunWorkspaceCommitIsNotBlamedOnACompetitor(t *testing.T
 		"--brief", filepath.Join(repositoryRoot(t), "examples", "brief.md"),
 		"--run-dir", runDir,
 		"--codex", fake,
+		"--claude", fakeClaudePath(fake),
 		"--timeout", "5s",
 		"--prompts-dir", filepath.Join(repositoryRoot(t), "prompts"),
 	)
@@ -784,6 +815,7 @@ func TestBlackBoxReviewAttemptCountExcludesPreLaunchFailure(t *testing.T) {
 func TestBlackBoxExplicitEmptyExecutableOverridesFailBeforeRunInitialization(t *testing.T) {
 	for _, testCase := range []struct{ flag, reason string }{
 		{"--codex=", "--codex was given an empty value"},
+		{"--claude=", "--claude was given an empty value"},
 		{"--tmux=", "--tmux was given an empty value"},
 	} {
 		t.Run(strings.Trim(testCase.flag, "-="), func(t *testing.T) {
@@ -1116,9 +1148,7 @@ func TestBlackBoxUnexpectedTmuxProbeFailureIsNotAbsence(t *testing.T) {
 		t.Fatalf("probe failure did not preserve one recoverable ownership root: %v", privatePaths)
 	}
 	t.Cleanup(func() { _ = os.RemoveAll(privatePaths[0]) })
-	if _, err := os.Lstat(filepath.Join(privatePaths[0], "codex-homes")); !errors.Is(err, os.ErrNotExist) {
-		t.Fatalf("probe failure left copied credentials behind: %v", err)
-	}
+	assertNoStagedProviderCredentials(t, privatePaths[0])
 }
 
 func TestBlackBoxFinalPMExitBlocksPublication(t *testing.T) {
@@ -1297,9 +1327,7 @@ func TestBlackBoxPersistentCleanupFailurePreservesOwnershipButDeletesCredentials
 	}
 	privateRoot := privatePaths[0]
 	t.Cleanup(func() { _ = os.RemoveAll(privateRoot) })
-	if _, err := os.Lstat(filepath.Join(privateRoot, "codex-homes")); !errors.Is(err, os.ErrNotExist) {
-		t.Fatalf("staged credentials survived cleanup failure: %v", err)
-	}
+	assertNoStagedProviderCredentials(t, privateRoot)
 	manifests, err := filepath.Glob(filepath.Join(privateRoot, "control", "ownership", "*.json"))
 	if err != nil || len(manifests) == 0 {
 		t.Fatalf("recoverable ownership identities were deleted: %v, %v", manifests, err)
@@ -1395,9 +1423,7 @@ func TestBlackBoxAmbiguousTmuxLaunchIsReconciledAndCleaned(t *testing.T) {
 						t.Fatalf("ambiguous launch left unexplained private state: %v; workflow=%+v", privatePaths, state)
 					}
 					for _, privatePath := range privatePaths {
-						if _, err := os.Stat(filepath.Join(privatePath, "codex-homes")); !os.IsNotExist(err) {
-							t.Fatalf("ambiguous cleanup retained credentials: %s", privatePath)
-						}
+						assertNoStagedProviderCredentials(t, privatePath)
 					}
 					break
 				}
@@ -1429,9 +1455,7 @@ func TestBlackBoxReadyPublicationTimeoutCleansOwnedRunner(t *testing.T) {
 			t.Fatalf("unpublished owned runner left unexplained private state: %v; workflow=%+v", privatePaths, state)
 		}
 		for _, privatePath := range privatePaths {
-			if _, err := os.Stat(filepath.Join(privatePath, "codex-homes")); !os.IsNotExist(err) {
-				t.Fatalf("credential root survived recoverable cleanup: %s", privatePath)
-			}
+			assertNoStagedProviderCredentials(t, privatePath)
 		}
 	}
 }
@@ -1748,21 +1772,34 @@ func prepareScenario(t *testing.T, scenario string) (binary, fake, runDir, fixtu
 		t.Fatal(err)
 	}
 	fake = filepath.Join(fixtureDir, "fake-codex")
+	// Two separately selectable fixtures. Each carries a distinct trailing tag
+	// so a staged copy still proves which flag selected it.
 	copyFile(t, fakeTemplate, fake, 0o755)
+	copyFile(t, fakeClaudePath(fakeTemplate), fakeClaudePath(fake), 0o755)
 	if err := os.WriteFile(filepath.Join(fixtureDir, "scenario"), []byte(scenario), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	return binary, fake, filepath.Join(temporary, "run"), fixtureDir
 }
 
+func fakeClaudePath(fake string) string {
+	return filepath.Join(filepath.Dir(fake), "fake-claude")
+}
+
 func newRunCommand(t *testing.T, binary, fake, runDir, timeout, briefPath string) *exec.Cmd {
+	t.Helper()
+	return newRunCommandWithPrompts(t, binary, fake, runDir, timeout, briefPath, filepath.Join(repositoryRoot(t), "prompts"))
+}
+
+func newRunCommandWithPrompts(t *testing.T, binary, fake, runDir, timeout, briefPath, promptsDir string) *exec.Cmd {
 	t.Helper()
 	command := exec.Command(binary, "run",
 		"--brief", briefPath,
 		"--run-dir", runDir,
 		"--codex", fake,
+		"--claude", fakeClaudePath(fake),
 		"--timeout", timeout,
-		"--prompts-dir", filepath.Join(repositoryRoot(t), "prompts"),
+		"--prompts-dir", promptsDir,
 	)
 	command.Dir = repositoryRoot(t)
 	command.Env = append(os.Environ(), "WRITE_UUTER_FAKE_LOG_DIR="+filepath.Join(filepath.Dir(fake), "logs"))
@@ -1793,12 +1830,27 @@ func buildBinaries(t *testing.T) (string, string) {
 			input  string
 		}{
 			{filepath.Join(buildDir, "write-uuter"), "./cmd/write-uuter"},
-			{filepath.Join(buildDir, "fake-codex"), "./internal/app/testdata/fakecodex"},
+			{filepath.Join(buildDir, "fake-agent"), "./internal/app/testdata/fakeagent"},
 		} {
 			command := exec.Command("go", "build", "-o", item.output, item.input)
 			command.Dir = root
 			if output, err := command.CombinedOutput(); err != nil {
 				buildErr = fmt.Errorf("build %s: %w: %s", item.input, err, output)
+				return
+			}
+		}
+		// One fixture program, two separately selectable executables. The
+		// trailing tag survives the controller's private staging copy, so a
+		// launched process still identifies the flag that selected it.
+		template, readErr := os.ReadFile(filepath.Join(buildDir, "fake-agent"))
+		if readErr != nil {
+			buildErr = readErr
+			return
+		}
+		for name, tag := range map[string]string{"fake-codex": "codex", "fake-claude": "claude"} {
+			tagged := append(append([]byte(nil), template...), []byte("\n#write-uuter-fake-tag:"+tag+"\n")...)
+			if writeErr := os.WriteFile(filepath.Join(buildDir, name), tagged, 0o755); writeErr != nil {
+				buildErr = writeErr
 				return
 			}
 		}
@@ -1902,6 +1954,39 @@ func assertReviewerFilesystem(t *testing.T, record invocationRecord) {
 				t.Errorf("%s reviewer workspace leaked %s input %s", record.Lens, lens, forbidden)
 			}
 		}
+	}
+}
+
+// assertNoStagedProviderCredentials proves that a retained controller-private
+// root carries no staged provider credential. The directory check is written
+// against the real production name (`provider-homes`, internal/app/tmux.go),
+// and the file scan below makes the assertion independent of that name: a
+// future rename of the staging directory cannot turn this check vacuous,
+// because no concrete staged credential file may survive anywhere under the
+// retained root.
+func assertNoStagedProviderCredentials(t *testing.T, privateRoot string) {
+	t.Helper()
+	if _, err := os.Lstat(filepath.Join(privateRoot, "provider-homes")); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("staged provider credential root survived cleanup at %s: %v", privateRoot, err)
+	}
+	var survivors []string
+	if err := filepath.WalkDir(privateRoot, func(path string, entry fs.DirEntry, walkErr error) error {
+		if walkErr != nil {
+			return nil
+		}
+		if entry.IsDir() {
+			return nil
+		}
+		switch entry.Name() {
+		case "auth.json", "installation_id":
+			survivors = append(survivors, path)
+		}
+		return nil
+	}); err != nil {
+		t.Fatalf("scan retained private root %s: %v", privateRoot, err)
+	}
+	if len(survivors) != 0 {
+		t.Fatalf("staged provider credentials survived cleanup: %v", survivors)
 	}
 }
 

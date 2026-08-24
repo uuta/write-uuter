@@ -1,0 +1,3439 @@
+diff --git a/README.md b/README.md
+index b636e5a..a721c7f 100644
+--- a/README.md
++++ b/README.md
+@@ -10,7 +10,11 @@ that produced it.
+ - cgo enabled plus the Xcode Command Line Tools to build for macOS; Darwin
+   no-cgo builds are rejected because audit-token signaling is mandatory
+ - tmux on the host
+-- an installed and authenticated Codex CLI for real runs
++- an installed and authenticated Codex CLI for real runs whose policy uses
++  `codex`
++- an installed Claude Code CLI logged in to a Claude Max subscription for real
++  runs whose policy uses `claude_code`; API-key, Bedrock, Vertex, and Foundry
++  sessions are refused
+ - macOS for real runs; the controller uses the native Seatbelt sandbox to
+   enforce role filesystem isolation
+ 
+@@ -26,9 +30,10 @@ make build
+ make verify
+ ```
+ 
+-The tests build the CLI and execute it as a subprocess against a deterministic
+-fake Codex executable inside real tmux sessions. They do not require network
+-access or Codex authentication.
++The tests build the CLI and execute it as a subprocess against deterministic
++fake Codex and Claude Code executables inside real tmux sessions. The two
++fixtures are selected separately through `--codex` and `--claude`. The tests do
++not require network access, Codex authentication, or a Claude subscription.
+ 
+ ## Run
+ 
+@@ -51,14 +56,17 @@ Operational options:
+ 
+ ```text
+ --codex <path>       Codex executable (default: codex)
++--claude <path>      Claude Code executable (default: claude)
+ --tmux <path>        tmux executable (default: tmux)
+ --timeout <duration> Per-agent artifact timeout (default: 10m)
+ --prompts-dir <path> Checked-in prompt directory; an explicit value is binding
+ ```
+ 
+-`--codex` and `--tmux` fall back to a `PATH` lookup only when the flag is
+-omitted. Passing the flag with an empty value (`--codex=`) is rejected before
+-the run is initialized rather than silently using the default.
++`--codex`, `--claude`, and `--tmux` fall back to a `PATH` lookup only when the
++flag is omitted. Passing the flag with an empty value (`--codex=`) is rejected
++before the run is initialized rather than silently using the default. Only the
++providers the validated policy references are resolved and staged, so a policy
++that never selects a provider does not require that CLI to be installed.
+ 
+ The prompt bundle is resolved once, before the run starts, in this order:
+ 
+@@ -76,6 +84,80 @@ no-follow file wins. That directory and each prompt file are then held open
+ for the whole run, so replacing the directory, one of its ancestors, or a
+ prompt file afterwards cannot change the content the controller uses.
+ 
++## Model policy
++
++Every prompt bundle must contain `models.json`, which declares the agent
++backend, model, and reasoning effort for every role. It is bound through the
++same stable no-follow boundary as the role prompts, so the checked-in bundle
++and an explicit `--prompts-dir` bundle are each a complete policy. There is no
++implicit default, no shared reviewer profile, no runtime routing, and no
++fallback.
++
++| Role | Provider | Model | Effort |
++| --- | --- | --- | --- |
++| `pm` | `codex` | `gpt-5.6-sol` | `high` |
++| `researcher` | `claude_code` | `claude-sonnet-5` | `medium` |
++| `story_editor` | `claude_code` | `claude-opus-5` | `high` |
++| `writer` | `claude_code` | `claude-opus-5` | `medium` |
++| `reviewer_evidence` | `codex` | `gpt-5.6-sol` | `medium` |
++| `reviewer_story` | `claude_code` | `claude-sonnet-5` | `medium` |
++| `reviewer_clarity` | `claude_code` | `claude-sonnet-5` | `medium` |
++| `reviewer_copy` | `codex` | `gpt-5.6-luna` | `low` |
++
++`Human Editor` is a human role and has no profile. Schema version 1 supports
++exactly the eight role keys above and the providers `claude_code` and `codex`.
++Accepted `reasoning_effort` values are `minimal`, `low`, `medium`, and `high`
++for `codex`, and `low`, `medium`, `high`, `xhigh`, and `max` for `claude_code`.
++There is no global model allowlist: exact availability is decided by the
++selected CLI, which blocks the run instead of substituting another model.
++
++The following are rejected before the run directory is created and before tmux
++starts: a missing or empty policy, an unsupported `schema_version`, a duplicate
++JSON key, a missing or unknown role, an unknown field, an unsupported provider,
++an empty model, an effort the provider does not accept, a `claude-*` model on
++`codex`, and a `gpt-*` model on `claude_code`.
++
++Evaluating a different policy means running a different version-controlled
++prompt bundle. Per-run model overrides, automatic routing, and dynamic fallback
++are not implemented.
++
++### Claude Max preflight
++
++When the validated policy references `claude_code`, the controller runs a
++sanitized `claude auth status` before creating the run directory, starting
++tmux, or launching any agent, using the same environment filtering as the
++invocations themselves. The run continues only for a logged-in `claude.ai`
++session on a `max` subscription. A missing executable, non-zero exit, malformed
++response, logged-out state, API-key session, or non-Max subscription fails with
++an actionable error and creates nothing. The account identity in the response
++is never read into the run or recorded anywhere; the preflight is skipped
++entirely when no role uses `claude_code`.
++
++Claude invocations are non-interactive and use `--print`, `--safe-mode`,
++`--dangerously-skip-permissions`, `--no-session-persistence`, and explicit
++`--model`/`--effort`, with the prompt on stdin. `--bare` is never used: it
++disables OAuth and keychain reads and accepts only an API key. Codex
++invocations pass an explicit `--model` and
++`--config model_reasoning_effort="<effort>"` alongside the existing
++`exec --ephemeral --ignore-user-config` boundary.
++
++`ANTHROPIC_API_KEY` and every alternative API, Bedrock, Vertex, Foundry, or
++provider-selection credential is removed from provider child environments, so
++an ambient credential cannot move a run to API billing or another provider.
++
++Claude invocations keep the real `HOME`, because the Max session is resolved
++from the user's account record; only `CLAUDE_CODE_TMPDIR` is redirected, to a
++run-owned scratch directory that is removed with the run. The OS sandbox, not
++the environment, is the boundary: the exact staged Claude client for that one
++invocation is the only process path allowed to read `~/.claude.json` and to
++start the system keychain client on the narrowly granted keychain path, and
++`--safe-mode` stops the client loading non-managed customizations. Everything
++else the user owns - the home directory, `~/.claude` and its settings, history,
++plugins, skills, hooks, MCP configuration, sessions, and projects, and the
++admin-managed settings tree - stays denied to the client. A model-invoked tool
++is a different process path, so it can read neither the account record nor the
++keychain, cannot start the keychain client, and cannot reach the user's home.
++
+ The brief requires these case-insensitive level-two headings; all except
+ `Source hints` need non-whitespace content:
+ 
+@@ -92,8 +174,10 @@ only for the Copy reviewer; prompt bundles may live elsewhere.
+ ## Runtime model
+ 
+ Go owns state transitions, validation, revision hashes, timeouts, and process
+-cleanup. One long-lived PM Codex process and at most one worker run in a
+-dedicated tmux session. Each process receives a separate controller-created
++cleanup. A provider-neutral runner gives Codex and Claude Code invocations the
++same immutable role/task prompt, workspace boundary, timeout and cancellation
++signal, and audit identity. One long-lived PM process and at most one worker
++run in a dedicated tmux session. Each process receives a separate controller-created
+ workspace outside the durable run directory; Go copies in only the role's
+ contracted context and copies validated regular-file outputs back. A native
+ sandbox denies agents access to the durable run, other role workspaces, and
+diff --git a/cmd/write-uuter/main.go b/cmd/write-uuter/main.go
+index c442b5a..54fed34 100644
+--- a/cmd/write-uuter/main.go
++++ b/cmd/write-uuter/main.go
+@@ -27,6 +27,7 @@ func main() {
+ 	brief := flags.String("brief", "", "path to the Markdown brief")
+ 	runDir := flags.String("run-dir", "", "new directory for run artifacts")
+ 	codex := flags.String("codex", "codex", "Codex CLI executable path")
++	claude := flags.String("claude", "claude", "Claude Code CLI executable path")
+ 	tmux := flags.String("tmux", "tmux", "tmux executable path")
+ 	timeout := flags.Duration("timeout", 10*time.Minute, "timeout for each agent contract")
+ 	promptsDir := flags.String("prompts-dir", "", "directory containing version-controlled role prompts")
+@@ -43,15 +44,17 @@ func main() {
+ 	flags.Visit(func(parsed *flag.Flag) { explicit[parsed.Name] = true })
+ 
+ 	err := app.Run(app.Config{
+-		BriefPath:          *brief,
+-		RunDir:             *runDir,
+-		CodexExecutable:    *codex,
+-		TmuxExecutable:     *tmux,
+-		AgentTimeout:       *timeout,
+-		PromptsDir:         *promptsDir,
+-		PromptsDirSet:      explicit["prompts-dir"],
+-		CodexExecutableSet: explicit["codex"],
+-		TmuxExecutableSet:  explicit["tmux"],
++		BriefPath:           *brief,
++		RunDir:              *runDir,
++		CodexExecutable:     *codex,
++		ClaudeExecutable:    *claude,
++		TmuxExecutable:      *tmux,
++		AgentTimeout:        *timeout,
++		PromptsDir:          *promptsDir,
++		PromptsDirSet:       explicit["prompts-dir"],
++		CodexExecutableSet:  explicit["codex"],
++		ClaudeExecutableSet: explicit["claude"],
++		TmuxExecutableSet:   explicit["tmux"],
+ 	})
+ 	if err != nil {
+ 		fmt.Fprintln(os.Stderr, err)
+diff --git a/docs/artifacts.md b/docs/artifacts.md
+index 8ec4291..cc4fb25 100644
+--- a/docs/artifacts.md
++++ b/docs/artifacts.md
+@@ -6,6 +6,7 @@
+ <run-dir>/
+ ├── brief.md
+ ├── workflow.json
++├── model-policy.json                 # exact validated policy for this run
+ ├── evidence/
+ │   ├── sources.md
+ │   ├── firsthand.md                 # optional
+@@ -24,7 +25,11 @@
+ ├── pm-decisions/
+ │   └── article-00N.md
+ ├── article.md                        # success only
+-└── .control/                         # post-cleanup audit copies
++└── .control/
++    ├── invocations/                  # published before each process is ready
++    ├── prompts/                      # post-cleanup audit copies
++    ├── logs/
++    └── exits/
+ ```
+ 
+ Earlier candidates, partial lens sequences, reviews, and PM decisions are kept
+@@ -32,6 +37,37 @@ when a revision occurs or a run blocks. `article.md` is written only after all
+ four final-candidate lenses pass PM routing and is byte-for-byte identical to
+ that candidate.
+ 
++## Model policy and invocation audit
++
++`model-policy.json` is a byte-exact copy of the `models.json` the controller
++validated for this run, and `workflow.json.model_policy_digest` is its SHA-256
++digest. Both are written during initialization, so a blocked run preserves them
++too.
++
++Before any launched process is considered ready, the controller atomically
++publishes one immutable record per invocation under `.control/invocations/`:
++
++```json
++{
++  "invocation": "008-reviewer-copy",
++  "role": "reviewer",
++  "lens": "copy",
++  "candidate": 1,
++  "provider": "codex",
++  "model": "gpt-5.6-luna",
++  "reasoning_effort": "low",
++  "model_policy_digest": "sha256:..."
++}
++```
++
++The recorded values come from the same validated profile that built the process
++arguments, so the artifacts and the launched command cannot disagree. Records
++are retained for successful, blocked, timed-out, and non-zero invocations, and
++never contain authentication values, environment values, prompts, or secrets.
++A run that blocks because a provider, model, or quota is unavailable records the
++effective provider, model, and reasoning effort in `block_reason` and never
++retries with a different profile.
++
+ ## Review result
+ 
+ `result.json` has this validated minimum shape:
+@@ -108,7 +144,8 @@ truth. Schema version 1 records:
+ - `phase`: current controller phase;
+ - `current_candidate` and `current_revision` (`sha256:<hex>`);
+ - `active_role`;
+-- stable relative `artifact_paths`;
++- stable relative `artifact_paths`, including `model_policy` and `invocations`;
++- `model_policy_digest`: SHA-256 of the validated policy copied into the run;
+ - `review_attempt_count` (one per launched reviewer process; it is incremented
+   only after tmux has been asked to start that reviewer, so a failure before
+   the launch request never claims a reviewer process, while a launch request
+diff --git a/docs/roles.md b/docs/roles.md
+index 9685739..7c22c5a 100644
+--- a/docs/roles.md
++++ b/docs/roles.md
+@@ -1,5 +1,54 @@
+ # Roles
+ 
++## Model policy
++
++`prompts/models.json` is part of the durable bundle and declares the agent
++backend, model, and reasoning effort of every role. The controller validates it
++completely before creating a run and resolves each invocation by its role key,
++so no role inherits another role's profile and no invocation reaches a CLI
++without an explicit profile.
++
++| Role | Lifecycle | Provider | Model | Effort |
++| --- | --- | --- | --- | --- |
++| PM | One persistent process per run | Codex | `gpt-5.6-sol` | `high` |
++| Researcher | Once before the first candidate | Claude Code | `claude-sonnet-5` | `medium` |
++| Story Editor | Once before the first candidate | Claude Code | `claude-opus-5` | `high` |
++| Writer | Once per candidate or revision | Claude Code | `claude-opus-5` | `medium` |
++| Evidence Reviewer | Fresh process per candidate | Codex | `gpt-5.6-sol` | `medium` |
++| Story Reviewer | Fresh process per candidate | Claude Code | `claude-sonnet-5` | `medium` |
++| Clarity Reviewer | Fresh process per candidate | Claude Code | `claude-sonnet-5` | `medium` |
++| Copy Reviewer | Fresh process per candidate | Codex | `gpt-5.6-luna` | `low` |
++
++Reviewer profiles are selected by the combined `reviewer_<lens>` key, so the
++four lenses are independent. Retries and revised candidates reuse the same
++declared profile; a different policy means a different version-controlled
++prompt bundle. Human Editor has no profile.
++
++A provider-neutral runner gives both providers the same immutable role and task
++prompt, workspace boundary, timeout and cancellation signal, and audit
++identity. Codex invocations add explicit `--model` and
++`--config model_reasoning_effort=...` to the existing
++`exec --ephemeral --ignore-user-config` boundary. Claude Code invocations are
++non-interactive (`--print` with the prompt on stdin) and use `--safe-mode`,
++`--dangerously-skip-permissions`, `--no-session-persistence`, and explicit
++`--model`/`--effort`. `--bare` is never used, because it disables the OAuth and
++keychain reads the Max session depends on.
++
++Claude processes keep the real `HOME`: the Max session is resolved from the
++user's account record, so that record has to stay reachable. Only
++`CLAUDE_CODE_TMPDIR` is run-owned, pointing at a per-invocation scratch
++directory that is removed with the run. The OS sandbox is what enforces the
++rest. The exact staged Claude client for a single invocation is the only
++process path permitted to read `~/.claude.json` and to start the system
++keychain client on the narrowly granted keychain path; `--safe-mode`
++additionally stops it loading non-managed customizations. User Claude
++configuration under `~/.claude`, history, plugins, skills, hooks, MCP
++configuration, session and project state, the rest of the home directory, and
++the admin-managed settings tree are denied to the client as well. A
++model-invoked tool runs from a different process path, so it can read neither
++the account record nor the keychain, cannot start the keychain client, and
++cannot reach the user's home.
++
+ Role instructions are durable files under `prompts/`. Generated assignments
+ are created in a controller-private runtime outside the run and combine those
+ instructions with the allowed artifact context. They are copied to the run's
+@@ -21,7 +70,8 @@ artifacts support a later inspected retry in a new run directory.
+ 
+ ## PM
+ 
+-The PM is one long-lived Codex process in its own isolated workspace. It watches
++The PM is one long-lived Codex process (`gpt-5.6-sol`, `high` effort) in its
++own isolated workspace. It watches
+ private, request-ID-specific review requests; Go validates and records the
+ result as `pm-decisions/article-00N.md`. It classifies every finding as:
+ 
+@@ -62,7 +112,9 @@ The Writer cannot classify findings, change earlier candidates, or create
+ ## Reviewers
+ 
+ Evidence, Story, Clarity, and Copy reviewers run in that order as four fresh,
+-sequential Codex processes. They never edit candidates. Every reviewer gets
++sequential processes. Evidence and Copy run on Codex and Story and Clarity run
++on Claude Code, so a candidate is not reviewed only by the Writer's own
++provider. They never edit candidates. Every reviewer gets
+ only its durable lens prompt, full brief, exact candidate, and candidate
+ revision, plus:
+ 
+diff --git a/docs/workflow.md b/docs/workflow.md
+index f30c790..a33003b 100644
+--- a/docs/workflow.md
++++ b/docs/workflow.md
+@@ -2,16 +2,21 @@
+ 
+ ## Controller sequence
+ 
+-The issue-1 implementation is a single-run, non-resumable controller. It first
+-parses every required level-two brief section and verifies that the target does
+-not exist. It builds the initial workspace in a temporary sibling directory
++The controller is single-run and non-resumable. It first parses every required
++level-two brief section, binds the prompt bundle, validates `models.json`
++completely, and verifies that the target does not exist. When the validated
++policy uses `claude_code` it then runs the sanitized `claude auth status`
++preflight and continues only for a logged-in `claude.ai` Max session. Every one
++of those checks fails before the run directory is created and before tmux
++starts, so an invalid policy or an unusable Claude session leaves no partial
++state. It builds the initial workspace in a temporary sibling directory
+ and commits that directory with an operating-system no-replace rename only
+ after initialization succeeds. A concurrently created directory or symlink is
+ never replaced.
+ 
+ ```mermaid
+ flowchart TD
+-    v[Validate brief and new target] --> i[Atomically initialize run]
++    v[Validate brief, model policy, Claude Max session, and new target] --> i[Atomically initialize run]
+     i --> pm[Start persistent PM in tmux]
+     pm --> r[Researcher]
+     r --> s[Story Editor]
+@@ -68,7 +73,9 @@ and remains active while Go starts one worker window at a time. Go verifies
+ both the PM Codex process identity and this application-level handshake before
+ starting any worker, and rechecks PM liveness before accepting worker output.
+ Each role runs in a fresh private workspace outside the run
+-directory. Go stages only its allowed inputs, waits for a natural successful
++directory, launched through a provider-neutral runner with the explicit
++provider, model, and reasoning effort its policy role declares. The immutable
++invocation record is published before the process is treated as ready. Go stages only its allowed inputs, waits for a natural successful
+ exit marker and tmux-window disappearance, validates output without following
+ symlinks, and then copies regular files into the run. The marker is published
+ by a same-directory temporary-file rename only after the Codex process and its
+diff --git a/internal/app/agent_runner.go b/internal/app/agent_runner.go
+index 355a2ec..cfafe6f 100644
+--- a/internal/app/agent_runner.go
++++ b/internal/app/agent_runner.go
+@@ -21,7 +21,10 @@ import (
+ func RunAgent(arguments []string) (returnErr error) {
+ 	flags := flag.NewFlagSet("__agent", flag.ContinueOnError)
+ 	flags.SetOutput(io.Discard)
+-	codex := flags.String("codex", "", "")
++	client := flags.String("client", "", "")
++	provider := flags.String("provider", "", "")
++	model := flags.String("model", "", "")
++	effort := flags.String("effort", "", "")
+ 	workspace := flags.String("workspace", "", "")
+ 	promptPath := flags.String("prompt", "", "")
+ 	logPath := flags.String("log", "", "")
+@@ -34,22 +37,26 @@ func RunAgent(arguments []string) (returnErr error) {
+ 	candidate := flags.Int("candidate", 0, "")
+ 	revision := flags.String("revision", "", "")
+ 	invocation := flags.String("invocation", "", "")
+-	codexHome := flags.String("codex-home", "", "")
++	providerHome := flags.String("provider-home", "", "")
+ 	exitMarkerDelay := flags.String("exit-marker-delay", "", "")
+ 	readyMarkerDelay := flags.String("ready-marker-delay", "", "")
+ 	if err := flags.Parse(arguments); err != nil || flags.NArg() != 0 {
+ 		return fmt.Errorf("invalid internal agent runner arguments")
+ 	}
+ 	for name, value := range map[string]string{
+-		"codex": *codex, "workspace": *workspace, "prompt": *promptPath,
++		"client": *client, "provider": *provider, "model": *model, "effort": *effort,
++		"workspace": *workspace, "prompt": *promptPath,
+ 		"log": *logPath, "exit": *exitPath, "ready": *readyPath,
+ 		"ownership": *ownershipPath,
+-		"profile":   *profilePath, "role": *role, "invocation": *invocation, "codex-home": *codexHome,
++		"profile":   *profilePath, "role": *role, "invocation": *invocation, "provider-home": *providerHome,
+ 	} {
+ 		if strings.TrimSpace(value) == "" {
+ 			return fmt.Errorf("internal agent runner is missing %s", name)
+ 		}
+ 	}
++	if *provider != providerCodex && *provider != providerClaudeCode {
++		return fmt.Errorf("internal agent runner received unsupported provider %q", *provider)
++	}
+ 	status := 1
+ 	defer func() {
+ 		if err := publishInteger(*exitPath, status, *exitMarkerDelay); err != nil {
+@@ -90,12 +97,8 @@ func RunAgent(arguments []string) (returnErr error) {
+ 			time.Sleep(delay)
+ 		}
+ 	}
+-	codexArguments := []string{
+-		"--dangerously-bypass-approvals-and-sandbox", "-C", *workspace,
+-		"exec", "--ephemeral", "--ignore-user-config", "--ignore-rules",
+-		"--skip-git-repo-check", "-",
+-	}
+-	executable, commandArguments, err := isolatedCommand(*profilePath, *codex, codexArguments)
++	clientArguments := providerArguments(*provider, *workspace, *model, *effort)
++	executable, commandArguments, err := isolatedCommand(*profilePath, *client, clientArguments)
+ 	if err != nil {
+ 		return err
+ 	}
+@@ -104,21 +107,21 @@ func RunAgent(arguments []string) (returnErr error) {
+ 	command.Stdin = prompt
+ 	command.Stdout = logFile
+ 	command.Stderr = logFile
+-	command.Env = agentEnvironment(*workspace, *codexHome, *role, *lens, *candidate, *revision, *invocation)
++	command.Env = agentEnvironment(*provider, *workspace, *providerHome, *role, *lens, *candidate, *revision, *invocation)
+ 	configureProcessGroup(command)
+ 	if err := command.Start(); err != nil {
+-		return fmt.Errorf("start Codex: %w", err)
++		return fmt.Errorf("start %s client: %w", *provider, err)
+ 	}
+ 	identity, err := tracker.waitFor(command.Process.Pid, time.Now().Add(2*time.Second))
+ 	if err != nil {
+ 		_ = command.Process.Kill()
+ 		_ = command.Wait()
+-		return fmt.Errorf("capture Codex process ownership: %w", err)
++		return fmt.Errorf("capture %s process ownership: %w", *provider, err)
+ 	}
+ 	if err := publishJSONAtomic(*readyPath, identity); err != nil {
+ 		_ = command.Process.Kill()
+ 		_ = command.Wait()
+-		return fmt.Errorf("publish live Codex ready marker: %w", err)
++		return fmt.Errorf("publish live %s ready marker: %w", *provider, err)
+ 	}
+ 	waitErr := command.Wait()
+ 	status = 0
+@@ -136,17 +139,52 @@ func RunAgent(arguments []string) (returnErr error) {
+ 	}
+ 	trackerClosed = true
+ 	if status != 0 {
+-		return fmt.Errorf("Codex exited with status %d", status)
++		return fmt.Errorf("%s exited with status %d", *provider, status)
+ 	}
+ 	return nil
+ }
+ 
+-func agentEnvironment(workspace, codexHome, role, lens string, candidate int, revision, invocation string) []string {
++// providerArguments builds the exact non-interactive argument vector for one
++// provider. Model and reasoning effort are always explicit: neither CLI is
++// allowed to pick a default, and neither is given a fallback model.
++func providerArguments(provider, workspace, model, effort string) []string {
++	switch provider {
++	case providerClaudeCode:
++		// --safe-mode disables user customizations while leaving Max OAuth
++		// usable; --bare is forbidden because it disables OAuth and keychain
++		// reads and accepts only an API key. --no-session-persistence keeps
++		// conversation state out of the user's Claude directories. The prompt
++		// arrives on stdin.
++		return []string{
++			"--print",
++			"--safe-mode",
++			"--dangerously-skip-permissions",
++			"--no-session-persistence",
++			"--model", model,
++			"--effort", effort,
++		}
++	default:
++		return []string{
++			"--model", model,
++			"--config", "model_reasoning_effort=" + strconv.Quote(effort),
++			"--dangerously-bypass-approvals-and-sandbox", "-C", workspace,
++			"exec", "--ephemeral", "--ignore-user-config", "--ignore-rules",
++			"--skip-git-repo-check", "-",
++		}
++	}
++}
++
++// providerBaseEnvironment is the allowlisted host environment every provider
++// process and the Claude authentication preflight receive. ANTHROPIC_API_KEY
++// and every alternative API, Bedrock, Vertex, Foundry, or provider-selection
++// credential is absent by construction, so an ambient credential can never
++// move a run to API billing or another provider.
++func providerBaseEnvironment() []string {
+ 	allowed := []string{
+ 		"HOME", "USER", "LOGNAME", "PATH", "SHELL", "LANG", "LC_ALL", "TERM",
+ 		"SSL_CERT_FILE", "SSL_CERT_DIR",
+ 	}
+-	environment := make([]string, 0, len(allowed)+6)
++	environment := make([]string, 0, len(allowed)+8)
+ 	for _, key := range allowed {
+ 		if value, found := os.LookupEnv(key); found {
+ 			environment = append(environment, key+"="+value)
+@@ -157,8 +195,26 @@ func agentEnvironment(workspace, codexHome, role, lens string, candidate int, re
+ 			environment = append(environment, key+"="+value)
+ 		}
+ 	}
++	return environment
++}
++
++func agentEnvironment(provider, workspace, providerHome, role, lens string, candidate int, revision, invocation string) []string {
++	environment := providerBaseEnvironment()
++	switch provider {
++	case providerClaudeCode:
++		// Claude Code keeps a scratch root at <CLAUDE_CODE_TMPDIR>/claude-<uid>
++		// and defaults it to /tmp, which is a shared user path outside this run.
++		// Point it at the run-owned provider home instead, so nothing this
++		// invocation writes outlives the run. HOME is deliberately left alone:
++		// the Max session is resolved from the user's top-level Claude
++		// configuration file and the login keychain, and the sandbox - not the
++		// environment - is what keeps every other part of the user's Claude
++		// state out of reach.
++		environment = append(environment, "CLAUDE_CODE_TMPDIR="+providerHome)
++	default:
++		environment = append(environment, "CODEX_HOME="+providerHome)
++	}
+ 	environment = append(environment,
+-		"CODEX_HOME="+codexHome,
+ 		"WRITE_UUTER_WORK_DIR="+workspace,
+ 		"WRITE_UUTER_ROLE="+role,
+ 		"WRITE_UUTER_LENS="+lens,
+@@ -170,6 +226,17 @@ func agentEnvironment(workspace, codexHome, role, lens string, candidate int, re
+ 	return environment
+ }
+ 
++func replaceEnvironmentValue(environment []string, key, value string) []string {
++	prefix := key + "="
++	result := make([]string, 0, len(environment)+1)
++	for _, entry := range environment {
++		if !strings.HasPrefix(entry, prefix) {
++			result = append(result, entry)
++		}
++	}
++	return append(result, prefix+value)
++}
++
+ func proxyWithoutUserinfo(value string) bool {
+ 	if value == "" || strings.IndexFunc(value, func(r rune) bool { return r < 0x20 || r == 0x7f }) >= 0 {
+ 		return false
+diff --git a/internal/app/app.go b/internal/app/app.go
+index 951d192..71a0461 100644
+--- a/internal/app/app.go
++++ b/internal/app/app.go
+@@ -7,6 +7,7 @@ import (
+ 	"errors"
+ 	"fmt"
+ 	"os"
++	"os/exec"
+ 	"path/filepath"
+ 	"sort"
+ 	"strconv"
+@@ -15,18 +16,20 @@ import (
+ )
+ 
+ type Config struct {
+-	BriefPath       string
+-	RunDir          string
+-	CodexExecutable string
+-	TmuxExecutable  string
+-	// CodexExecutableSet/TmuxExecutableSet record that the caller passed the
+-	// override explicitly, so an explicit empty value fails instead of
+-	// silently falling back to the PATH default.
+-	CodexExecutableSet bool
+-	TmuxExecutableSet  bool
+-	AgentTimeout       time.Duration
+-	PromptsDir         string
+-	PromptsDirSet      bool
++	BriefPath        string
++	RunDir           string
++	CodexExecutable  string
++	ClaudeExecutable string
++	TmuxExecutable   string
++	// CodexExecutableSet/ClaudeExecutableSet/TmuxExecutableSet record that the
++	// caller passed the override explicitly, so an explicit empty value fails
++	// instead of silently falling back to the PATH default.
++	CodexExecutableSet  bool
++	ClaudeExecutableSet bool
++	TmuxExecutableSet   bool
++	AgentTimeout        time.Duration
++	PromptsDir          string
++	PromptsDirSet       bool
+ }
+ 
+ type decisionBinding struct {
+@@ -36,17 +39,21 @@ type decisionBinding struct {
+ }
+ 
+ type controller struct {
+-	config           Config
+-	brief            briefDocument
+-	runDir           string
+-	prompts          *promptBundle
+-	contentRoot      string
+-	workflow         Workflow
+-	store            *artifactStore
+-	runtime          *tmuxRuntime
+-	pm               invocation
+-	reachedLenses    map[int][]string
+-	decisionBindings map[int]map[string]decisionBinding
++	config  Config
++	brief   briefDocument
++	runDir  string
++	prompts *promptBundle
++	policy  *modelPolicy
++	// providerExecutables holds the resolved executable for every provider the
++	// validated policy references, and nothing else.
++	providerExecutables map[string]string
++	contentRoot         string
++	workflow            Workflow
++	store               *artifactStore
++	runtime             *tmuxRuntime
++	pm                  invocation
++	reachedLenses       map[int][]string
++	decisionBindings    map[int]map[string]decisionBinding
+ 	// publishedArticle is the exact file identity this controller committed as
+ 	// article.md. Rollback removes only that identity.
+ 	publishedArticle os.FileInfo
+@@ -62,12 +69,18 @@ func Run(config Config) error {
+ 	if config.CodexExecutableSet && strings.TrimSpace(config.CodexExecutable) == "" {
+ 		return fmt.Errorf("--codex was given an empty value")
+ 	}
++	if config.ClaudeExecutableSet && strings.TrimSpace(config.ClaudeExecutable) == "" {
++		return fmt.Errorf("--claude was given an empty value")
++	}
+ 	if config.TmuxExecutableSet && strings.TrimSpace(config.TmuxExecutable) == "" {
+ 		return fmt.Errorf("--tmux was given an empty value")
+ 	}
+ 	if config.CodexExecutable == "" {
+ 		config.CodexExecutable = "codex"
+ 	}
++	if config.ClaudeExecutable == "" {
++		config.ClaudeExecutable = "claude"
++	}
+ 	if config.TmuxExecutable == "" {
+ 		config.TmuxExecutable = "tmux"
+ 	}
+@@ -84,6 +97,18 @@ func Run(config Config) error {
+ 		return err
+ 	}
+ 	defer prompts.Close()
++	// The policy is bound to the same no-follow bundle boundary as the role
++	// prompts and validated completely before anything is created. Every
++	// rejection below therefore happens before the run directory exists and
++	// before tmux is started.
++	policyData, err := prompts.load(modelPolicyFile)
++	if err != nil {
++		return fmt.Errorf("required model policy %s: %w", modelPolicyFile, err)
++	}
++	policy, err := parseModelPolicy([]byte(policyData))
++	if err != nil {
++		return err
++	}
+ 	runDir, err := filepath.Abs(config.RunDir)
+ 	if err != nil {
+ 		return fmt.Errorf("resolve run directory: %w", err)
+@@ -93,6 +118,22 @@ func Run(config Config) error {
+ 	} else if !errors.Is(err, os.ErrNotExist) {
+ 		return fmt.Errorf("inspect run directory: %w", err)
+ 	}
++	providerExecutables := map[string]string{}
++	if policy.usesProvider(providerCodex) {
++		providerExecutables[providerCodex] = config.CodexExecutable
++	}
++	if policy.usesProvider(providerClaudeCode) {
++		claudePath, resolveErr := resolveClaudeExecutable(config.ClaudeExecutable)
++		if resolveErr != nil {
++			return resolveErr
++		}
++		// The exact executable that passes the Max preflight is the one that is
++		// staged and launched.
++		if err := verifyClaudeMaxSubscription(claudePath); err != nil {
++			return err
++		}
++		providerExecutables[providerClaudeCode] = claudePath
++	}
+ 	contentRoot, err := os.Getwd()
+ 	if err != nil {
+ 		return fmt.Errorf("resolve content root: %w", err)
+@@ -103,6 +144,7 @@ func Run(config Config) error {
+ 	}
+ 	control := &controller{
+ 		config: config, brief: brief, runDir: runDir, prompts: prompts, contentRoot: contentRoot,
++		policy: policy, providerExecutables: providerExecutables,
+ 		reachedLenses: make(map[int][]string), decisionBindings: make(map[int]map[string]decisionBinding),
+ 	}
+ 	if err := control.initialize(briefData); err != nil {
+@@ -137,7 +179,7 @@ func (control *controller) initialize(briefData []byte) error {
+ 			_ = store.Close()
+ 		}
+ 	}()
+-	for _, relative := range []string{"evidence/assets", "drafts", "reviews", "pm-decisions", ".control/prompts", ".control/exits", ".control/logs"} {
++	for _, relative := range []string{"evidence/assets", "drafts", "reviews", "pm-decisions", ".control/prompts", ".control/exits", ".control/logs", ".control/invocations"} {
+ 		if err := store.mkdirAll(relative, 0o755); err != nil {
+ 			return fmt.Errorf("initialize workspace: %w", err)
+ 		}
+@@ -145,11 +187,19 @@ func (control *controller) initialize(briefData []byte) error {
+ 	if err := store.writeAtomic("brief.md", briefData, 0o644); err != nil {
+ 		return fmt.Errorf("copy brief: %w", err)
+ 	}
++	// The run keeps the exact validated policy bytes, and workflow.json keeps
++	// their digest, so a completed or blocked run can prove which policy
++	// produced it.
++	if err := store.writeAtomic(modelPolicyArtifact, control.policy.data, 0o444); err != nil {
++		return fmt.Errorf("copy model policy: %w", err)
++	}
+ 	now := time.Now().UTC()
+ 	control.workflow = Workflow{
+ 		SchemaVersion: workflowSchemaVersion, Status: "running", Phase: "initializing",
++		ModelPolicyDigest: control.policy.digest,
+ 		ArtifactPaths: map[string]string{
+ 			"brief": "brief.md", "workflow": "workflow.json", "sources": "evidence/sources.md",
++			"model_policy": modelPolicyArtifact, "invocations": ".control/invocations",
+ 			"firsthand": "evidence/firsthand.md", "assets": "evidence/assets", "claim_ledger": "claim-ledger.md",
+ 			"outline": "outline.md", "drafts": "drafts", "reviews": "reviews",
+ 			"pm_decisions": "pm-decisions", "article": "article.md",
+@@ -211,7 +261,7 @@ func waitForCommitBarrier() error {
+ 
+ func (control *controller) execute() error {
+ 	pmDeadline := invocationDeadline(control.config.AgentTimeout)
+-	runtime, err := newTmuxRuntime(control.config.TmuxExecutable, control.config.CodexExecutable, control.config.AgentTimeout, control.runDir)
++	runtime, err := newTmuxRuntime(control.config.TmuxExecutable, control.providerExecutables, control.config.AgentTimeout, control.runDir)
+ 	if err != nil {
+ 		return control.block(err.Error())
+ 	}
+@@ -223,10 +273,17 @@ func (control *controller) execute() error {
+ 	if err != nil {
+ 		return control.block(err.Error())
+ 	}
+-	control.pm, err = control.runtime.prepareInvocation("pm", "", 0, "", pmPrompt)
++	pmProfile, err := control.policy.profileFor("pm")
+ 	if err != nil {
+ 		return control.block(err.Error())
+ 	}
++	control.pm, err = control.runtime.prepareInvocation("pm", "", 0, "", pmPrompt, pmProfile)
++	if err != nil {
++		return control.block(err.Error())
++	}
++	if err := control.publishInvocationAudit(control.pm); err != nil {
++		return control.block(err.Error())
++	}
+ 	if err := ensureInvocationDeadline(pmDeadline, "PM launch preparation"); err != nil {
+ 		return control.block(err.Error())
+ 	}
+@@ -1146,11 +1203,18 @@ func (control *controller) workerLaunchDeadline() int64 {
+ 
+ func (control *controller) runWorker(role, lens string, candidate int, revision, phase, prompt string, prepare, validate, commit func(*artifactStore) error, rollback func() error) error {
+ 	deadlineUnixNano := control.workerLaunchDeadline()
++	profile, err := control.policy.profileFor(role)
++	if err != nil {
++		return err
++	}
+ 	testInvocationDelay("WRITE_UUTER_TEST_BEFORE_WORKER_START_DELAY")
+-	inv, err := control.runtime.prepareInvocation(role, lens, candidate, revision, prompt)
++	inv, err := control.runtime.prepareInvocation(role, lens, candidate, revision, prompt, profile)
+ 	if err != nil {
+ 		return err
+ 	}
++	if err := control.publishInvocationAudit(inv); err != nil {
++		return err
++	}
+ 	workspace, err := control.runtime.workspaceStore(inv)
+ 	if err != nil {
+ 		return err
+@@ -1527,3 +1591,42 @@ func findStyleGuide(contentRoot string) (string, error) {
+ 	}
+ 	return "", nil
+ }
++
++// resolveClaudeExecutable resolves and canonicalizes the Claude client before
++// the run directory exists, so a missing executable is a pre-run failure.
++func resolveClaudeExecutable(configured string) (string, error) {
++	path, err := exec.LookPath(configured)
++	if err != nil {
++		return "", fmt.Errorf("locate Claude Code executable %q: %w", configured, err)
++	}
++	canonical, err := filepath.EvalSymlinks(path)
++	if err != nil {
++		return "", fmt.Errorf("resolve Claude Code executable %q: %w", configured, err)
++	}
++	return canonical, nil
++}
++
++// publishInvocationAudit atomically publishes one immutable invocation record
++// before the process can be considered ready. The record is written from the
++// invocation's own bound profile, which is the profile that built its argument
++// vector, so the artifact and the launched command cannot disagree.
++func (control *controller) publishInvocationAudit(inv invocation) error {
++	role := inv.Role
++	if inv.Lens != "" {
++		role = strings.TrimSuffix(role, "_"+inv.Lens)
++	}
++	record := InvocationAudit{
++		Invocation: inv.ID, Role: role, Lens: inv.Lens, Candidate: inv.Candidate,
++		Provider: inv.Profile.Provider, Model: inv.Profile.Model,
++		ReasoningEffort: inv.Profile.ReasoningEffort, ModelPolicyDigest: control.policy.digest,
++	}
++	data, err := json.MarshalIndent(record, "", "  ")
++	if err != nil {
++		return fmt.Errorf("encode invocation audit for %s: %w", inv.ID, err)
++	}
++	data = append(data, '\n')
++	if _, err := control.store.writeAtomicNoReplace(filepath.Join(".control", "invocations", inv.ID+".json"), data, 0o444); err != nil {
++		return fmt.Errorf("publish invocation audit for %s: %w", inv.ID, err)
++	}
++	return nil
++}
+diff --git a/internal/app/blackbox_test.go b/internal/app/blackbox_test.go
+index 48b7e9c..51c2d5f 100644
+--- a/internal/app/blackbox_test.go
++++ b/internal/app/blackbox_test.go
+@@ -6,6 +6,7 @@ import (
+ 	"encoding/json"
+ 	"errors"
+ 	"fmt"
++	"io/fs"
+ 	"os"
+ 	"os/exec"
+ 	"path/filepath"
+@@ -43,6 +44,34 @@ type invocationRecord struct {
+ 	Workspace      string            `json:"workspace"`
+ 	WorkspaceFiles []string          `json:"workspace_files"`
+ 	Isolation      map[string]string `json:"isolation"`
++	Args           []string          `json:"args"`
++	Executable     string            `json:"executable"`
++	ExecutableTag  string            `json:"executable_tag"`
++	Environment    map[string]string `json:"environment"`
++}
++
++type auditRecord struct {
++	Invocation        string `json:"invocation"`
++	Role              string `json:"role"`
++	Lens              string `json:"lens"`
++	Candidate         int    `json:"candidate"`
++	Provider          string `json:"provider"`
++	Model             string `json:"model"`
++	ReasoningEffort   string `json:"reasoning_effort"`
++	ModelPolicyDigest string `json:"model_policy_digest"`
++}
++
++// checkedInPolicy is the profile table the repository bundle declares. The
++// tests assert the launched arguments and the audit records against it.
++var checkedInPolicy = map[string]auditRecord{
++	"pm":                {Provider: "codex", Model: "gpt-5.6-sol", ReasoningEffort: "high"},
++	"researcher":        {Provider: "claude_code", Model: "claude-sonnet-5", ReasoningEffort: "medium"},
++	"story_editor":      {Provider: "claude_code", Model: "claude-opus-5", ReasoningEffort: "high"},
++	"writer":            {Provider: "claude_code", Model: "claude-opus-5", ReasoningEffort: "medium"},
++	"reviewer_evidence": {Provider: "codex", Model: "gpt-5.6-sol", ReasoningEffort: "medium"},
++	"reviewer_story":    {Provider: "claude_code", Model: "claude-sonnet-5", ReasoningEffort: "medium"},
++	"reviewer_clarity":  {Provider: "claude_code", Model: "claude-sonnet-5", ReasoningEffort: "medium"},
++	"reviewer_copy":     {Provider: "codex", Model: "gpt-5.6-luna", ReasoningEffort: "low"},
+ }
+ 
+ var (
+@@ -694,6 +723,7 @@ func TestBlackBoxUnsyncedRunWorkspaceCommitIsNotBlamedOnACompetitor(t *testing.T
+ 		"--brief", filepath.Join(repositoryRoot(t), "examples", "brief.md"),
+ 		"--run-dir", runDir,
+ 		"--codex", fake,
++		"--claude", fakeClaudePath(fake),
+ 		"--timeout", "5s",
+ 		"--prompts-dir", filepath.Join(repositoryRoot(t), "prompts"),
+ 	)
+@@ -744,6 +774,7 @@ func TestBlackBoxUnsyncedRunWorkspaceCommitIsNotBlamedOnACompetitor(t *testing.T
+ 		"--brief", filepath.Join(repositoryRoot(t), "examples", "brief.md"),
+ 		"--run-dir", runDir,
+ 		"--codex", fake,
++		"--claude", fakeClaudePath(fake),
+ 		"--timeout", "5s",
+ 		"--prompts-dir", filepath.Join(repositoryRoot(t), "prompts"),
+ 	)
+@@ -784,6 +815,7 @@ func TestBlackBoxReviewAttemptCountExcludesPreLaunchFailure(t *testing.T) {
+ func TestBlackBoxExplicitEmptyExecutableOverridesFailBeforeRunInitialization(t *testing.T) {
+ 	for _, testCase := range []struct{ flag, reason string }{
+ 		{"--codex=", "--codex was given an empty value"},
++		{"--claude=", "--claude was given an empty value"},
+ 		{"--tmux=", "--tmux was given an empty value"},
+ 	} {
+ 		t.Run(strings.Trim(testCase.flag, "-="), func(t *testing.T) {
+@@ -1116,9 +1148,7 @@ func TestBlackBoxUnexpectedTmuxProbeFailureIsNotAbsence(t *testing.T) {
+ 		t.Fatalf("probe failure did not preserve one recoverable ownership root: %v", privatePaths)
+ 	}
+ 	t.Cleanup(func() { _ = os.RemoveAll(privatePaths[0]) })
+-	if _, err := os.Lstat(filepath.Join(privatePaths[0], "codex-homes")); !errors.Is(err, os.ErrNotExist) {
+-		t.Fatalf("probe failure left copied credentials behind: %v", err)
+-	}
++	assertNoStagedProviderCredentials(t, privatePaths[0])
+ }
+ 
+ func TestBlackBoxFinalPMExitBlocksPublication(t *testing.T) {
+@@ -1297,9 +1327,7 @@ func TestBlackBoxPersistentCleanupFailurePreservesOwnershipButDeletesCredentials
+ 	}
+ 	privateRoot := privatePaths[0]
+ 	t.Cleanup(func() { _ = os.RemoveAll(privateRoot) })
+-	if _, err := os.Lstat(filepath.Join(privateRoot, "codex-homes")); !errors.Is(err, os.ErrNotExist) {
+-		t.Fatalf("staged credentials survived cleanup failure: %v", err)
+-	}
++	assertNoStagedProviderCredentials(t, privateRoot)
+ 	manifests, err := filepath.Glob(filepath.Join(privateRoot, "control", "ownership", "*.json"))
+ 	if err != nil || len(manifests) == 0 {
+ 		t.Fatalf("recoverable ownership identities were deleted: %v, %v", manifests, err)
+@@ -1395,9 +1423,7 @@ func TestBlackBoxAmbiguousTmuxLaunchIsReconciledAndCleaned(t *testing.T) {
+ 						t.Fatalf("ambiguous launch left unexplained private state: %v; workflow=%+v", privatePaths, state)
+ 					}
+ 					for _, privatePath := range privatePaths {
+-						if _, err := os.Stat(filepath.Join(privatePath, "codex-homes")); !os.IsNotExist(err) {
+-							t.Fatalf("ambiguous cleanup retained credentials: %s", privatePath)
+-						}
++						assertNoStagedProviderCredentials(t, privatePath)
+ 					}
+ 					break
+ 				}
+@@ -1429,9 +1455,7 @@ func TestBlackBoxReadyPublicationTimeoutCleansOwnedRunner(t *testing.T) {
+ 			t.Fatalf("unpublished owned runner left unexplained private state: %v; workflow=%+v", privatePaths, state)
+ 		}
+ 		for _, privatePath := range privatePaths {
+-			if _, err := os.Stat(filepath.Join(privatePath, "codex-homes")); !os.IsNotExist(err) {
+-				t.Fatalf("credential root survived recoverable cleanup: %s", privatePath)
+-			}
++			assertNoStagedProviderCredentials(t, privatePath)
+ 		}
+ 	}
+ }
+@@ -1748,21 +1772,34 @@ func prepareScenario(t *testing.T, scenario string) (binary, fake, runDir, fixtu
+ 		t.Fatal(err)
+ 	}
+ 	fake = filepath.Join(fixtureDir, "fake-codex")
++	// Two separately selectable fixtures. Each carries a distinct trailing tag
++	// so a staged copy still proves which flag selected it.
+ 	copyFile(t, fakeTemplate, fake, 0o755)
++	copyFile(t, fakeClaudePath(fakeTemplate), fakeClaudePath(fake), 0o755)
+ 	if err := os.WriteFile(filepath.Join(fixtureDir, "scenario"), []byte(scenario), 0o644); err != nil {
+ 		t.Fatal(err)
+ 	}
+ 	return binary, fake, filepath.Join(temporary, "run"), fixtureDir
+ }
+ 
++func fakeClaudePath(fake string) string {
++	return filepath.Join(filepath.Dir(fake), "fake-claude")
++}
++
+ func newRunCommand(t *testing.T, binary, fake, runDir, timeout, briefPath string) *exec.Cmd {
++	t.Helper()
++	return newRunCommandWithPrompts(t, binary, fake, runDir, timeout, briefPath, filepath.Join(repositoryRoot(t), "prompts"))
++}
++
++func newRunCommandWithPrompts(t *testing.T, binary, fake, runDir, timeout, briefPath, promptsDir string) *exec.Cmd {
+ 	t.Helper()
+ 	command := exec.Command(binary, "run",
+ 		"--brief", briefPath,
+ 		"--run-dir", runDir,
+ 		"--codex", fake,
++		"--claude", fakeClaudePath(fake),
+ 		"--timeout", timeout,
+-		"--prompts-dir", filepath.Join(repositoryRoot(t), "prompts"),
++		"--prompts-dir", promptsDir,
+ 	)
+ 	command.Dir = repositoryRoot(t)
+ 	command.Env = append(os.Environ(), "WRITE_UUTER_FAKE_LOG_DIR="+filepath.Join(filepath.Dir(fake), "logs"))
+@@ -1793,7 +1830,7 @@ func buildBinaries(t *testing.T) (string, string) {
+ 			input  string
+ 		}{
+ 			{filepath.Join(buildDir, "write-uuter"), "./cmd/write-uuter"},
+-			{filepath.Join(buildDir, "fake-codex"), "./internal/app/testdata/fakecodex"},
++			{filepath.Join(buildDir, "fake-agent"), "./internal/app/testdata/fakeagent"},
+ 		} {
+ 			command := exec.Command("go", "build", "-o", item.output, item.input)
+ 			command.Dir = root
+@@ -1802,6 +1839,21 @@ func buildBinaries(t *testing.T) (string, string) {
+ 				return
+ 			}
+ 		}
++		// One fixture program, two separately selectable executables. The
++		// trailing tag survives the controller's private staging copy, so a
++		// launched process still identifies the flag that selected it.
++		template, readErr := os.ReadFile(filepath.Join(buildDir, "fake-agent"))
++		if readErr != nil {
++			buildErr = readErr
++			return
++		}
++		for name, tag := range map[string]string{"fake-codex": "codex", "fake-claude": "claude"} {
++			tagged := append(append([]byte(nil), template...), []byte("\n#write-uuter-fake-tag:"+tag+"\n")...)
++			if writeErr := os.WriteFile(filepath.Join(buildDir, name), tagged, 0o755); writeErr != nil {
++				buildErr = writeErr
++				return
++			}
++		}
+ 	})
+ 	if buildErr != nil {
+ 		t.Fatal(buildErr)
+@@ -1905,6 +1957,39 @@ func assertReviewerFilesystem(t *testing.T, record invocationRecord) {
+ 	}
+ }
+ 
++// assertNoStagedProviderCredentials proves that a retained controller-private
++// root carries no staged provider credential. The directory check is written
++// against the real production name (`provider-homes`, internal/app/tmux.go),
++// and the file scan below makes the assertion independent of that name: a
++// future rename of the staging directory cannot turn this check vacuous,
++// because no concrete staged credential file may survive anywhere under the
++// retained root.
++func assertNoStagedProviderCredentials(t *testing.T, privateRoot string) {
++	t.Helper()
++	if _, err := os.Lstat(filepath.Join(privateRoot, "provider-homes")); !errors.Is(err, os.ErrNotExist) {
++		t.Fatalf("staged provider credential root survived cleanup at %s: %v", privateRoot, err)
++	}
++	var survivors []string
++	if err := filepath.WalkDir(privateRoot, func(path string, entry fs.DirEntry, walkErr error) error {
++		if walkErr != nil {
++			return nil
++		}
++		if entry.IsDir() {
++			return nil
++		}
++		switch entry.Name() {
++		case "auth.json", "installation_id":
++			survivors = append(survivors, path)
++		}
++		return nil
++	}); err != nil {
++		t.Fatalf("scan retained private root %s: %v", privateRoot, err)
++	}
++	if len(survivors) != 0 {
++		t.Fatalf("staged provider credentials survived cleanup: %v", survivors)
++	}
++}
++
+ func assertNoArticle(t *testing.T, runDir string) {
+ 	t.Helper()
+ 	if _, err := os.Stat(filepath.Join(runDir, "article.md")); !errors.Is(err, os.ErrNotExist) {
+diff --git a/internal/app/claude_auth.go b/internal/app/claude_auth.go
+new file mode 100644
+index 0000000..86ad0a2
+--- /dev/null
++++ b/internal/app/claude_auth.go
+@@ -0,0 +1,165 @@
++package app
++
++import (
++	"bytes"
++	"context"
++	"encoding/json"
++	"errors"
++	"fmt"
++	"io"
++	"os/exec"
++	"time"
++)
++
++// claudeAuthTimeout bounds the pre-run authentication probe, including every
++// descendant it starts and every descriptor those descendants inherited. The
++// probe is a local status read, so a hang is a failure rather than something
++// to wait out.
++const claudeAuthTimeout = 30 * time.Second
++
++// claudeAuthOutputLimit bounds how much of the probe's standard output is kept
++// in memory. A status document is a few hundred bytes; anything approaching
++// this limit is a broken or wrong executable, not a status response.
++const claudeAuthOutputLimit = 64 << 10
++
++// requiredClaudeAuth is the only accepted Claude authentication state: a
++// logged-in claude.ai (OAuth) session on a Max subscription. An API-key,
++// Bedrock, Vertex, or Foundry session is rejected so a run can never move to
++// API billing or another provider.
++var requiredClaudeAuth = struct {
++	authMethod       string
++	subscriptionType string
++}{authMethod: "claude.ai", subscriptionType: "max"}
++
++// verifyClaudeMaxSubscription runs the sanitized `claude auth status` probe and
++// accepts only a logged-in claude.ai Max session. It runs before the run
++// directory is created, uses the same credential/provider environment
++// filtering as Claude invocations, and never returns or records the raw
++// response, the account identity, or any credential value.
++func verifyClaudeMaxSubscription(executable string) error {
++	return verifyClaudeMaxSubscriptionWithin(executable, claudeAuthTimeout)
++}
++
++// claudeAuthWaitDelay is the slice of the deadline reserved for tearing the
++// probe down: killing the process group and closing descriptors a descendant
++// inherited. It is subtracted from the deadline rather than added to it, so
++// the whole probe - process tree and inherited pipes included - returns within
++// the deadline.
++func claudeAuthWaitDelay(timeout time.Duration) time.Duration {
++	delay := timeout / 4
++	if delay > time.Second {
++		delay = time.Second
++	}
++	if delay <= 0 {
++		delay = time.Millisecond
++	}
++	return delay
++}
++
++func verifyClaudeMaxSubscriptionWithin(executable string, timeout time.Duration) error {
++	teardown := claudeAuthWaitDelay(timeout)
++	ctx, cancel := context.WithTimeout(context.Background(), timeout-teardown)
++	defer cancel()
++	command := exec.CommandContext(ctx, executable, "auth", "status")
++	// Hard-limited capture: a runaway executable cannot grow the controller's
++	// memory, and the overflow is reported rather than silently truncated into
++	// a malformed-status error.
++	capture := &boundedCapture{limit: claudeAuthOutputLimit}
++	command.Stdout = capture
++	command.Stderr = io.Discard
++	command.Stdin = nil
++	// The same allowlist the invocations use. ANTHROPIC_API_KEY and every
++	// alternative provider-selection credential are absent by construction, so
++	// the probe reports the same session the run will use.
++	command.Env = providerBaseEnvironment()
++	// The probe leads its own process group, so the deadline bounds the whole
++	// tree rather than the immediate child: on timeout the group is signalled
++	// before the leader is reaped, which is the only point where a descendant
++	// is still reachable through it.
++	configureProcessGroup(command)
++	command.Cancel = func() error { return terminateProcessGroup(command.Process.Pid) }
++	// A descendant that inherited the probe's stdout keeps the read end open
++	// after the leader exits. Without a finite delay that descendant, not the
++	// deadline, would decide when Wait returns.
++	command.WaitDelay = teardown
++	runErr := command.Run()
++	if command.Process != nil {
++		// Sweep any descendant that outlived a probe which exited on its own.
++		_ = terminateProcessGroup(command.Process.Pid)
++	}
++	if ctx.Err() != nil {
++		return fmt.Errorf("Claude Max preflight: `claude auth status` did not finish within %s; check the Claude CLI installation", timeout)
++	}
++	if capture.truncated {
++		return fmt.Errorf("Claude Max preflight: `claude auth status` produced more than %d bytes of output instead of a status document; check that --claude points at the Claude CLI", claudeAuthOutputLimit)
++	}
++	// ErrWaitDelay means only that a descendant still held an inherited
++	// descriptor; the probe's own exit status and output are still decisive,
++	// and a descriptor held past the delay can only shorten what was captured,
++	// which the strict status validation below rejects.
++	if runErr != nil && !errors.Is(runErr, exec.ErrWaitDelay) {
++		return fmt.Errorf("Claude Max preflight: `claude auth status` failed (%v); run `claude auth login` and retry", runErr)
++	}
++	return validateClaudeAuthStatus(capture.data)
++}
++
++// boundedCapture keeps at most limit bytes and records that more arrived. It
++// never returns a short write or an error, so the reader keeps draining and
++// the probe is bounded by the deadline rather than blocking on a full pipe.
++type boundedCapture struct {
++	limit     int
++	data      []byte
++	truncated bool
++}
++
++func (capture *boundedCapture) Write(chunk []byte) (int, error) {
++	remaining := capture.limit - len(capture.data)
++	switch {
++	case remaining <= 0:
++		if len(chunk) != 0 {
++			capture.truncated = true
++		}
++	case len(chunk) > remaining:
++		capture.data = append(capture.data, chunk[:remaining]...)
++		capture.truncated = true
++	default:
++		capture.data = append(capture.data, chunk...)
++	}
++	return len(chunk), nil
++}
++
++// validateClaudeAuthStatus parses the status document strictly. Only the three
++// decision fields are read; every other field, including the account identity,
++// is ignored and never propagated.
++func validateClaudeAuthStatus(data []byte) error {
++	decoder := json.NewDecoder(bytes.NewReader(data))
++	if err := rejectDuplicateKeys(json.NewDecoder(bytes.NewReader(data))); err != nil {
++		return fmt.Errorf("Claude Max preflight: `claude auth status` returned malformed JSON: %w", err)
++	}
++	var status struct {
++		LoggedIn         *bool   `json:"loggedIn"`
++		AuthMethod       *string `json:"authMethod"`
++		SubscriptionType *string `json:"subscriptionType"`
++	}
++	if err := decoder.Decode(&status); err != nil {
++		return fmt.Errorf("Claude Max preflight: `claude auth status` did not return a JSON object: %w", err)
++	}
++	if err := decoder.Decode(new(any)); err != io.EOF {
++		return fmt.Errorf("Claude Max preflight: `claude auth status` returned more than one JSON document")
++	}
++	if status.LoggedIn == nil || status.AuthMethod == nil || status.SubscriptionType == nil {
++		return fmt.Errorf("Claude Max preflight: `claude auth status` omitted loggedIn, authMethod, or subscriptionType")
++	}
++	if !*status.LoggedIn {
++		return fmt.Errorf("Claude Max preflight: the Claude CLI is logged out; run `claude auth login` with your Max account")
++	}
++	if *status.AuthMethod != requiredClaudeAuth.authMethod {
++		return fmt.Errorf("Claude Max preflight: authMethod is %q, but this policy requires a %q subscription session; API-key and third-party provider sessions are refused",
++			*status.AuthMethod, requiredClaudeAuth.authMethod)
++	}
++	if *status.SubscriptionType != requiredClaudeAuth.subscriptionType {
++		return fmt.Errorf("Claude Max preflight: subscriptionType is %q, but this policy requires %q",
++			*status.SubscriptionType, requiredClaudeAuth.subscriptionType)
++	}
++	return nil
++}
+diff --git a/internal/app/claude_auth_test.go b/internal/app/claude_auth_test.go
+new file mode 100644
+index 0000000..70cd2be
+--- /dev/null
++++ b/internal/app/claude_auth_test.go
+@@ -0,0 +1,133 @@
++//go:build darwin || linux
++
++package app
++
++import (
++	"fmt"
++	"os"
++	"path/filepath"
++	"strconv"
++	"strings"
++	"syscall"
++	"testing"
++	"time"
++)
++
++// writeProbeScript installs a fake `claude` whose `auth status` behaviour is
++// supplied by the caller. The pid file path is baked into the script because
++// the probe environment is a fixed allowlist and cannot carry a test variable.
++func writeProbeScript(t *testing.T, body string) (string, string) {
++	t.Helper()
++	directory := t.TempDir()
++	pidPath := filepath.Join(directory, "descendant.pid")
++	script := filepath.Join(directory, "claude")
++	source := "#!/bin/sh\nPIDFILE=" + strconv.Quote(pidPath) + "\n" + body
++	if err := os.WriteFile(script, []byte(source), 0o700); err != nil {
++		t.Fatal(err)
++	}
++	return script, pidPath
++}
++
++func readDescendantPID(t *testing.T, pidPath string) int {
++	t.Helper()
++	data, err := os.ReadFile(pidPath)
++	if err != nil {
++		t.Fatalf("probe descendant never recorded its pid: %v", err)
++	}
++	pid, err := strconv.Atoi(strings.TrimSpace(string(data)))
++	if err != nil || pid <= 0 {
++		t.Fatalf("probe descendant recorded an unusable pid %q: %v", data, err)
++	}
++	return pid
++}
++
++func assertProcessReaped(t *testing.T, pid int, label string) {
++	t.Helper()
++	deadline := time.Now().Add(5 * time.Second)
++	for time.Now().Before(deadline) {
++		if err := syscall.Kill(pid, 0); err == syscall.ESRCH {
++			return
++		}
++		time.Sleep(10 * time.Millisecond)
++	}
++	_ = syscall.Kill(pid, syscall.SIGKILL)
++	t.Fatalf("%s (pid %d) outlived the Claude Max preflight", label, pid)
++}
++
++// A descendant that inherited the probe's standard output must not be able to
++// keep the preflight alive after the probe itself exits, and must not survive
++// it. Without a bounded teardown the inherited descriptor, not the deadline,
++// would decide when the preflight returns.
++func TestClaudeMaxPreflightBoundsDescendantHoldingStdoutPastExit(t *testing.T) {
++	script, pidPath := writeProbeScript(t, `
++sleep 30 &
++echo $! > "$PIDFILE"
++printf '%s\n' '{"loggedIn":true,"authMethod":"claude.ai","subscriptionType":"max"}'
++exit 0
++`)
++	const timeout = 3 * time.Second
++	started := time.Now()
++	err := verifyClaudeMaxSubscriptionWithin(script, timeout)
++	elapsed := time.Since(started)
++	if err != nil {
++		t.Fatalf("valid status rejected because a descendant held stdout: %v", err)
++	}
++	if elapsed >= timeout {
++		t.Fatalf("preflight ran for %s, past its %s deadline", elapsed, timeout)
++	}
++	assertProcessReaped(t, readDescendantPID(t, pidPath), "stdout-holding descendant")
++}
++
++// The deadline bounds the whole process tree: a probe that hangs is killed
++// together with every descendant it started, and neither is left orphaned.
++func TestClaudeMaxPreflightTerminatesProcessTreeOnTimeout(t *testing.T) {
++	script, pidPath := writeProbeScript(t, `
++sleep 30 &
++echo $! > "$PIDFILE"
++sleep 30
++`)
++	const timeout = 2 * time.Second
++	started := time.Now()
++	err := verifyClaudeMaxSubscriptionWithin(script, timeout)
++	elapsed := time.Since(started)
++	if err == nil || !strings.Contains(err.Error(), "did not finish within") {
++		t.Fatalf("hung probe was not reported as a timeout: %v", err)
++	}
++	if elapsed >= timeout {
++		t.Fatalf("preflight ran for %s, past its %s deadline", elapsed, timeout)
++	}
++	assertProcessReaped(t, readDescendantPID(t, pidPath), "descendant of the hung probe")
++}
++
++// Standard output is captured through a hard-limited writer, so a wrong or
++// broken executable cannot grow the controller's memory, and the overflow is
++// reported as an actionable error rather than as a malformed status document.
++func TestClaudeMaxPreflightRejectsOversizedOutput(t *testing.T) {
++	script, _ := writeProbeScript(t, fmt.Sprintf(`
++i=0
++while [ $i -lt %d ]; do
++  printf '%%s\n' 'xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx'
++  i=$((i+1))
++done
++exit 0
++`, (claudeAuthOutputLimit/65)*3))
++	err := verifyClaudeMaxSubscriptionWithin(script, 20*time.Second)
++	if err == nil || !strings.Contains(err.Error(), "produced more than") {
++		t.Fatalf("oversized probe output was not reported: %v", err)
++	}
++	if !strings.Contains(err.Error(), "--claude") {
++		t.Errorf("oversized-output error is not actionable: %v", err)
++	}
++}
++
++func TestBoundedCaptureNeverExceedsItsLimit(t *testing.T) {
++	capture := &boundedCapture{limit: 8}
++	for range 100 {
++		if written, err := capture.Write([]byte("0123456789")); written != 10 || err != nil {
++			t.Fatalf("bounded capture short-wrote: %d, %v", written, err)
++		}
++	}
++	if len(capture.data) != 8 || !capture.truncated {
++		t.Fatalf("bounded capture kept %d bytes (truncated=%v)", len(capture.data), capture.truncated)
++	}
++}
+diff --git a/internal/app/credential_boundary_unix_test.go b/internal/app/credential_boundary_unix_test.go
+index d3c505b..23aed12 100644
+--- a/internal/app/credential_boundary_unix_test.go
++++ b/internal/app/credential_boundary_unix_test.go
+@@ -17,8 +17,8 @@ import (
+ func TestCloseCredentialsWaitsForOwnedIdentityExit(t *testing.T) {
+ 	privateRoot := t.TempDir()
+ 	controlDir := filepath.Join(privateRoot, "control")
+-	codexHomesDir := filepath.Join(privateRoot, "codex-homes")
+-	authPath := filepath.Join(codexHomesDir, "001-pm", "auth.json")
++	providerHomesDir := filepath.Join(privateRoot, "provider-homes")
++	authPath := filepath.Join(providerHomesDir, "001-pm", "auth.json")
+ 	if err := os.MkdirAll(filepath.Dir(authPath), 0o700); err != nil {
+ 		t.Fatal(err)
+ 	}
+@@ -47,7 +47,7 @@ func TestCloseCredentialsWaitsForOwnedIdentityExit(t *testing.T) {
+ 	}
+ 
+ 	runtime := &tmuxRuntime{
+-		privateRoot: privateRoot, controlDir: controlDir, codexHomesDir: codexHomesDir,
++		privateRoot: privateRoot, controlDir: controlDir, providerHomesDir: providerHomesDir,
+ 		commandTimeout: 200 * time.Millisecond,
+ 		invocations: []invocation{{
+ 			ID: "001-pm", Role: "pm", OwnershipRelative: ownershipRelative, started: true,
+@@ -71,7 +71,7 @@ func TestCloseCredentialsWaitsForOwnedIdentityExit(t *testing.T) {
+ 	if err := runtime.closeCredentials(); err != nil {
+ 		t.Fatalf("credential cleanup blocked after every owned identity exited: %v", err)
+ 	}
+-	if _, err := os.Lstat(codexHomesDir); !errors.Is(err, os.ErrNotExist) {
++	if _, err := os.Lstat(providerHomesDir); !errors.Is(err, os.ErrNotExist) {
+ 		t.Fatalf("credential root survived verified cleanup: %v", err)
+ 	}
+ }
+diff --git a/internal/app/isolation.go b/internal/app/isolation.go
+new file mode 100644
+index 0000000..c18c5f7
+--- /dev/null
++++ b/internal/app/isolation.go
+@@ -0,0 +1,11 @@
++package app
++
++// isolationRequest describes one invocation's OS-enforced boundary. The
++// provider decides which process-scoped grants the staged client receives; the
++// workspace and provider home are always the only writable trees.
++type isolationRequest struct {
++	Provider           string
++	Workspace          string
++	ProviderHome       string
++	RuntimeExecutables []string
++}
+diff --git a/internal/app/isolation_darwin.go b/internal/app/isolation_darwin.go
+index 56c273b..cdd7bc0 100644
+--- a/internal/app/isolation_darwin.go
++++ b/internal/app/isolation_darwin.go
+@@ -4,13 +4,21 @@ package app
+ 
+ import (
+ 	"fmt"
++	"os"
+ 	"path/filepath"
+ 	"strconv"
+ 	"strings"
+ )
+ 
+-func isolationProfile(workspace, codexHome string, runtimeExecutables []string) (string, error) {
+-	paths := []*string{&workspace, &codexHome}
++// keychainClientPath is the system keychain client Claude Code runs to read the
++// stored OAuth credential.
++const keychainClientPath = "/usr/bin/security"
++
++func isolationProfile(request isolationRequest) (string, error) {
++	workspace := request.Workspace
++	providerHome := request.ProviderHome
++	runtimeExecutables := append([]string(nil), request.RuntimeExecutables...)
++	paths := []*string{&workspace, &providerHome}
+ 	for _, path := range paths {
+ 		canonical, canonicalErr := canonicalIsolationPath(*path)
+ 		if canonicalErr != nil {
+@@ -25,6 +33,31 @@ func isolationProfile(workspace, codexHome string, runtimeExecutables []string)
+ 		}
+ 		runtimeExecutables[index] = canonical
+ 	}
++	// Claude Code resolves the logged-in Max account from two places: the
++	// account record in the user's top-level Claude configuration file, which
++	// the client reads itself, and the OAuth credential in the login keychain,
++	// which it reads by running the system keychain client. Both are scoped as
++	// narrowly as the operating system allows below. Everything else the user
++	// owns - the home directory, ~/.claude and its settings, history, plugins,
++	// skills, hooks, MCP configuration, sessions, and projects - stays outside
++	// the sandbox for the client as well, and --safe-mode additionally stops
++	// the client loading any non-managed customization it could otherwise read.
++	var claudeClientReads []string
++	var keychainReads []string
++	if request.Provider == providerClaudeCode {
++		home, homeErr := os.UserHomeDir()
++		if homeErr != nil {
++			return "", fmt.Errorf("resolve Claude authentication location: %w", homeErr)
++		}
++		claudeClientReads = existingIsolationPaths(claudeAuthenticationPaths(home)...)
++		keychainReads = existingIsolationPaths(
++			filepath.Join(home, "Library", "Keychains"),
++			"/Library/Keychains",
++			"/private/var/db/mds",
++			"/usr/share",
++		)
++	}
++	keychainClient := ""
+ 	var profile strings.Builder
+ 	// Import only the dynamic-loader rules, not system.sb: its version-1 XPC
+ 	// compatibility grant would expose every user-session service to tools.
+@@ -43,7 +76,13 @@ func isolationProfile(workspace, codexHome string, runtimeExecutables []string)
+ 	}
+ 	profile.WriteString("(deny file-read* file-write* (subpath \"/usr/local\"))\n")
+ 	profile.WriteString("(deny file-read* file-write* (literal \"/dev/zero\"))\n")
+-	for _, readable := range []string{"/System", "/usr/bin", "/usr/lib", "/bin", "/Library/Apple", "/private/etc/ssl"} {
++	systemReads := []string{"/System", "/usr/bin", "/usr/lib", "/bin", "/Library/Apple", "/private/etc/ssl"}
++	if request.Provider == providerClaudeCode {
++		// The Claude client loads localization and timezone data from
++		// /usr/share; without it the runtime aborts before it can start.
++		systemReads = append(systemReads, "/usr/share")
++	}
++	for _, readable := range systemReads {
+ 		fmt.Fprintf(&profile, "(allow file-read* (subpath %s))\n", strconv.Quote(readable))
+ 	}
+ 	// The installed Codex client has a machine policy at this fixed location.
+@@ -52,7 +91,10 @@ func isolationProfile(workspace, codexHome string, runtimeExecutables []string)
+ 	for _, readable := range []string{"/dev/null", "/dev/random", "/dev/urandom", "/dev/tty"} {
+ 		fmt.Fprintf(&profile, "(allow file-read* file-write* (literal %s))\n", strconv.Quote(readable))
+ 	}
+-	metadataPaths := append(pathAncestors(workspace), pathAncestors(codexHome)...)
++	metadataPaths := append(pathAncestors(workspace), pathAncestors(providerHome)...)
++	for _, path := range append(append([]string(nil), claudeClientReads...), keychainReads...) {
++		metadataPaths = append(metadataPaths, pathAncestors(path)...)
++	}
+ 	for _, executable := range runtimeExecutables {
+ 		metadataPaths = append(metadataPaths, pathAncestors(executable)...)
+ 	}
+@@ -82,7 +124,15 @@ func isolationProfile(workspace, codexHome string, runtimeExecutables []string)
+ 			// The authenticated Codex process and its in-process tools share the
+ 			// initial local trust boundary for this CLI slice. The private staged
+ 			// CODEX_HOME remains run-owned and is removed only after process cleanup.
+-			fmt.Fprintf(&profile, "(with-filter (process-path %s) (allow file-read* file-write* (subpath %s)))\n", strconv.Quote(executable), strconv.Quote(codexHome))
++			fmt.Fprintf(&profile, "(with-filter (process-path %s) (allow file-read* file-write* (subpath %s)))\n", strconv.Quote(executable), strconv.Quote(providerHome))
++			// The account record is readable, never writable, and only by the
++			// exact client path. A model-invoked tool is a different process
++			// path and keeps the default denial.
++			for _, clientOnly := range claudeClientReads {
++				fmt.Fprintf(&profile, "(with-filter (process-path %s) (allow file-read* (subpath %s) (literal %s)))\n",
++					strconv.Quote(executable), strconv.Quote(clientOnly), strconv.Quote(clientOnly))
++			}
++			keychainClient = executable
+ 			fmt.Fprintf(&profile, "(with-filter (process-path %s) (allow network*))\n", strconv.Quote(executable))
+ 			// Revoke every named bootstrap/XPC lookup for model-invoked tools so
+ 			// Keychain, pasteboard, and other user-session services stay outside
+@@ -93,9 +143,76 @@ func isolationProfile(workspace, codexHome string, runtimeExecutables []string)
+ 			fmt.Fprintf(&profile, "(with-filter (process-path %s) (allow mach-lookup))\n", strconv.Quote(executable))
+ 		}
+ 	}
++	// Keychain rules come last on purpose: a Seatbelt profile resolves to its
++	// last matching rule, and the blanket service denial above would otherwise
++	// win over the narrow grant below.
++	if len(keychainReads) != 0 && keychainClient != "" {
++		// The OAuth credential itself is never handed to the client, to its
++		// tools, or to a run artifact. Only the system keychain client may read
++		// the keychain stores, and only the exact staged Claude client may start
++		// it: a shell, an interpreter, or any copied binary a model invokes is a
++		// different process path, so it can neither run the keychain client nor
++		// impersonate it.
++		fmt.Fprintf(&profile, "(with-filter (process-path %s) (allow mach-lookup))\n", strconv.Quote(keychainClientPath))
++		for _, readable := range keychainReads {
++			fmt.Fprintf(&profile, "(with-filter (process-path %s) (allow file-read* (subpath %s)))\n",
++				strconv.Quote(keychainClientPath), strconv.Quote(readable))
++		}
++		fmt.Fprintf(&profile, "(with-filter (require-not (process-path %s)) (deny process-exec (literal %s)))\n",
++			strconv.Quote(keychainClient), strconv.Quote(keychainClientPath))
++	}
++	// The admin-managed policy trees are denied last, so the denial survives
++	// rule resolution no matter what an earlier rule grants. A Seatbelt profile
++	// resolves to its last matching rule, which means re-granting these trees
++	// would require deleting this block rather than merely shadowing it.
++	denied := append([]string(nil), claudeManagedPolicyPaths...)
++	denied = append(denied, existingIsolationPaths(claudeManagedPolicyPaths...)...)
++	seenDenied := make(map[string]bool, len(denied))
++	for _, path := range denied {
++		if seenDenied[path] {
++			continue
++		}
++		seenDenied[path] = true
++		fmt.Fprintf(&profile, "(deny file-read* file-write* (subpath %s))\n", strconv.Quote(path))
++	}
+ 	return profile.String(), nil
+ }
+ 
++// claudeAuthenticationPaths are the concrete artifacts the Claude client must
++// read to resolve the logged-in Max session: the account record, and nothing
++// else. Admin-managed policy locations are deliberately excluded; see
++// claudeManagedPolicyPaths.
++func claudeAuthenticationPaths(home string) []string {
++	return []string{filepath.Join(home, ".claude.json")}
++}
++
++// claudeManagedPolicyPaths are the admin-managed policy trees Claude Code
++// applies. `--safe-mode` disables user customization but still applies
++// admin-managed policy, and managed settings can inject environment values,
++// API keys, base URLs, provider routing, models, permission decisions, helper
++// commands, and hooks. A readable managed tree could therefore move a run off
++// the model profile the controller validated and recorded, or off Max OAuth
++// billing entirely, without any of it appearing in argv or in the run audit.
++// The client is never granted these paths, and they are denied explicitly.
++var claudeManagedPolicyPaths = []string{
++	"/Library/Application Support/ClaudeCode",
++	"/Library/Managed Preferences",
++}
++
++// existingIsolationPaths canonicalizes the paths that exist. A host without one
++// of them simply does not receive that rule.
++func existingIsolationPaths(paths ...string) []string {
++	var resolved []string
++	for _, path := range paths {
++		canonical, err := filepath.EvalSymlinks(path)
++		if err != nil {
++			continue
++		}
++		resolved = append(resolved, canonical)
++	}
++	return resolved
++}
++
+ func canonicalIsolationPath(path string) (string, error) {
+ 	if !filepath.IsAbs(path) {
+ 		return "", fmt.Errorf("isolation path is not absolute: %s", path)
+@@ -107,9 +224,9 @@ func canonicalIsolationPath(path string) (string, error) {
+ 	return canonical, nil
+ }
+ 
+-func isolatedCommand(profilePath, codexPath string, codexArguments []string) (string, []string, error) {
+-	arguments := []string{"-f", profilePath, codexPath}
+-	arguments = append(arguments, codexArguments...)
++func isolatedCommand(profilePath, clientPath string, clientArguments []string) (string, []string, error) {
++	arguments := []string{"-f", profilePath, clientPath}
++	arguments = append(arguments, clientArguments...)
+ 	return "/usr/bin/sandbox-exec", arguments, nil
+ }
+ 
+diff --git a/internal/app/isolation_darwin_test.go b/internal/app/isolation_darwin_test.go
+new file mode 100644
+index 0000000..ebb9d00
+--- /dev/null
++++ b/internal/app/isolation_darwin_test.go
+@@ -0,0 +1,90 @@
++//go:build darwin
++
++package app
++
++import (
++	"os"
++	"path/filepath"
++	"strconv"
++	"strings"
++	"testing"
++)
++
++// A Claude invocation may read exactly the account record that identifies its
++// Max session. Admin-managed policy must never become readable through this
++// boundary: `--safe-mode` still applies admin-managed policy, and managed
++// settings can inject environment values, API keys, base URLs, provider
++// routing, models, helper commands, and hooks, so a readable managed tree
++// would let a run diverge from the recorded model profile without that
++// divergence appearing in argv or in the run audit.
++func TestClaudeIsolationNeverGrantsAdminManagedPolicy(t *testing.T) {
++	home, err := os.UserHomeDir()
++	if err != nil {
++		t.Fatal(err)
++	}
++	// The account record is the only authentication artifact the client is
++	// allowed to read. This list is asserted directly so a re-added managed
++	// path fails here even on a host where that path does not exist.
++	authentication := claudeAuthenticationPaths(home)
++	if len(authentication) != 1 || authentication[0] != filepath.Join(home, ".claude.json") {
++		t.Fatalf("Claude client authentication reads are no longer only the account record: %v", authentication)
++	}
++
++	workspace := filepath.Join(t.TempDir(), "workspace")
++	providerHome := filepath.Join(t.TempDir(), "provider-home")
++	client := filepath.Join(t.TempDir(), "claude")
++	for _, directory := range []string{workspace, providerHome} {
++		if err := os.MkdirAll(directory, 0o700); err != nil {
++			t.Fatal(err)
++		}
++	}
++	if err := os.WriteFile(client, []byte("#!/bin/sh\nexit 0\n"), 0o700); err != nil {
++		t.Fatal(err)
++	}
++	profile, err := isolationProfile(isolationRequest{
++		Provider: providerClaudeCode, Workspace: workspace, ProviderHome: providerHome,
++		RuntimeExecutables: []string{client},
++	})
++	if err != nil {
++		t.Fatal(err)
++	}
++
++	lines := strings.Split(profile, "\n")
++	for _, managed := range claudeManagedPolicyPaths {
++		quoted := strconv.Quote(managed)
++		denial := "(deny file-read* file-write* (subpath " + quoted + "))"
++		if !strings.Contains(profile, denial) {
++			t.Errorf("profile does not deny the admin-managed policy tree %s", managed)
++		}
++		lastAllow, lastDeny := -1, -1
++		for index, line := range lines {
++			if !strings.Contains(line, quoted) {
++				continue
++			}
++			if strings.Contains(line, "(allow") {
++				lastAllow = index
++			}
++			if strings.Contains(line, "(deny") {
++				lastDeny = index
++			}
++		}
++		// A Seatbelt profile resolves to its last matching rule, so an allow
++		// after the denial would silently re-open the tree.
++		if lastAllow > lastDeny {
++			t.Errorf("admin-managed policy tree %s is granted after its denial: %s", managed, lines[lastAllow])
++		}
++	}
++
++	// No rule may grant any admin-managed Claude policy location under any
++	// spelling, including one reached through a parent grant.
++	for _, line := range lines {
++		if !strings.HasPrefix(line, "(allow") && !strings.Contains(line, "(allow file-read") {
++			continue
++		}
++		for _, fragment := range []string{"ClaudeCode", "Managed Preferences", "/Library/Application Support"} {
++			if strings.Contains(line, fragment) {
++				t.Errorf("profile grants an admin-managed policy location: %s", line)
++			}
++		}
++	}
++}
+diff --git a/internal/app/isolation_other.go b/internal/app/isolation_other.go
+index 9b01b88..39107de 100644
+--- a/internal/app/isolation_other.go
++++ b/internal/app/isolation_other.go
+@@ -4,7 +4,7 @@ package app
+ 
+ import "fmt"
+ 
+-func isolationProfile(_, _ string, _ []string) (string, error) {
++func isolationProfile(_ isolationRequest) (string, error) {
+ 	return "", fmt.Errorf("OS-enforced agent read isolation is not available on this platform")
+ }
+ 
+diff --git a/internal/app/model_policy_blackbox_test.go b/internal/app/model_policy_blackbox_test.go
+new file mode 100644
+index 0000000..a200d7f
+--- /dev/null
++++ b/internal/app/model_policy_blackbox_test.go
+@@ -0,0 +1,734 @@
++package app_test
++
++import (
++	"encoding/json"
++	"errors"
++	"fmt"
++	"os"
++	"path/filepath"
++	"runtime"
++	"sort"
++	"strings"
++	"testing"
++)
++
++// policyRoleForInvocation maps a controller invocation identifier to the policy
++// role key that must have produced its profile.
++func policyRoleForInvocation(record invocationRecord) string {
++	if record.Lens != "" {
++		return "reviewer_" + record.Lens
++	}
++	return record.Role
++}
++
++func readPolicyArtifact(t *testing.T, runDir string) []byte {
++	t.Helper()
++	data, err := os.ReadFile(filepath.Join(runDir, "model-policy.json"))
++	if err != nil {
++		t.Fatalf("run does not retain the validated policy: %v", err)
++	}
++	return data
++}
++
++func readAuditRecords(t *testing.T, runDir string) map[string]auditRecord {
++	t.Helper()
++	paths, err := filepath.Glob(filepath.Join(runDir, ".control", "invocations", "*.json"))
++	if err != nil {
++		t.Fatal(err)
++	}
++	records := make(map[string]auditRecord, len(paths))
++	for _, path := range paths {
++		info, statErr := os.Lstat(path)
++		if statErr != nil {
++			t.Fatal(statErr)
++		}
++		if info.Mode().Perm()&0o222 != 0 {
++			t.Errorf("invocation audit %s is writable: %v", filepath.Base(path), info.Mode())
++		}
++		data, readErr := os.ReadFile(path)
++		if readErr != nil {
++			t.Fatal(readErr)
++		}
++		var record auditRecord
++		if err := json.Unmarshal(data, &record); err != nil {
++			t.Fatalf("invalid invocation audit %s: %v", filepath.Base(path), err)
++		}
++		if strings.Contains(string(data), "prompt") || strings.Contains(strings.ToUpper(string(data)), "ANTHROPIC") || strings.Contains(string(data), "auth") {
++			t.Errorf("invocation audit %s recorded prompt/authentication material: %s", filepath.Base(path), data)
++		}
++		records[record.Invocation] = record
++	}
++	return records
++}
++
++func argumentValue(arguments []string, name string) (string, bool) {
++	for index, argument := range arguments {
++		if argument == name && index+1 < len(arguments) {
++			return arguments[index+1], true
++		}
++	}
++	return "", false
++}
++
++func hasArgument(arguments []string, name string) bool {
++	for _, argument := range arguments {
++		if argument == name {
++			return true
++		}
++	}
++	return false
++}
++
++// assertLaunchedProfile checks that one launched process received exactly the
++// declared provider executable, model, and reasoning effort, and that its audit
++// record agrees with the arguments the process actually observed.
++func assertLaunchedProfile(t *testing.T, record invocationRecord, audit auditRecord, digest string) {
++	t.Helper()
++	role := policyRoleForInvocation(record)
++	want, declared := checkedInPolicy[role]
++	if !declared {
++		t.Fatalf("invocation %s used undeclared role %q", record.Invocation, role)
++	}
++	wantTag := "codex"
++	if want.Provider == "claude_code" {
++		wantTag = "claude"
++	}
++	if record.ExecutableTag != wantTag {
++		t.Errorf("%s ran the %q fixture executable, want %q (executable %s)", role, record.ExecutableTag, wantTag, record.Executable)
++	}
++	model, hasModel := argumentValue(record.Args, "--model")
++	if !hasModel || model != want.Model {
++		t.Errorf("%s launched with model %q (present=%v), want %q: %v", role, model, hasModel, want.Model, record.Args)
++	}
++	switch want.Provider {
++	case "claude_code":
++		effort, hasEffort := argumentValue(record.Args, "--effort")
++		if !hasEffort || effort != want.ReasoningEffort {
++			t.Errorf("%s launched with Claude effort %q (present=%v), want %q: %v", role, effort, hasEffort, want.ReasoningEffort, record.Args)
++		}
++		for _, required := range []string{"--print", "--safe-mode", "--dangerously-skip-permissions", "--no-session-persistence"} {
++			if !hasArgument(record.Args, required) {
++				t.Errorf("%s Claude invocation is missing %s: %v", role, required, record.Args)
++			}
++		}
++		if hasArgument(record.Args, "--bare") {
++			t.Errorf("%s Claude invocation used the forbidden --bare mode: %v", role, record.Args)
++		}
++		for _, forbidden := range []string{"--fallback-model", "--settings", "--resume", "--continue"} {
++			if hasArgument(record.Args, forbidden) {
++				t.Errorf("%s Claude invocation used %s: %v", role, forbidden, record.Args)
++			}
++		}
++	default:
++		effort, hasEffort := argumentValue(record.Args, "--config")
++		want := "model_reasoning_effort=" + fmt.Sprintf("%q", want.ReasoningEffort)
++		if !hasEffort || effort != want {
++			t.Errorf("%s launched with Codex config %q (present=%v), want %q: %v", role, effort, hasEffort, want, record.Args)
++		}
++		for _, required := range []string{"exec", "--ephemeral", "--ignore-user-config"} {
++			if !hasArgument(record.Args, required) {
++				t.Errorf("%s Codex invocation is missing %s: %v", role, required, record.Args)
++			}
++		}
++	}
++	if audit.Provider != want.Provider || audit.Model != want.Model || audit.ReasoningEffort != want.ReasoningEffort {
++		t.Errorf("%s audit record %+v does not match the declared profile %+v", role, audit, want)
++	}
++	if audit.ModelPolicyDigest != digest {
++		t.Errorf("%s audit record digest %q does not match the copied policy digest %q", role, audit.ModelPolicyDigest, digest)
++	}
++	if audit.Lens != record.Lens || audit.Candidate != record.Candidate {
++		t.Errorf("%s audit record identity %+v does not match the launched invocation %s/%s/%d", role, audit, record.Role, record.Lens, record.Candidate)
++	}
++}
++
++// assertPolicyBinding checks the run-level policy artifacts and every launched
++// invocation against the checked-in table.
++func assertPolicyBinding(t *testing.T, runDir, fixtureDir string, wantInvocations int) []invocationRecord {
++	t.Helper()
++	bundled, err := os.ReadFile(filepath.Join(repositoryRoot(t), "prompts", "models.json"))
++	if err != nil {
++		t.Fatal(err)
++	}
++	copied := readPolicyArtifact(t, runDir)
++	if string(copied) != string(bundled) {
++		t.Fatalf("run policy copy differs from the validated bundle policy")
++	}
++	digest := revision(copied)
++	var workflow struct {
++		ModelPolicyDigest string            `json:"model_policy_digest"`
++		ArtifactPaths     map[string]string `json:"artifact_paths"`
++	}
++	data, err := os.ReadFile(filepath.Join(runDir, "workflow.json"))
++	if err != nil {
++		t.Fatal(err)
++	}
++	if err := json.Unmarshal(data, &workflow); err != nil {
++		t.Fatal(err)
++	}
++	if workflow.ModelPolicyDigest != digest {
++		t.Fatalf("workflow digest %q does not match the copied policy %q", workflow.ModelPolicyDigest, digest)
++	}
++	if workflow.ArtifactPaths["model_policy"] != "model-policy.json" {
++		t.Errorf("workflow does not publish the model policy path: %v", workflow.ArtifactPaths)
++	}
++	audits := readAuditRecords(t, runDir)
++	records := readInvocationRecords(t, fixtureDir)
++	if len(records) != wantInvocations {
++		t.Fatalf("got %d launched invocations, want %d", len(records), wantInvocations)
++	}
++	if len(audits) != wantInvocations {
++		t.Fatalf("got %d invocation audit records, want %d", len(audits), wantInvocations)
++	}
++	for _, record := range records {
++		audit, found := audits[record.Invocation]
++		if !found {
++			t.Fatalf("invocation %s launched without an audit record", record.Invocation)
++		}
++		assertLaunchedProfile(t, record, audit, digest)
++	}
++	return records
++}
++
++func TestBlackBoxEveryRoleLaunchesItsDeclaredProfile(t *testing.T) {
++	run := executeScenario(t, "happy")
++	if run.err != nil {
++		t.Fatalf("CLI failed: %v\n%s", run.err, run.output)
++	}
++	records := assertPolicyBinding(t, run.runDir, run.fixtureDir, 8)
++	seen := map[string]bool{}
++	for _, record := range records {
++		seen[policyRoleForInvocation(record)] = true
++	}
++	for role := range checkedInPolicy {
++		if !seen[role] {
++			t.Errorf("role %s never launched", role)
++		}
++	}
++}
++
++// A revision must reuse the same declared profiles: reviewer lenses keep their
++// own identities and the Writer does not drift to another model.
++func TestBlackBoxRevisionsPreserveDeclaredProfiles(t *testing.T) {
++	run := executeScenario(t, "mustfix_once")
++	if run.err != nil {
++		t.Fatalf("CLI failed: %v\n%s", run.err, run.output)
++	}
++	// PM, researcher, story editor, evidence review of candidate 1, two writers,
++	// and four reviews of candidate 2.
++	records := assertPolicyBinding(t, run.runDir, run.fixtureDir, 10)
++	writers := 0
++	for _, record := range records {
++		if record.Role == "writer" {
++			writers++
++		}
++	}
++	if writers != 2 {
++		t.Fatalf("got %d writer invocations, want 2", writers)
++	}
++}
++
++// Reviewer lenses select distinct profiles: two Codex lenses and two Claude
++// lenses, with different models and efforts inside each provider.
++func TestBlackBoxReviewerLensesSelectDistinctProfiles(t *testing.T) {
++	run := executeScenario(t, "happy")
++	if run.err != nil {
++		t.Fatalf("CLI failed: %v\n%s", run.err, run.output)
++	}
++	audits := readAuditRecords(t, run.runDir)
++	found := map[string]auditRecord{}
++	for _, audit := range audits {
++		if audit.Role == "reviewer" {
++			found[audit.Lens] = audit
++		}
++	}
++	for lens, want := range map[string]auditRecord{
++		"evidence": checkedInPolicy["reviewer_evidence"],
++		"story":    checkedInPolicy["reviewer_story"],
++		"clarity":  checkedInPolicy["reviewer_clarity"],
++		"copy":     checkedInPolicy["reviewer_copy"],
++	} {
++		got, present := found[lens]
++		if !present {
++			t.Fatalf("no audit record for reviewer lens %s", lens)
++		}
++		if got.Provider != want.Provider || got.Model != want.Model || got.ReasoningEffort != want.ReasoningEffort {
++			t.Errorf("reviewer lens %s used %s/%s/%s, want %s/%s/%s", lens,
++				got.Provider, got.Model, got.ReasoningEffort, want.Provider, want.Model, want.ReasoningEffort)
++		}
++	}
++}
++
++// No ambient credential or provider-selection variable may reach a provider
++// process, and no ambient model variable may change what was launched.
++func TestBlackBoxProviderProcessesNeverReceiveExternalCredentials(t *testing.T) {
++	binary, fake, runDir, fixtureDir := prepareScenario(t, "happy")
++	command := newRunCommand(t, binary, fake, runDir, "5s", filepath.Join(repositoryRoot(t), "examples", "brief.md"))
++	command.Env = append(command.Env,
++		"ANTHROPIC_API_KEY=test-anthropic-key",
++		"ANTHROPIC_AUTH_TOKEN=test-anthropic-token",
++		"ANTHROPIC_BASE_URL=https://proxy.invalid",
++		"ANTHROPIC_MODEL=claude-fable-5",
++		"CLAUDE_CODE_USE_BEDROCK=1",
++		"CLAUDE_CODE_USE_VERTEX=1",
++		"AWS_BEARER_TOKEN_BEDROCK=test-bedrock-token",
++		"AWS_ACCESS_KEY_ID=test-aws-key",
++		"GOOGLE_APPLICATION_CREDENTIALS=/tmp/does-not-exist.json",
++		"OPENAI_API_KEY=test-openai-key",
++	)
++	if output, err := command.CombinedOutput(); err != nil {
++		t.Fatalf("CLI failed with hostile ambient provider environment: %v\n%s", err, output)
++	}
++	records := assertPolicyBinding(t, runDir, fixtureDir, 8)
++	realHome, err := os.UserHomeDir()
++	if err != nil {
++		t.Fatal(err)
++	}
++	for _, record := range records {
++		for name, value := range record.Environment {
++			if value == "PRESENT" {
++				t.Errorf("%s received external provider credential %s", record.Role, name)
++			}
++		}
++		if checkedInPolicy[policyRoleForInvocation(record)].Provider == "claude_code" {
++			// The Max session is resolved from the user's account record, so
++			// HOME stays real; the sandbox, not the environment, is what keeps
++			// the rest of the user's Claude state out of reach. Everything the
++			// invocation writes must land in run-owned scratch.
++			if record.Environment["HOME"] != realHome {
++				t.Errorf("%s Claude invocation did not receive the authenticated user home: %q", record.Role, record.Environment["HOME"])
++			}
++			if !strings.Contains(record.Environment["CLAUDE_CODE_TMPDIR"], "provider-homes") {
++				t.Errorf("%s Claude invocation kept a shared scratch root: %q", record.Role, record.Environment["CLAUDE_CODE_TMPDIR"])
++			}
++			if record.Environment["CODEX_HOME"] != "ABSENT" {
++				t.Errorf("%s Claude invocation received a Codex home: %q", record.Role, record.Environment["CODEX_HOME"])
++			}
++		} else if !strings.Contains(record.Environment["CODEX_HOME"], "provider-homes") {
++			t.Errorf("%s Codex invocation lost its private Codex home: %q", record.Role, record.Environment["CODEX_HOME"])
++		}
++	}
++}
++
++// --codex and --claude select separate executables, and a provider the policy
++// never references is not required to exist.
++func TestBlackBoxProviderExecutableSelectionIsIndependent(t *testing.T) {
++	t.Run("separate executables", func(t *testing.T) {
++		run := executeScenario(t, "happy")
++		if run.err != nil {
++			t.Fatalf("CLI failed: %v\n%s", run.err, run.output)
++		}
++		tags := map[string]bool{}
++		for _, record := range readInvocationRecords(t, run.fixtureDir) {
++			tags[record.ExecutableTag] = true
++			if !strings.Contains(record.Executable, "/clients/") {
++				t.Errorf("%s did not run a single-use staged client: %s", record.Role, record.Executable)
++			}
++		}
++		if !tags["codex"] || !tags["claude"] {
++			t.Fatalf("mixed-provider run did not use both fixtures: %v", tags)
++		}
++	})
++
++	t.Run("unused provider is not required", func(t *testing.T) {
++		promptsDir := promptsDirWithPolicy(t, codexOnlyPolicy)
++		binary, fake, runDir, fixtureDir := prepareScenario(t, "happy")
++		command := newRunCommandWithPrompts(t, binary, fake, runDir, "5s", filepath.Join(repositoryRoot(t), "examples", "brief.md"), promptsDir)
++		command.Args = replaceArgument(command.Args, "--claude", filepath.Join(t.TempDir(), "no-such-claude"))
++		if output, err := command.CombinedOutput(); err != nil {
++			t.Fatalf("codex-only policy required an unused Claude executable: %v\n%s", err, output)
++		}
++		for _, record := range readInvocationRecords(t, fixtureDir) {
++			if record.ExecutableTag != "codex" {
++				t.Errorf("codex-only policy launched the %q fixture for %s", record.ExecutableTag, record.Role)
++			}
++		}
++		for _, audit := range readAuditRecords(t, runDir) {
++			if audit.Provider != "codex" {
++				t.Errorf("codex-only policy recorded provider %q", audit.Provider)
++			}
++		}
++	})
++}
++
++// The sanitized Max preflight decides before anything is created.
++func TestBlackBoxClaudeMaxPreflightRunsBeforeRunCreation(t *testing.T) {
++	for _, testCase := range []struct {
++		scenario string
++		reason   string
++	}{
++		{"auth_logged_out", "logged out"},
++		{"auth_api_key", "authMethod"},
++		{"auth_not_max", "subscriptionType"},
++		{"auth_malformed", "Claude Max preflight"},
++		{"auth_missing_field", "omitted loggedIn"},
++		{"auth_duplicate_key", "duplicate JSON key"},
++		{"auth_two_documents", "more than one JSON document"},
++		{"auth_nonzero", "auth status` failed"},
++		{"auth_oversized", "produced more than"},
++	} {
++		t.Run(testCase.scenario, func(t *testing.T) {
++			run := executeScenario(t, testCase.scenario)
++			if run.err == nil {
++				t.Fatalf("CLI accepted an unusable Claude session: %s", run.output)
++			}
++			if !strings.Contains(run.output, testCase.reason) {
++				t.Errorf("preflight failure is not actionable: %s", run.output)
++			}
++			if _, err := os.Stat(run.runDir); !errors.Is(err, os.ErrNotExist) {
++				t.Fatalf("failed Claude preflight created a run directory: %v", err)
++			}
++			if records := readInvocationRecords(t, run.fixtureDir); len(records) != 0 {
++				t.Fatalf("failed Claude preflight launched %d agents", len(records))
++			}
++			for _, secret := range []string{"fixture@example.invalid", "00000000-0000-0000-0000-000000000000"} {
++				if strings.Contains(run.output, secret) {
++					t.Errorf("preflight disclosed account identity: %s", run.output)
++				}
++			}
++		})
++	}
++
++	t.Run("missing executable", func(t *testing.T) {
++		binary, fake, runDir, _ := prepareScenario(t, "happy")
++		command := newRunCommand(t, binary, fake, runDir, "5s", filepath.Join(repositoryRoot(t), "examples", "brief.md"))
++		command.Args = replaceArgument(command.Args, "--claude", filepath.Join(t.TempDir(), "no-such-claude"))
++		output, err := command.CombinedOutput()
++		if err == nil || !strings.Contains(string(output), "locate Claude Code executable") {
++			t.Fatalf("missing Claude executable was not reported before the run: %v\n%s", err, output)
++		}
++		if _, err := os.Stat(runDir); !errors.Is(err, os.ErrNotExist) {
++			t.Fatalf("missing Claude executable created a run directory: %v", err)
++		}
++	})
++}
++
++// Every invalid policy fails before the run directory exists, so an invalid
++// configuration never leaves partial state.
++func TestBlackBoxInvalidPolicyFailsBeforeRunCreation(t *testing.T) {
++	valid := func() map[string]any {
++		var document map[string]any
++		data, err := os.ReadFile(filepath.Join(repositoryRoot(t), "prompts", "models.json"))
++		if err != nil {
++			t.Fatal(err)
++		}
++		if err := json.Unmarshal(data, &document); err != nil {
++			t.Fatal(err)
++		}
++		return document
++	}
++	mutate := func(change func(roles map[string]any)) string {
++		document := valid()
++		change(document["roles"].(map[string]any))
++		data, err := json.MarshalIndent(document, "", "  ")
++		if err != nil {
++			t.Fatal(err)
++		}
++		return string(data) + "\n"
++	}
++
++	for _, testCase := range []struct {
++		name   string
++		policy string
++		reason string
++	}{
++		{"missing file", "", "required prompt models.json"},
++		{"empty file", "   \n", "prompt is empty"},
++		{"unsupported schema", `{"schema_version": 2, "roles": {}}`, "unsupported models.json schema_version 2"},
++		{"duplicate key", `{"schema_version": 1, "schema_version": 1, "roles": {}}`, "duplicate JSON key"},
++		{"unknown top-level field", `{"schema_version": 1, "roles": {}, "default": {"provider": "codex"}}`, "unknown field"},
++		{"missing role", mutate(func(roles map[string]any) { delete(roles, "reviewer_copy") }), "missing required role profile(s) reviewer_copy"},
++		{"unknown role", mutate(func(roles map[string]any) {
++			roles["visual_editor"] = map[string]any{"provider": "claude_code", "model": "claude-opus-5", "reasoning_effort": "medium"}
++		}), "unknown role(s) visual_editor"},
++		{"unknown role field", mutate(func(roles map[string]any) {
++			roles["writer"] = map[string]any{"provider": "claude_code", "model": "claude-opus-5", "reasoning_effort": "medium", "fallback": "claude-fable-5"}
++		}), "unknown field"},
++		{"unsupported provider", mutate(func(roles map[string]any) {
++			roles["writer"] = map[string]any{"provider": "bedrock", "model": "claude-opus-5", "reasoning_effort": "medium"}
++		}), "unsupported provider"},
++		{"empty model", mutate(func(roles map[string]any) {
++			roles["writer"] = map[string]any{"provider": "claude_code", "model": "", "reasoning_effort": "medium"}
++		}), "empty model"},
++		{"invalid effort for provider", mutate(func(roles map[string]any) {
++			roles["pm"] = map[string]any{"provider": "codex", "model": "gpt-5.6-sol", "reasoning_effort": "xhigh"}
++		}), "does not accept"},
++		{"unknown effort", mutate(func(roles map[string]any) {
++			roles["writer"] = map[string]any{"provider": "claude_code", "model": "claude-opus-5", "reasoning_effort": "extreme"}
++		}), "does not accept"},
++		{"claude model on codex", mutate(func(roles map[string]any) {
++			roles["pm"] = map[string]any{"provider": "codex", "model": "claude-opus-5", "reasoning_effort": "high"}
++		}), "assigns claude model"},
++		{"gpt model on claude", mutate(func(roles map[string]any) {
++			roles["writer"] = map[string]any{"provider": "claude_code", "model": "gpt-5.6-sol", "reasoning_effort": "medium"}
++		}), "assigns gpt model"},
++		{"missing roles object", `{"schema_version": 1}`, "missing the roles object"},
++	} {
++		t.Run(testCase.name, func(t *testing.T) {
++			promptsDir := promptsDirWithPolicy(t, testCase.policy)
++			binary, fake, runDir, fixtureDir := prepareScenario(t, "happy")
++			command := newRunCommandWithPrompts(t, binary, fake, runDir, "5s", filepath.Join(repositoryRoot(t), "examples", "brief.md"), promptsDir)
++			output, err := command.CombinedOutput()
++			if err == nil {
++				t.Fatalf("CLI accepted an invalid policy: %s", output)
++			}
++			if !strings.Contains(string(output), testCase.reason) {
++				t.Fatalf("policy rejection is not actionable: want %q, got:\n%s", testCase.reason, output)
++			}
++			if _, err := os.Stat(runDir); !errors.Is(err, os.ErrNotExist) {
++				t.Fatalf("invalid policy created a run directory: %v", err)
++			}
++			if records := readInvocationRecords(t, fixtureDir); len(records) != 0 {
++				t.Fatalf("invalid policy launched %d agents", len(records))
++			}
++		})
++	}
++}
++
++// The policy is bound at validation time. Replacing the bundle, its parent, or
++// the policy file afterwards cannot change a launched profile or the recorded
++// digest.
++func TestBlackBoxPolicyMutationAfterValidationCannotChangeLaunchedProfiles(t *testing.T) {
++	parent := t.TempDir()
++	promptsDir := filepath.Join(parent, "prompts")
++	copyPromptBundle(t, filepath.Join(repositoryRoot(t), "prompts"), promptsDir)
++	original, err := os.ReadFile(filepath.Join(promptsDir, "models.json"))
++	if err != nil {
++		t.Fatal(err)
++	}
++
++	binary, fake, runDir, fixtureDir := prepareScenario(t, "happy")
++	barrier := filepath.Join(t.TempDir(), "commit")
++	command := newRunCommandWithPrompts(t, binary, fake, runDir, "20s", filepath.Join(repositoryRoot(t), "examples", "brief.md"), promptsDir)
++	command.Env = append(command.Env, "WRITE_UUTER_TEST_COMMIT_BARRIER="+barrier)
++	if err := command.Start(); err != nil {
++		t.Fatal(err)
++	}
++	waitForPath(t, barrier+".ready")
++	// Replace the validated policy file, then the whole validated bundle root.
++	if err := os.Remove(filepath.Join(promptsDir, "models.json")); err != nil {
++		t.Fatal(err)
++	}
++	if err := os.WriteFile(filepath.Join(promptsDir, "models.json"), []byte(hostilePolicy), 0o600); err != nil {
++		t.Fatal(err)
++	}
++	if err := os.Rename(promptsDir, filepath.Join(parent, "prompts-moved")); err != nil {
++		t.Fatal(err)
++	}
++	copyPromptBundle(t, filepath.Join(repositoryRoot(t), "prompts"), promptsDir)
++	if err := os.WriteFile(filepath.Join(promptsDir, "models.json"), []byte(hostilePolicy), 0o600); err != nil {
++		t.Fatal(err)
++	}
++	if err := os.WriteFile(barrier+".continue", []byte("continue\n"), 0o600); err != nil {
++		t.Fatal(err)
++	}
++	if err := command.Wait(); err != nil {
++		t.Fatalf("CLI failed after prompt-root mutation: %v", err)
++	}
++
++	copied := readPolicyArtifact(t, runDir)
++	if string(copied) != string(original) {
++		t.Fatalf("mutated policy reached the durable run copy")
++	}
++	digest := revision(original)
++	for _, record := range readInvocationRecords(t, fixtureDir) {
++		assertLaunchedProfile(t, record, readAuditRecords(t, runDir)[record.Invocation], digest)
++	}
++}
++
++// An unavailable model or provider blocks the run with the effective profile
++// and never retries with another model, provider, or account.
++func TestBlackBoxUnavailableModelBlocksWithoutFallback(t *testing.T) {
++	run := executeScenario(t, "model_unavailable")
++	if run.err == nil {
++		t.Fatalf("CLI succeeded despite an unavailable model: %s", run.output)
++	}
++	state := readWorkflow(t, run.runDir)
++	if state.Status != "blocked" {
++		t.Fatalf("unexpected workflow: %+v", state)
++	}
++	for _, expected := range []string{"provider=claude_code", "model=claude-opus-5", "reasoning_effort=medium"} {
++		if !strings.Contains(state.BlockReason, expected) {
++			t.Errorf("blocked run does not record the effective profile %q: %s", expected, state.BlockReason)
++		}
++	}
++	assertNoArticle(t, run.runDir)
++	records := readInvocationRecords(t, run.fixtureDir)
++	audits := readAuditRecords(t, run.runDir)
++	if len(audits) != len(records) {
++		t.Fatalf("blocked run retained %d audit records for %d launched invocations", len(audits), len(records))
++	}
++	digest := revision(readPolicyArtifact(t, run.runDir))
++	writers := 0
++	for _, record := range records {
++		if record.Role == "writer" {
++			writers++
++		}
++		assertLaunchedProfile(t, record, audits[record.Invocation], digest)
++	}
++	if writers != 1 {
++		t.Fatalf("blocked run retried the writer %d times", writers)
++	}
++	assertProcessesGone(t, records)
++}
++
++// The staged Claude client may use the keychain store that backs the Max
++// session, while its model-invoked tools may not, and neither may read the
++// user's Claude configuration, history, or session state.
++func TestBlackBoxClaudeKeychainAccessIsProcessScoped(t *testing.T) {
++	if runtime.GOOS != "darwin" {
++		t.Skip("OS-enforced isolation is only implemented on darwin")
++	}
++	run := executeScenario(t, "filesystem_isolation")
++	if run.err != nil {
++		t.Fatalf("CLI failed: %v\n%s", run.err, run.output)
++	}
++	// 007-reviewer-clarity is a Claude Code invocation in the checked-in policy.
++	data, err := os.ReadFile(filepath.Join(run.fixtureDir, "logs", "isolation-007-reviewer-clarity.probe"))
++	if err != nil {
++		t.Fatalf("Claude reviewer did not publish an isolation probe: %v", err)
++	}
++	var probes map[string]string
++	if err := json.Unmarshal(data, &probes); err != nil {
++		t.Fatal(err)
++	}
++	// The account record identifies the logged-in Max session, so the exact
++	// staged client - and nothing else - may read it.
++	if !strings.Contains(probes["client_user_claude_config"], "READ_SUCCEEDED") {
++		t.Errorf("staged Claude client cannot read the account record that identifies its session: %q", probes["client_user_claude_config"])
++	}
++	for _, label := range []string{
++		"client_user_claude_dir", "client_user_home", "client_keychain_file",
++		"tool_user_claude_config", "tool_keychain_file", "tool_keychain_client",
++	} {
++		result := strings.ToLower(probes[label])
++		if result == "" || strings.Contains(result, "succeeded") {
++			t.Errorf("Claude boundary leaked %s: %q", label, probes[label])
++		}
++	}
++}
++
++func replaceArgument(arguments []string, name, value string) []string {
++	result := append([]string(nil), arguments...)
++	for index, argument := range result {
++		if argument == name && index+1 < len(result) {
++			result[index+1] = value
++		}
++	}
++	return result
++}
++
++// promptsDirWithPolicy copies the checked-in bundle and replaces its policy.
++// An empty policy removes the file, which is the missing-policy case.
++func promptsDirWithPolicy(t *testing.T, policy string) string {
++	t.Helper()
++	directory := filepath.Join(t.TempDir(), "prompts")
++	copyPromptBundle(t, filepath.Join(repositoryRoot(t), "prompts"), directory)
++	target := filepath.Join(directory, "models.json")
++	if policy == "" {
++		if err := os.Remove(target); err != nil {
++			t.Fatal(err)
++		}
++		return directory
++	}
++	if err := os.WriteFile(target, []byte(policy), 0o600); err != nil {
++		t.Fatal(err)
++	}
++	return directory
++}
++
++func copyPromptBundle(t *testing.T, source, target string) {
++	t.Helper()
++	if err := os.MkdirAll(target, 0o755); err != nil {
++		t.Fatal(err)
++	}
++	entries, err := os.ReadDir(source)
++	if err != nil {
++		t.Fatal(err)
++	}
++	names := make([]string, 0, len(entries))
++	for _, entry := range entries {
++		if entry.Type().IsRegular() {
++			names = append(names, entry.Name())
++		}
++	}
++	sort.Strings(names)
++	for _, name := range names {
++		copyFile(t, filepath.Join(source, name), filepath.Join(target, name), 0o644)
++	}
++}
++
++const codexOnlyPolicy = `{
++  "schema_version": 1,
++  "roles": {
++    "pm": {"provider": "codex", "model": "gpt-5.6-sol", "reasoning_effort": "high"},
++    "researcher": {"provider": "codex", "model": "gpt-5.6-luna", "reasoning_effort": "medium"},
++    "story_editor": {"provider": "codex", "model": "gpt-5.6-sol", "reasoning_effort": "high"},
++    "writer": {"provider": "codex", "model": "gpt-5.6-sol", "reasoning_effort": "medium"},
++    "reviewer_evidence": {"provider": "codex", "model": "gpt-5.6-sol", "reasoning_effort": "medium"},
++    "reviewer_story": {"provider": "codex", "model": "gpt-5.6-luna", "reasoning_effort": "medium"},
++    "reviewer_clarity": {"provider": "codex", "model": "gpt-5.6-luna", "reasoning_effort": "medium"},
++    "reviewer_copy": {"provider": "codex", "model": "gpt-5.6-luna", "reasoning_effort": "low"}
++  }
++}
++`
++
++const hostilePolicy = `{
++  "schema_version": 1,
++  "roles": {
++    "pm": {"provider": "codex", "model": "gpt-hostile", "reasoning_effort": "low"},
++    "researcher": {"provider": "codex", "model": "gpt-hostile", "reasoning_effort": "low"},
++    "story_editor": {"provider": "codex", "model": "gpt-hostile", "reasoning_effort": "low"},
++    "writer": {"provider": "codex", "model": "gpt-hostile", "reasoning_effort": "low"},
++    "reviewer_evidence": {"provider": "codex", "model": "gpt-hostile", "reasoning_effort": "low"},
++    "reviewer_story": {"provider": "codex", "model": "gpt-hostile", "reasoning_effort": "low"},
++    "reviewer_clarity": {"provider": "codex", "model": "gpt-hostile", "reasoning_effort": "low"},
++    "reviewer_copy": {"provider": "codex", "model": "gpt-hostile", "reasoning_effort": "low"}
++  }
++}
++`
++
++// Admin-managed Claude policy must not become readable or effective through
++// this sandbox boundary. `--safe-mode` disables user customization but still
++// applies admin-managed policy, and managed settings can inject environment
++// values, API keys, base URLs, provider routing, models, helper commands, and
++// hooks - a run could otherwise diverge from the profile the controller
++// validated and recorded without that divergence appearing in argv or audit.
++func TestBlackBoxAdminManagedClaudeSettingsCannotCrossSandboxBoundary(t *testing.T) {
++	if runtime.GOOS != "darwin" {
++		t.Skip("OS-enforced isolation is only implemented on darwin")
++	}
++	run := executeScenario(t, "filesystem_isolation")
++	if run.err != nil {
++		t.Fatalf("CLI failed: %v\n%s", run.err, run.output)
++	}
++	// 007-reviewer-clarity is a Claude Code invocation in the checked-in policy.
++	data, err := os.ReadFile(filepath.Join(run.fixtureDir, "logs", "isolation-007-reviewer-clarity.probe"))
++	if err != nil {
++		t.Fatalf("Claude reviewer did not publish an isolation probe: %v", err)
++	}
++	var probes map[string]string
++	if err := json.Unmarshal(data, &probes); err != nil {
++		t.Fatal(err)
++	}
++	for _, label := range []string{
++		"client_managed_settings_root", "client_managed_settings",
++		"tool_managed_settings", "tool_managed_settings_db",
++	} {
++		result := strings.ToLower(probes[label])
++		if result == "" || strings.Contains(result, "succeeded") {
++			t.Errorf("admin-managed Claude policy is reachable through %s: %q", label, probes[label])
++		}
++	}
++	// The containing directory exists on every macOS host, so its denial has to
++	// be a sandbox refusal. Without this the whole check could pass merely
++	// because no managed tree happens to be installed.
++	root := strings.ToLower(probes["client_managed_settings_root"])
++	if !strings.Contains(root, "not permitted") && !strings.Contains(root, "permission denied") {
++		t.Errorf("managed-policy denial is absence, not a sandbox refusal: %q", probes["client_managed_settings_root"])
++	}
++	// No invocation may diverge from the recorded profile: the run policy copy,
++	// the workflow digest, every audit record, and every launched argv still
++	// agree after the boundary probes have run.
++	assertPolicyBinding(t, run.runDir, run.fixtureDir, 8)
++}
+diff --git a/internal/app/models.go b/internal/app/models.go
+index 86e9301..6d94c6f 100644
+--- a/internal/app/models.go
++++ b/internal/app/models.go
+@@ -12,6 +12,7 @@ type Workflow struct {
+ 	CurrentRevision    string            `json:"current_revision"`
+ 	ActiveRole         string            `json:"active_role"`
+ 	ArtifactPaths      map[string]string `json:"artifact_paths"`
++	ModelPolicyDigest  string            `json:"model_policy_digest"`
+ 	ReviewAttemptCount int               `json:"review_attempt_count"`
+ 	StartedAt          time.Time         `json:"started_at"`
+ 	UpdatedAt          time.Time         `json:"updated_at"`
+@@ -64,3 +65,18 @@ type pmRequest struct {
+ 	ContextDirectory string `json:"context_directory"`
+ 	OutputPath       string `json:"output_path"`
+ }
++
++// InvocationAudit is the immutable record published for every launched
++// invocation before the process is considered ready. Its values come from the
++// same validated profile that built the process arguments. It never records
++// authentication, environment, prompt, or secret material.
++type InvocationAudit struct {
++	Invocation        string `json:"invocation"`
++	Role              string `json:"role"`
++	Lens              string `json:"lens,omitempty"`
++	Candidate         int    `json:"candidate,omitempty"`
++	Provider          string `json:"provider"`
++	Model             string `json:"model"`
++	ReasoningEffort   string `json:"reasoning_effort"`
++	ModelPolicyDigest string `json:"model_policy_digest"`
++}
+diff --git a/internal/app/policy.go b/internal/app/policy.go
+new file mode 100644
+index 0000000..4cb7854
+--- /dev/null
++++ b/internal/app/policy.go
+@@ -0,0 +1,175 @@
++package app
++
++import (
++	"fmt"
++	"sort"
++	"strings"
++)
++
++// modelPolicySchemaVersion is the only schema this binary accepts. A newer
++// bundle must be run by the binary that introduced it, never by silently
++// ignoring fields this version does not understand.
++const modelPolicySchemaVersion = 1
++
++const providerCodex = "codex"
++const providerClaudeCode = "claude_code"
++
++// policyRoles is the exact role set a schema-version-1 policy must declare.
++// Every controller-launched invocation resolves its profile by these keys, so
++// a missing key cannot fall back and an unknown key cannot be silently
++// ignored. Human Editor is a human role and deliberately has no profile.
++var policyRoles = []string{
++	"pm",
++	"researcher",
++	"story_editor",
++	"writer",
++	"reviewer_evidence",
++	"reviewer_story",
++	"reviewer_clarity",
++	"reviewer_copy",
++}
++
++// providerEfforts records the reasoning-effort vocabulary each provider CLI
++// accepts. There is deliberately no model allowlist: exact model availability
++// is decided by the selected CLI, which fails the run rather than falling back.
++var providerEfforts = map[string][]string{
++	providerCodex:      {"minimal", "low", "medium", "high"},
++	providerClaudeCode: {"low", "medium", "high", "xhigh", "max"},
++}
++
++// providerForbiddenModelPrefix rejects a model that plainly belongs to the
++// other provider before any CLI is started.
++var providerForbiddenModelPrefix = map[string]string{
++	providerCodex:      "claude",
++	providerClaudeCode: "gpt",
++}
++
++type roleProfile struct {
++	Provider        string `json:"provider"`
++	Model           string `json:"model"`
++	ReasoningEffort string `json:"reasoning_effort"`
++}
++
++type modelPolicyDocument struct {
++	SchemaVersion int                    `json:"schema_version"`
++	Roles         map[string]roleProfile `json:"roles"`
++}
++
++// modelPolicy is a validated policy bound to the exact bytes it was validated
++// from. Both the durable run copy and every launched argv are produced from
++// this value, so they cannot disagree.
++type modelPolicy struct {
++	data   []byte
++	digest string
++	roles  map[string]roleProfile
++}
++
++// parseModelPolicy validates a bundle policy completely. It is called before
++// the run directory is created, so every rejection here is a pre-run failure.
++func parseModelPolicy(data []byte) (*modelPolicy, error) {
++	var document modelPolicyDocument
++	if err := decodeStrictJSON(data, &document); err != nil {
++		return nil, fmt.Errorf("invalid models.json: %w", err)
++	}
++	if document.SchemaVersion != modelPolicySchemaVersion {
++		return nil, fmt.Errorf("unsupported models.json schema_version %d: this binary supports %d", document.SchemaVersion, modelPolicySchemaVersion)
++	}
++	if document.Roles == nil {
++		return nil, fmt.Errorf("models.json is missing the roles object")
++	}
++	required := make(map[string]bool, len(policyRoles))
++	for _, role := range policyRoles {
++		required[role] = true
++	}
++	var unknown []string
++	for role := range document.Roles {
++		if !required[role] {
++			unknown = append(unknown, role)
++		}
++	}
++	if len(unknown) != 0 {
++		sort.Strings(unknown)
++		return nil, fmt.Errorf("models.json declares unknown role(s) %s: schema version %d supports exactly %s",
++			strings.Join(unknown, ", "), modelPolicySchemaVersion, strings.Join(policyRoles, ", "))
++	}
++	var missing []string
++	for _, role := range policyRoles {
++		if _, found := document.Roles[role]; !found {
++			missing = append(missing, role)
++		}
++	}
++	if len(missing) != 0 {
++		return nil, fmt.Errorf("models.json is missing required role profile(s) %s", strings.Join(missing, ", "))
++	}
++	roles := make(map[string]roleProfile, len(document.Roles))
++	for _, role := range policyRoles {
++		profile, err := validateRoleProfile(role, document.Roles[role])
++		if err != nil {
++			return nil, err
++		}
++		roles[role] = profile
++	}
++	return &modelPolicy{data: append([]byte(nil), data...), digest: revisionFor(data), roles: roles}, nil
++}
++
++func validateRoleProfile(role string, profile roleProfile) (roleProfile, error) {
++	efforts, supported := providerEfforts[profile.Provider]
++	if !supported {
++		return roleProfile{}, fmt.Errorf("models.json role %q declares unsupported provider %q: schema version %d supports %s and %s",
++			role, profile.Provider, modelPolicySchemaVersion, providerClaudeCode, providerCodex)
++	}
++	model := strings.TrimSpace(profile.Model)
++	if model == "" {
++		return roleProfile{}, fmt.Errorf("models.json role %q declares an empty model", role)
++	}
++	if model != profile.Model {
++		return roleProfile{}, fmt.Errorf("models.json role %q declares a padded model %q", role, profile.Model)
++	}
++	if prefix := providerForbiddenModelPrefix[profile.Provider]; strings.HasPrefix(strings.ToLower(model), prefix) {
++		return roleProfile{}, fmt.Errorf("models.json role %q assigns %s model %q to provider %q", role, prefix, model, profile.Provider)
++	}
++	valid := false
++	for _, effort := range efforts {
++		if profile.ReasoningEffort == effort {
++			valid = true
++			break
++		}
++	}
++	if !valid {
++		return roleProfile{}, fmt.Errorf("models.json role %q declares reasoning_effort %q, which provider %q does not accept: use one of %s",
++			role, profile.ReasoningEffort, profile.Provider, strings.Join(efforts, ", "))
++	}
++	return roleProfile{Provider: profile.Provider, Model: model, ReasoningEffort: profile.ReasoningEffort}, nil
++}
++
++// profileFor returns the declared profile for a controller role key. There is
++// no default and no sharing: an unmapped key is a controller defect and fails
++// the run rather than reaching a CLI without an explicit profile.
++func (policy *modelPolicy) profileFor(role string) (roleProfile, error) {
++	if policy == nil {
++		return roleProfile{}, fmt.Errorf("model policy is not loaded")
++	}
++	profile, found := policy.roles[role]
++	if !found {
++		return roleProfile{}, fmt.Errorf("no validated model profile for role %q", role)
++	}
++	return profile, nil
++}
++
++// usesProvider reports whether any declared role selects the provider. Only
++// providers a policy actually references are resolved, staged, or preflighted.
++func (policy *modelPolicy) usesProvider(provider string) bool {
++	if policy == nil {
++		return false
++	}
++	for _, profile := range policy.roles {
++		if profile.Provider == provider {
++			return true
++		}
++	}
++	return false
++}
++
++func (profile roleProfile) describe() string {
++	return fmt.Sprintf("provider=%s model=%s reasoning_effort=%s", profile.Provider, profile.Model, profile.ReasoningEffort)
++}
+diff --git a/internal/app/process_group_other.go b/internal/app/process_group_other.go
+index de808d9..0f51705 100644
+--- a/internal/app/process_group_other.go
++++ b/internal/app/process_group_other.go
+@@ -19,3 +19,5 @@ func terminateOwnedProcesses(_ string, _ time.Duration, _ int) error {
+ }
+ 
+ func enableProcessBoundary() error { return fmt.Errorf("process ownership is unsupported") }
++
++func terminateProcessGroup(_ int) error { return fmt.Errorf("process ownership is unsupported") }
+diff --git a/internal/app/process_group_unix.go b/internal/app/process_group_unix.go
+index f3e28d4..b4c710b 100644
+--- a/internal/app/process_group_unix.go
++++ b/internal/app/process_group_unix.go
+@@ -323,3 +323,17 @@ func withoutPID(pids []int, excluded int) []int {
+ 	}
+ 	return result
+ }
++
++// terminateProcessGroup kills a process group started by configureProcessGroup,
++// where the leader's pid is also the group id. It is used for short-lived
++// controller probes whose descendants must not outlive them; longer-lived
++// invocations are owned by the ownership tracker instead.
++func terminateProcessGroup(pid int) error {
++	if pid <= 0 {
++		return nil
++	}
++	if err := syscall.Kill(-pid, syscall.SIGKILL); err != nil && !errors.Is(err, syscall.ESRCH) {
++		return err
++	}
++	return nil
++}
+diff --git a/internal/app/prompts.go b/internal/app/prompts.go
+index d87ff64..1807e3c 100644
+--- a/internal/app/prompts.go
++++ b/internal/app/prompts.go
+@@ -9,7 +9,16 @@ import (
+ 	"strings"
+ )
+ 
++// modelPolicyFile is the required per-bundle model policy. It is bound through
++// the same stable no-follow boundary as the role prompts, so an explicit
++// --prompts-dir bundle and the checked-in bundle are each a complete policy.
++const modelPolicyFile = "models.json"
++
++// modelPolicyArtifact is the durable copy of the validated policy inside a run.
++const modelPolicyArtifact = "model-policy.json"
++
+ var requiredPromptFiles = []string{
++	modelPolicyFile,
+ 	"pm.md",
+ 	"pm-runtime.md",
+ 	"researcher.md",
+diff --git a/internal/app/security_regression_test.go b/internal/app/security_regression_test.go
+index fcb6620..9c0239a 100644
+--- a/internal/app/security_regression_test.go
++++ b/internal/app/security_regression_test.go
+@@ -47,7 +47,7 @@ func TestProxyWithoutUserinfoAcceptsOnlyCredentialFreeOrigin(t *testing.T) {
+ 
+ func TestAgentEnvironmentOmitsCredentialBearingNoProxy(t *testing.T) {
+ 	t.Setenv("NO_PROXY", "secret.invalid:token")
+-	for _, entry := range agentEnvironment(t.TempDir(), t.TempDir(), "role", "", 1, "rev", "inv") {
++	for _, entry := range agentEnvironment(providerCodex, t.TempDir(), t.TempDir(), "role", "", 1, "rev", "inv") {
+ 		if strings.HasPrefix(entry, "NO_PROXY=") || strings.Contains(entry, "secret.invalid") {
+ 			t.Fatalf("credential-bearing NO_PROXY crossed agent boundary: %q", entry)
+ 		}
+diff --git a/internal/app/testdata/fakecodex/main.go b/internal/app/testdata/fakeagent/main.go
+similarity index 76%
+rename from internal/app/testdata/fakecodex/main.go
+rename to internal/app/testdata/fakeagent/main.go
+index 7d28c78..900773f 100644
+--- a/internal/app/testdata/fakecodex/main.go
++++ b/internal/app/testdata/fakeagent/main.go
+@@ -68,6 +68,97 @@ type invocationLog struct {
+ 	Workspace      string            `json:"workspace"`
+ 	WorkspaceFiles []string          `json:"workspace_files"`
+ 	Isolation      map[string]string `json:"isolation"`
++	Args           []string          `json:"args"`
++	Executable     string            `json:"executable"`
++	ExecutableTag  string            `json:"executable_tag"`
++	Environment    map[string]string `json:"environment"`
++}
++
++// executableTag reports which fixture executable this process was copied from.
++// The harness appends the marker to each fake so a staged copy still proves
++// which of --codex/--claude selected it.
++const executableTagMarker = "#write-uuter-fake-tag:"
++
++func executableTag() string {
++	path, err := os.Executable()
++	if err != nil {
++		return "unknown:" + err.Error()
++	}
++	data, err := os.ReadFile(path)
++	if err != nil {
++		return "unknown:" + err.Error()
++	}
++	window := data
++	if len(window) > 256 {
++		window = window[len(window)-256:]
++	}
++	index := strings.LastIndex(string(window), executableTagMarker)
++	if index < 0 {
++		return "untagged"
++	}
++	return strings.TrimSpace(strings.SplitN(string(window[index+len(executableTagMarker):]), "\n", 2)[0])
++}
++
++// environmentProbe records only whether a credential- or provider-selecting
++// variable reached this process. Values are never recorded.
++func environmentProbe() map[string]string {
++	probe := map[string]string{}
++	for _, name := range []string{
++		"ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN", "ANTHROPIC_BASE_URL", "ANTHROPIC_MODEL",
++		"CLAUDE_CODE_USE_BEDROCK", "CLAUDE_CODE_USE_VERTEX", "CLAUDE_CODE_USE_FOUNDRY",
++		"AWS_BEARER_TOKEN_BEDROCK", "AWS_ACCESS_KEY_ID", "GOOGLE_APPLICATION_CREDENTIALS",
++		"OPENAI_API_KEY", "CODEX_API_KEY",
++	} {
++		if _, found := os.LookupEnv(name); found {
++			probe[name] = "PRESENT"
++		} else {
++			probe[name] = "ABSENT"
++		}
++	}
++	for _, name := range []string{"HOME", "CLAUDE_CONFIG_DIR", "CLAUDE_CODE_TMPDIR", "CODEX_HOME"} {
++		if value := os.Getenv(name); value != "" {
++			probe[name] = value
++		} else {
++			probe[name] = "ABSENT"
++		}
++	}
++	return probe
++}
++
++// runAuthStatus answers the controller Max preflight. The scenario file decides
++// which authentication state this fixture reports.
++func runAuthStatus(scenario string) {
++	switch scenario {
++	case "auth_nonzero":
++		fmt.Fprintln(os.Stderr, "fake claude: auth status failed")
++		os.Exit(3)
++	case "auth_malformed":
++		fmt.Println("not json at all")
++	case "auth_logged_out":
++		fmt.Println(`{"loggedIn":false,"authMethod":"none","subscriptionType":"none"}`)
++	case "auth_api_key":
++		fmt.Println(`{"loggedIn":true,"authMethod":"apiKey","apiProvider":"firstParty","subscriptionType":"none"}`)
++	case "auth_not_max":
++		fmt.Println(`{"loggedIn":true,"authMethod":"claude.ai","apiProvider":"firstParty","subscriptionType":"pro"}`)
++	case "auth_missing_field":
++		fmt.Println(`{"loggedIn":true,"authMethod":"claude.ai"}`)
++	case "auth_duplicate_key":
++		fmt.Println(`{"loggedIn":true,"loggedIn":false,"authMethod":"claude.ai","subscriptionType":"max"}`)
++	case "auth_two_documents":
++		fmt.Println(`{"loggedIn":true,"authMethod":"claude.ai","subscriptionType":"max"}{"loggedIn":false}`)
++	case "auth_oversized":
++		// A wrong or broken executable can emit unbounded output. The
++		// controller must bound what it keeps and say so, rather than grow
++		// with the response or report it as a malformed status document.
++		filler := strings.Repeat("x", 1024)
++		for index := 0; index < 512; index++ {
++			fmt.Println(filler)
++		}
++	default:
++		// The real CLI also returns account identity fields. They are present
++		// here so the controller is exercised against, and must ignore, them.
++		fmt.Println(`{"loggedIn":true,"authMethod":"claude.ai","apiProvider":"firstParty","email":"fixture@example.invalid","orgId":"00000000-0000-0000-0000-000000000000","orgName":"fixture","subscriptionType":"max"}`)
++	}
+ }
+ 
+ func main() {
+@@ -84,6 +175,10 @@ func main() {
+ 			return
+ 		}
+ 	}
++	if len(os.Args) > 2 && os.Args[1] == "auth" && os.Args[2] == "status" {
++		runAuthStatus(fixtureScenario(""))
++		return
++	}
+ 	prompt, _ := io.ReadAll(os.Stdin)
+ 	role := os.Getenv("WRITE_UUTER_ROLE")
+ 	lens := os.Getenv("WRITE_UUTER_LENS")
+@@ -92,12 +187,7 @@ func main() {
+ 	workDir := os.Getenv("WRITE_UUTER_WORK_DIR")
+ 	invocation := os.Getenv("WRITE_UUTER_INVOCATION")
+ 	executable, _ := os.Executable()
+-	fixtureDir := filepath.Dir(executable)
+-	scenarioBytes, err := os.ReadFile(filepath.Join(workDir, ".write-uuter-test-scenario"))
+-	if err != nil {
+-		scenarioBytes, _ = os.ReadFile(filepath.Join(fixtureDir, "scenario"))
+-	}
+-	scenario := strings.TrimSpace(string(scenarioBytes))
++	scenario := fixtureScenario(workDir)
+ 	logPath := filepath.Join(workDir, ".write-uuter-test-log.json")
+ 	isolation := map[string]string{}
+ 	writeLog := func() {
+@@ -105,11 +195,20 @@ func main() {
+ 			PID: os.Getpid(), Role: role, Lens: lens, Candidate: candidate,
+ 			Revision: revision, Invocation: invocation, Prompt: string(prompt),
+ 			Workspace: workDir, WorkspaceFiles: workspaceFiles(workDir), Isolation: isolation,
++			Args: os.Args[1:], Executable: executable, ExecutableTag: executableTag(),
++			Environment: environmentProbe(),
+ 		})
+ 	}
+ 	writeLog()
+ 	defer writeLog()
+ 
++	if scenario == "model_unavailable" && role == "writer" {
++		// The provider CLI refuses the declared model. The controller must
++		// block with the effective profile instead of retrying elsewhere.
++		fmt.Fprintln(os.Stderr, "fake provider: model is not available for this account")
++		writeLog()
++		os.Exit(7)
++	}
+ 	switch role {
+ 	case "pm":
+ 		runPM(workDir, scenario)
+@@ -383,6 +482,76 @@ func runPM(workDir, scenario string) {
+ 	}
+ }
+ 
++// fixtureScenario resolves the scenario for this process. The controller stages
++// it into each workspace; a preflight invocation has no workspace and reads the
++// fixture directory instead.
++func fixtureScenario(workDir string) string {
++	if workDir != "" {
++		if data, err := os.ReadFile(filepath.Join(workDir, ".write-uuter-test-scenario")); err == nil {
++			return strings.TrimSpace(string(data))
++		}
++	}
++	executable, err := os.Executable()
++	if err != nil {
++		return ""
++	}
++	data, _ := os.ReadFile(filepath.Join(filepath.Dir(executable), "scenario"))
++	return strings.TrimSpace(string(data))
++}
++
++// probeClaudeIsolation records the Claude-specific boundary. The staged client
++// may read the account record that identifies the logged-in session, but not
++// the keychain stores, the rest of the user's Claude state, or the home
++// directory; a model-invoked tool - anything reached through a shell - may
++// read none of it and may not start the system keychain client at all.
++// managedSettingsRoot contains the admin-managed Claude policy tree. The
++// directory itself exists on every macOS host, so probing it proves denial
++// rather than absence.
++const managedSettingsRoot = "/Library/Application Support"
++
++func probeClaudeIsolation(result map[string]string) {
++	home := filepath.Join("/Users", os.Getenv("USER"))
++	keychain := filepath.Join(home, "Library", "Keychains")
++	for label, path := range map[string]string{
++		"client_user_claude_config": filepath.Join(home, ".claude.json"),
++		"client_user_claude_dir":    filepath.Join(home, ".claude", "settings.json"),
++		"client_user_home":          home,
++		"client_keychain_file":      keychain,
++		// Admin-managed policy still applies under --safe-mode and can inject
++		// provider routing, models, keys, and hooks, so neither the managed
++		// tree nor the directory that would contain it may be readable. The
++		// containing directory exists on every host, which keeps the check
++		// from passing merely because the managed tree is absent.
++		"client_managed_settings_root": managedSettingsRoot,
++		"client_managed_settings":      filepath.Join(managedSettingsRoot, "ClaudeCode"),
++	} {
++		if _, err := os.ReadDir(path); err == nil {
++			result[label] = "READ_SUCCEEDED"
++		} else if _, err := os.ReadFile(path); err == nil {
++			result[label] = "READ_SUCCEEDED"
++		} else {
++			result[label] = err.Error()
++		}
++	}
++	for label, script := range map[string]string{
++		"tool_user_claude_config":  "cat " + filepath.Join(home, ".claude.json"),
++		"tool_keychain_file":       "cat " + filepath.Join(keychain, "login.keychain-db"),
++		"tool_keychain_client":     "/usr/bin/security list-keychains",
++		"tool_managed_settings":    "ls " + managedSettingsRoot,
++		"tool_managed_settings_db": "cat " + filepath.Join(managedSettingsRoot, "ClaudeCode", "managed-settings.json"),
++	} {
++		command := exec.Command("/bin/sh", "-c", script)
++		command.Stdout = io.Discard
++		var failure strings.Builder
++		command.Stderr = &failure
++		if err := command.Run(); err == nil {
++			result[label] = "LOOKUP_SUCCEEDED"
++		} else {
++			result[label] = err.Error() + ":" + failure.String()
++		}
++	}
++}
++
+ func probeIsolation(workDir string) {
+ 	privateRoot := filepath.Dir(filepath.Dir(workDir))
+ 	runDir := filepath.Join(filepath.Dir(privateRoot), "run")
+@@ -484,6 +653,9 @@ func probeIsolation(workDir string) {
+ 			result[name] = "ABSENT"
+ 		}
+ 	}
++	if os.Getenv("CLAUDE_CODE_TMPDIR") != "" {
++		probeClaudeIsolation(result)
++	}
+ 	data, _ := json.MarshalIndent(result, "", "  ")
+ 	mustWrite(filepath.Join(workDir, ".write-uuter-isolation.probe"), string(data)+"\n")
+ }
+diff --git a/internal/app/tmux.go b/internal/app/tmux.go
+index b9fb0de..1b74a5e 100644
+--- a/internal/app/tmux.go
++++ b/internal/app/tmux.go
+@@ -9,45 +9,50 @@ import (
+ 	"os"
+ 	"os/exec"
+ 	"path/filepath"
++	"sort"
+ 	"strconv"
+ 	"strings"
+ 	"time"
+ )
+ 
+ type tmuxRuntime struct {
+-	executable      string
+-	runner          string
+-	session         string
+-	codex           string
+-	codexRuntime    []string
+-	runDir          string
+-	privateRoot     string
+-	controlDir      string
+-	workspacesDir   string
+-	codexHomesDir   string
+-	sourceCodexHome string
+-	controlStore    *artifactStore
+-	fakeLogDir      string
+-	detachedPIDDir  string
+-	exitDelay       string
+-	readyDelay      string
+-	readyWaitBudget time.Duration
+-	removeAudit     string
+-	auditRemoved    bool
+-	failRemoveOnce  bool
+-	failCleanup     bool
+-	testScenario    []byte
+-	commandTimeout  time.Duration
+-	sequence        int
+-	cleaned         bool
+-	closed          bool
+-	storeClosed     bool
+-	invocations     []invocation
++	executable string
++	runner     string
++	session    string
++	// providerClients holds the staged runtime executables for every provider
++	// the validated policy references. Index 0 is the provider client itself.
++	providerClients  map[string][]string
++	runDir           string
++	privateRoot      string
++	controlDir       string
++	workspacesDir    string
++	providerHomesDir string
++	sourceCodexHome  string
++	controlStore     *artifactStore
++	fakeLogDir       string
++	detachedPIDDir   string
++	exitDelay        string
++	readyDelay       string
++	readyWaitBudget  time.Duration
++	removeAudit      string
++	auditRemoved     bool
++	failRemoveOnce   bool
++	failCleanup      bool
++	testScenario     []byte
++	commandTimeout   time.Duration
++	sequence         int
++	cleaned          bool
++	closed           bool
++	storeClosed      bool
++	invocations      []invocation
+ }
+ 
+ type invocation struct {
+-	ID                string
++	ID string
++	// Role is the policy role key, so the profile that built the argument
++	// vector and the profile recorded in the audit entry are the same value.
+ 	Role              string
++	Profile           roleProfile
+ 	Lens              string
+ 	Candidate         int
+ 	Revision          string
+@@ -58,7 +63,7 @@ type invocation struct {
+ 	OwnershipRelative string
+ 	ProfileRelative   string
+ 	WorkspacePath     string
+-	CodexHomePath     string
++	ProviderHomePath  string
+ 	ClientPath        string
+ 	Window            string
+ 	launchAttempted   bool
+@@ -67,18 +72,25 @@ type invocation struct {
+ 	archived          bool
+ }
+ 
+-func newTmuxRuntime(tmuxExecutable, codexExecutable string, agentTimeout time.Duration, runDir string) (*tmuxRuntime, error) {
++// newTmuxRuntime stages exactly the provider executables the validated policy
++// references. A provider no role selects is never resolved, so an unused
++// provider CLI does not have to be installed.
++func newTmuxRuntime(tmuxExecutable string, providerExecutables map[string]string, agentTimeout time.Duration, runDir string) (*tmuxRuntime, error) {
+ 	tmuxPath, err := exec.LookPath(tmuxExecutable)
+ 	if err != nil {
+ 		return nil, fmt.Errorf("locate tmux executable: %w", err)
+ 	}
+-	codexPath, err := exec.LookPath(codexExecutable)
+-	if err != nil {
+-		return nil, fmt.Errorf("locate Codex executable: %w", err)
+-	}
+-	codexPath, err = filepath.EvalSymlinks(codexPath)
+-	if err != nil {
+-		return nil, fmt.Errorf("resolve Codex executable: %w", err)
++	resolved := make(map[string]string, len(providerExecutables))
++	for provider, configured := range providerExecutables {
++		path, lookErr := exec.LookPath(configured)
++		if lookErr != nil {
++			return nil, fmt.Errorf("locate %s executable: %w", providerLabel(provider), lookErr)
++		}
++		path, lookErr = filepath.EvalSymlinks(path)
++		if lookErr != nil {
++			return nil, fmt.Errorf("resolve %s executable: %w", providerLabel(provider), lookErr)
++		}
++		resolved[provider] = path
+ 	}
+ 	runnerSource, err := os.Executable()
+ 	if err != nil {
+@@ -99,8 +111,8 @@ func newTmuxRuntime(tmuxExecutable, codexExecutable string, agentTimeout time.Du
+ 	}
+ 	controlDir := filepath.Join(privateRoot, "control")
+ 	workspacesDir := filepath.Join(privateRoot, "workspaces")
+-	codexHomesDir := filepath.Join(privateRoot, "codex-homes")
+-	for _, directory := range []string{controlDir, workspacesDir, codexHomesDir} {
++	providerHomesDir := filepath.Join(privateRoot, "provider-homes")
++	for _, directory := range []string{controlDir, workspacesDir, providerHomesDir} {
+ 		if err := os.Mkdir(directory, 0o700); err != nil {
+ 			cleanupRoot()
+ 			return nil, err
+@@ -113,29 +125,41 @@ func newTmuxRuntime(tmuxExecutable, codexExecutable string, agentTimeout time.Du
+ 	}
+ 	var testScenario []byte
+ 	if os.Getenv("WRITE_UUTER_FAKE_LOG_DIR") != "" {
+-		testScenario, _ = os.ReadFile(filepath.Join(filepath.Dir(codexPath), "scenario"))
+-	}
+-	stagedCodexPath := filepath.Join(controlDir, "codex")
+-	if err := installPrivateRunner(codexPath, stagedCodexPath); err != nil {
+-		cleanupRoot()
+-		return nil, fmt.Errorf("stage Codex executable: %w", err)
++		for _, provider := range sortedProviders(resolved) {
++			if data, readErr := os.ReadFile(filepath.Join(filepath.Dir(resolved[provider]), "scenario")); readErr == nil {
++				testScenario = data
++				break
++			}
++		}
+ 	}
+-	codexRuntime := []string{stagedCodexPath}
+-	codeModeSource := filepath.Join(filepath.Dir(codexPath), "codex-code-mode-host")
+-	if info, statErr := os.Lstat(codeModeSource); statErr == nil {
+-		if !info.Mode().IsRegular() {
++	providerClients := make(map[string][]string, len(resolved))
++	for _, provider := range sortedProviders(resolved) {
++		sourcePath := resolved[provider]
++		stagedPath := filepath.Join(controlDir, providerClientName(provider))
++		if err := installPrivateRunner(sourcePath, stagedPath); err != nil {
+ 			cleanupRoot()
+-			return nil, fmt.Errorf("Codex code-mode host is not a regular file: %s", codeModeSource)
++			return nil, fmt.Errorf("stage %s executable: %w", providerLabel(provider), err)
+ 		}
+-		codeModeTarget := filepath.Join(controlDir, "codex-code-mode-host")
+-		if err := installPrivateRunner(codeModeSource, codeModeTarget); err != nil {
+-			cleanupRoot()
+-			return nil, fmt.Errorf("stage Codex code-mode host: %w", err)
++		runtimeExecutables := []string{stagedPath}
++		if provider == providerCodex {
++			codeModeSource := filepath.Join(filepath.Dir(sourcePath), "codex-code-mode-host")
++			if info, statErr := os.Lstat(codeModeSource); statErr == nil {
++				if !info.Mode().IsRegular() {
++					cleanupRoot()
++					return nil, fmt.Errorf("Codex code-mode host is not a regular file: %s", codeModeSource)
++				}
++				codeModeTarget := filepath.Join(controlDir, "codex-code-mode-host")
++				if err := installPrivateRunner(codeModeSource, codeModeTarget); err != nil {
++					cleanupRoot()
++					return nil, fmt.Errorf("stage Codex code-mode host: %w", err)
++				}
++				runtimeExecutables = append(runtimeExecutables, codeModeTarget)
++			} else if !errors.Is(statErr, os.ErrNotExist) {
++				cleanupRoot()
++				return nil, fmt.Errorf("inspect Codex code-mode host: %w", statErr)
++			}
+ 		}
+-		codexRuntime = append(codexRuntime, codeModeTarget)
+-	} else if !errors.Is(statErr, os.ErrNotExist) {
+-		cleanupRoot()
+-		return nil, fmt.Errorf("inspect Codex code-mode host: %w", statErr)
++		providerClients[provider] = runtimeExecutables
+ 	}
+ 	controlStore, err := openArtifactStore(controlDir)
+ 	if err != nil {
+@@ -168,9 +192,9 @@ func newTmuxRuntime(tmuxExecutable, codexExecutable string, agentTimeout time.Du
+ 		sourceCodexHome = filepath.Join(home, ".codex")
+ 	}
+ 	return &tmuxRuntime{
+-		executable: tmuxPath, runner: runnerPath, codex: stagedCodexPath, codexRuntime: codexRuntime, runDir: runDir,
++		executable: tmuxPath, runner: runnerPath, providerClients: providerClients, runDir: runDir,
+ 		privateRoot: privateRoot, controlDir: controlDir, workspacesDir: workspacesDir,
+-		codexHomesDir: codexHomesDir, sourceCodexHome: sourceCodexHome,
++		providerHomesDir: providerHomesDir, sourceCodexHome: sourceCodexHome,
+ 		controlStore: controlStore, commandTimeout: commandTimeout,
+ 		fakeLogDir: os.Getenv("WRITE_UUTER_FAKE_LOG_DIR"), detachedPIDDir: os.Getenv("WRITE_UUTER_TEST_DETACHED_PID_DIR"),
+ 		exitDelay: os.Getenv("WRITE_UUTER_TEST_EXIT_MARKER_DELAY"), readyDelay: os.Getenv("WRITE_UUTER_TEST_READY_MARKER_DELAY"),
+@@ -219,7 +243,11 @@ func installPrivateRunner(source, target string) error {
+ 	return nil
+ }
+ 
+-func (runtime *tmuxRuntime) prepareInvocation(role, lens string, candidate int, revision, prompt string) (invocation, error) {
++func (runtime *tmuxRuntime) prepareInvocation(role, lens string, candidate int, revision, prompt string, profile roleProfile) (invocation, error) {
++	runtimeSources, staged := runtime.providerClients[profile.Provider]
++	if !staged {
++		return invocation{}, fmt.Errorf("no staged %s client for role %s", providerLabel(profile.Provider), role)
++	}
+ 	runtime.sequence++
+ 	id := fmt.Sprintf("%03d-%s", runtime.sequence, strings.ReplaceAll(role, "_", "-"))
+ 	workspace, err := os.MkdirTemp(runtime.workspacesDir, id+"-*")
+@@ -236,39 +264,37 @@ func (runtime *tmuxRuntime) prepareInvocation(role, lens string, candidate int,
+ 			return invocation{}, err
+ 		}
+ 	}
+-	codexHome := filepath.Join(runtime.codexHomesDir, id)
+-	if err := os.Mkdir(codexHome, 0o700); err != nil {
++	providerHome := filepath.Join(runtime.providerHomesDir, id)
++	if err := os.Mkdir(providerHome, 0o700); err != nil {
+ 		_ = os.RemoveAll(workspace)
+ 		return invocation{}, err
+ 	}
+-	for _, credential := range []string{"auth.json", "installation_id"} {
+-		if err := copyOptionalCredential(filepath.Join(runtime.sourceCodexHome, credential), filepath.Join(codexHome, credential)); err != nil {
+-			_ = os.RemoveAll(workspace)
+-			_ = os.RemoveAll(codexHome)
+-			return invocation{}, fmt.Errorf("stage Codex credential %s: %w", credential, err)
++	if profile.Provider == providerCodex {
++		// Codex authenticates from a file-scoped home. Claude Code authenticates
++		// through the OS keychain, so its staged home holds run-owned
++		// configuration only and never receives a copied credential.
++		for _, credential := range []string{"auth.json", "installation_id"} {
++			if err := copyOptionalCredential(filepath.Join(runtime.sourceCodexHome, credential), filepath.Join(providerHome, credential)); err != nil {
++				_ = os.RemoveAll(workspace)
++				_ = os.RemoveAll(providerHome)
++				return invocation{}, fmt.Errorf("stage Codex credential %s: %w", credential, err)
++			}
+ 		}
+ 	}
+ 	clientDir := filepath.Join(runtime.controlDir, "clients", id)
+ 	if err := os.Mkdir(clientDir, 0o700); err != nil {
+ 		_ = os.RemoveAll(workspace)
+-		_ = os.RemoveAll(codexHome)
+-		return invocation{}, fmt.Errorf("create single-use Codex client directory: %w", err)
++		_ = os.RemoveAll(providerHome)
++		return invocation{}, fmt.Errorf("create single-use %s client directory: %w", providerLabel(profile.Provider), err)
+ 	}
+-	clientPath := filepath.Join(clientDir, "codex")
+-	if err := installPrivateRunner(runtime.codex, clientPath); err != nil {
+-		_ = os.RemoveAll(workspace)
+-		_ = os.RemoveAll(codexHome)
+-		_ = os.RemoveAll(clientDir)
+-		return invocation{}, fmt.Errorf("stage single-use Codex client: %w", err)
+-	}
+-	runtimeExecutables := []string{clientPath}
+-	for _, runtimeSource := range runtime.codexRuntime[1:] {
++	var runtimeExecutables []string
++	for _, runtimeSource := range runtimeSources {
+ 		runtimeTarget := filepath.Join(clientDir, filepath.Base(runtimeSource))
+ 		if err := installPrivateRunner(runtimeSource, runtimeTarget); err != nil {
+ 			_ = os.RemoveAll(workspace)
+-			_ = os.RemoveAll(codexHome)
++			_ = os.RemoveAll(providerHome)
+ 			_ = os.RemoveAll(clientDir)
+-			return invocation{}, fmt.Errorf("stage single-use Codex runtime %s: %w", filepath.Base(runtimeSource), err)
++			return invocation{}, fmt.Errorf("stage single-use %s runtime %s: %w", providerLabel(profile.Provider), filepath.Base(runtimeSource), err)
+ 		}
+ 		runtimeExecutables = append(runtimeExecutables, runtimeTarget)
+ 	}
+@@ -276,13 +302,13 @@ func (runtime *tmuxRuntime) prepareInvocation(role, lens string, candidate int,
+ 		canonical, canonicalErr := filepath.EvalSymlinks(executable)
+ 		if canonicalErr != nil {
+ 			_ = os.RemoveAll(workspace)
+-			_ = os.RemoveAll(codexHome)
++			_ = os.RemoveAll(providerHome)
+ 			_ = os.RemoveAll(clientDir)
+-			return invocation{}, fmt.Errorf("canonicalize single-use Codex runtime: %w", canonicalErr)
++			return invocation{}, fmt.Errorf("canonicalize single-use %s runtime: %w", providerLabel(profile.Provider), canonicalErr)
+ 		}
+ 		runtimeExecutables[index] = canonical
+ 	}
+-	clientPath = runtimeExecutables[0]
++	clientPath := runtimeExecutables[0]
+ 	keepClient := false
+ 	defer func() {
+ 		if !keepClient {
+@@ -294,22 +320,25 @@ func (runtime *tmuxRuntime) prepareInvocation(role, lens string, candidate int,
+ 		_ = os.RemoveAll(workspace)
+ 		return invocation{}, err
+ 	}
+-	profile, err := isolationProfile(workspace, codexHome, runtimeExecutables)
++	sandboxProfile, err := isolationProfile(isolationRequest{
++		Provider: profile.Provider, Workspace: workspace, ProviderHome: providerHome,
++		RuntimeExecutables: runtimeExecutables,
++	})
+ 	if err != nil {
+ 		_ = os.RemoveAll(workspace)
+ 		return invocation{}, err
+ 	}
+ 	profileRelative := filepath.Join("profiles", id+".sb")
+-	if err := runtime.controlStore.writeAtomic(profileRelative, []byte(profile), 0o400); err != nil {
++	if err := runtime.controlStore.writeAtomic(profileRelative, []byte(sandboxProfile), 0o400); err != nil {
+ 		_ = os.RemoveAll(workspace)
+ 		return invocation{}, err
+ 	}
+ 	inv := invocation{
+-		ID: id, Role: role, Lens: lens, Candidate: candidate, Revision: revision,
++		ID: id, Role: role, Profile: profile, Lens: lens, Candidate: candidate, Revision: revision,
+ 		PromptRelative: promptRelative, ExitRelative: filepath.Join("exits", id+".exit"),
+ 		LogRelative: filepath.Join("logs", id+".log"), ReadyRelative: filepath.Join("ready", id+".ready"),
+ 		OwnershipRelative: filepath.Join("ownership", id+".json"),
+-		ProfileRelative:   profileRelative, WorkspacePath: workspace, CodexHomePath: codexHome,
++		ProfileRelative:   profileRelative, WorkspacePath: workspace, ProviderHomePath: providerHome,
+ 		ClientPath: clientPath, Window: id,
+ 	}
+ 	runtime.invocations = append(runtime.invocations, inv)
+@@ -362,13 +391,15 @@ func (runtime *tmuxRuntime) command(inv invocation) string {
+ 		readyDelay = ""
+ 	}
+ 	arguments := []string{
+-		runtime.runner, "__agent", "--codex", inv.ClientPath, "--workspace", inv.WorkspacePath,
++		runtime.runner, "__agent", "--client", inv.ClientPath,
++		"--provider", inv.Profile.Provider, "--model", inv.Profile.Model, "--effort", inv.Profile.ReasoningEffort,
++		"--workspace", inv.WorkspacePath,
+ 		"--prompt", filepath.Join(runtime.controlDir, inv.PromptRelative), "--log", filepath.Join(runtime.controlDir, inv.LogRelative),
+ 		"--exit", filepath.Join(runtime.controlDir, inv.ExitRelative), "--ready", filepath.Join(runtime.controlDir, inv.ReadyRelative),
+ 		"--ownership", filepath.Join(runtime.controlDir, inv.OwnershipRelative),
+ 		"--profile", filepath.Join(runtime.controlDir, inv.ProfileRelative), "--role", inv.Role, "--lens", inv.Lens,
+ 		"--candidate", strconv.Itoa(inv.Candidate), "--revision", inv.Revision, "--invocation", inv.ID,
+-		"--codex-home", inv.CodexHomePath,
++		"--provider-home", inv.ProviderHomePath,
+ 		"--exit-marker-delay", runtime.exitDelay, "--ready-marker-delay", readyDelay,
+ 	}
+ 	parts := []string{"exec"}
+@@ -596,7 +627,9 @@ func (runtime *tmuxRuntime) waitForWorker(ctx context.Context, deadlineUnixNano
+ 		}
+ 		if exited {
+ 			if status != 0 {
+-				return fmt.Errorf("%s worker exited with status %d", worker.Role, status)
++				// No fallback: the declared profile is reported so a blocked run
++				// records exactly which provider, model, and effort failed.
++				return fmt.Errorf("%s worker exited with status %d (%s)", worker.Role, status, worker.Profile.describe())
+ 			}
+ 			if err := runtime.waitWindowAbsent(ctx, worker.Window); err != nil {
+ 				return fmt.Errorf("verify %s worker termination: %w", worker.Role, err)
+@@ -747,14 +780,14 @@ func (runtime *tmuxRuntime) closeCredentials() error {
+ 	deadline := time.Now().Add(runtime.commandTimeout)
+ 	var lastErr error
+ 	for {
+-		lastErr = os.RemoveAll(runtime.codexHomesDir)
++		lastErr = os.RemoveAll(runtime.providerHomesDir)
+ 		if lastErr == nil {
+-			if _, err := os.Lstat(runtime.codexHomesDir); errors.Is(err, os.ErrNotExist) {
++			if _, err := os.Lstat(runtime.providerHomesDir); errors.Is(err, os.ErrNotExist) {
+ 				return nil
+ 			} else if err != nil {
+ 				lastErr = err
+ 			} else {
+-				lastErr = fmt.Errorf("private Codex credential directory still exists after removal")
++				lastErr = fmt.Errorf("private provider credential directory still exists after removal")
+ 			}
+ 		}
+ 		if time.Now().After(deadline) {
+@@ -1118,3 +1151,35 @@ func (runtime *tmuxRuntime) closePrivate() error {
+ 		time.Sleep(25 * time.Millisecond)
+ 	}
+ }
++
++// providerLabel names a provider in operator-facing messages.
++func providerLabel(provider string) string {
++	switch provider {
++	case providerClaudeCode:
++		return "Claude Code"
++	case providerCodex:
++		return "Codex"
++	default:
++		return provider
++	}
++}
++
++// providerClientName is the on-disk name of a staged provider client. It is
++// also the argv[0] basename the client observes.
++func providerClientName(provider string) string {
++	switch provider {
++	case providerClaudeCode:
++		return "claude"
++	default:
++		return "codex"
++	}
++}
++
++func sortedProviders(executables map[string]string) []string {
++	providers := make([]string, 0, len(executables))
++	for provider := range executables {
++		providers = append(providers, provider)
++	}
++	sort.Strings(providers)
++	return providers
++}
+diff --git a/prompts/models.json b/prompts/models.json
+new file mode 100644
+index 0000000..0ec3547
+--- /dev/null
++++ b/prompts/models.json
+@@ -0,0 +1,45 @@
++{
++  "schema_version": 1,
++  "roles": {
++    "pm": {
++      "provider": "codex",
++      "model": "gpt-5.6-sol",
++      "reasoning_effort": "high"
++    },
++    "researcher": {
++      "provider": "claude_code",
++      "model": "claude-sonnet-5",
++      "reasoning_effort": "medium"
++    },
++    "story_editor": {
++      "provider": "claude_code",
++      "model": "claude-opus-5",
++      "reasoning_effort": "high"
++    },
++    "writer": {
++      "provider": "claude_code",
++      "model": "claude-opus-5",
++      "reasoning_effort": "medium"
++    },
++    "reviewer_evidence": {
++      "provider": "codex",
++      "model": "gpt-5.6-sol",
++      "reasoning_effort": "medium"
++    },
++    "reviewer_story": {
++      "provider": "claude_code",
++      "model": "claude-sonnet-5",
++      "reasoning_effort": "medium"
++    },
++    "reviewer_clarity": {
++      "provider": "claude_code",
++      "model": "claude-sonnet-5",
++      "reasoning_effort": "medium"
++    },
++    "reviewer_copy": {
++      "provider": "codex",
++      "model": "gpt-5.6-luna",
++      "reasoning_effort": "low"
++    }
++  }
++}

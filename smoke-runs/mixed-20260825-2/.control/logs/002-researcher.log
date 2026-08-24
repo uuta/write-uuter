@@ -1,0 +1,6 @@
+Both required files are complete:
+
+- **`evidence/sources.md`** — records the three staged source files (`001-README.md`, `002-roles.md`, `003-artifacts.md`), their locations, summaries, and access date (2026-08-24).
+- **`claim-ledger.md`** — 22 sourced Facts (role/provider/model/effort table, validation rules, invocation-audit mechanics, run-preservation guarantees), 3 Inferences (reasoning effort as the sole tuning vocabulary; independence rationale for reviewer separation; auditability of a completed/blocked run), no Opinions (none supported by source text), and 2 Unresolved questions (why these eight roles, why these specific values).
+
+No firsthand work was performed (research was limited to the staged source-hint copies), so `evidence/firsthand.md` was intentionally not created.

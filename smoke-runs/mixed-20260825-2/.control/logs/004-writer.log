@@ -1,0 +1,6 @@
+Candidate 001 is complete at `drafts/article-001.md` — seven sections following the outline's sequence (declaration → enforcement → the one tunable → role split → what the run preserves → close), with the full eight-row profile table intact, and prompt bundle, profile, candidate, revision, and lens each glossed at first use. Roughly 690 words, under the 700 limit. No placeholders.
+
+Two things worth flagging:
+
+- **The staged source copies aren't present in this workspace.** `context/source-hints/` does not exist here (Read returned "File does not exist" for `001-README.md` and `002-roles.md`, relative and absolute), and the shell is unavailable as the brief said. I wrote from the supplied brief, `evidence/sources.md` summaries, and `claim-ledger.md`, which carry every fact with its source and line citation — so each claim in the draft traces to a ledger entry, but I could not independently re-verify wording against the originals.
+- **Inferences are marked as readings, not source statements**, per the outline: Inference 1 ("Read together, that makes effort the only value in the schema that varies…"), Inference 2 ("Read together, those facts describe an arrangement that keeps each lens's judgment separate…"), and Inference 3 in the close. No rationale is supplied for why these eight roles or these effort values were chosen (Unresolved 1 and 2).

@@ -1,0 +1,3 @@
+Review complete. Verified `result.json` contains all four required keys (`status`, `lens`, `reviewed_revision`, `findings`).
+
+**Status:** `fix_required` — one minor finding: the term "profile" is used unglossed in Section 1 ("no shared reviewer profile") before its planned first-use definition in Section 2, breaking the outline's term-introduction sequence. Otherwise the article follows the outline's sequence logic and fulfills each section's purpose and reader takeaway faithfully.

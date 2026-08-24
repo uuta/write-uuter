@@ -1,0 +1,21 @@
+# Security Review (Round 2)
+
+## Summary
+
+MF4 is fixed, and the current credential, Keychain, process-group, artifact, and path boundaries reveal no new security issue. Targeted Darwin sandbox, provider-environment, and preflight lifecycle tests passed; the retained smoke run contains no credential, raw-auth, identity, or environment-value material matching the requested indicators.
+
+## Regression validation of round-1 fixes
+
+- **MF1 — NOT IN MY LENS.** Successful-workflow and role/profile completeness are owned by the requirements/correctness review; this security pass only checked the retained run for sensitive material.
+- **MF2 — NOT IN MY LENS.** Credential cleanup assertion repair is outside the assigned MF4 ownership.
+- **MF3 — NOT IN MY LENS.** Documentation accuracy is outside the assigned MF4 ownership.
+- **MF4 — FIXED.** `claudeClientReads` is derived only from `claudeAuthenticationPaths(home)` at `internal/app/isolation_darwin.go:52`, and that function returns only `~/.claude.json` at `internal/app/isolation_darwin.go:185-186`; the former `/Library/Application Support/ClaudeCode` grant is gone. Exhaustive inspection of every emitted content-read rule at `internal/app/isolation_darwin.go:79-92,113-159` found no ancestor grant covering that tree: `/Library/Apple` is a sibling, `/usr/share` is unrelated, workspace/provider-home/runtime paths are invocation-private, and Keychain reads are process-filtered to `/usr/bin/security`. Ancestors gathered at `internal/app/isolation_darwin.go:94-111` emit only `file-read-metadata`, which is acceptable. Both managed-policy spellings (plus existing canonical targets) receive final `file-read*`/`file-write*` denials at `internal/app/isolation_darwin.go:164-176`, after every allow, preserving last-match ordering. The exact staged Claude client retains its account-record/network/mach grants at `internal/app/isolation_darwin.go:127-143`; spawned tools retain the later blanket user-session-service denial, cannot execute `/usr/bin/security`, and cannot read Keychain stores at `internal/app/isolation_darwin.go:140-162`.
+
+  The generated-profile regression is substantive, not merely read: `TestClaudeIsolationNeverGrantsAdminManagedPolicy` calls `isolationProfile` and asserts its profile text at `internal/app/isolation_darwin_test.go:44-88`. An overlay mutation that re-added `/Library/Application Support/ClaudeCode` to `claudeAuthenticationPaths` failed at line 30 with `Claude client authentication reads are no longer only the account record`. The unmodified targeted command `rtk go test ./internal/app -run 'TestClaudeIsolationNeverGrantsAdminManagedPolicy|TestBlackBoxAdminManagedClaudeSettingsCannotCrossSandboxBoundary|TestBlackBoxProviderProcessesNeverReceiveExternalCredentials|TestClaudeMaxPreflightBoundsDescendantHoldingStdoutPastExit|TestClaudeMaxPreflightTerminatesProcessTreeOnTimeout|TestClaudeMaxPreflightRejectsOversizedOutput' -count=1 -timeout 40m -v` passed all 6 selected tests.
+- **MF5 — NOT IN MY LENS.** I nevertheless checked the new signalling boundary for security impact: `configureProcessGroup` uses `Setpgid: true` at `internal/app/process_group_unix.go:40-42`, so a successfully started probe leads a group distinct from the controller; `terminateProcessGroup` rejects non-positive IDs before `kill(-pid)` at `internal/app/process_group_unix.go:331-338`. The only callers pass the successfully started probe PID at `internal/app/claude_auth.go:79-88`, so neither PID 0 nor the controller's own group is reachable. The two descendant-kill tests passed in the targeted command above.
+
+The broader sweep also confirmed that `providerBaseEnvironment` remains a positive allowlist at `internal/app/agent_runner.go:177-198`, and the preflight uses that exact function at `internal/app/claude_auth.go:71-79`. `rtk rg --hidden --no-ignore` over `smoke-runs/mixed-20260825-2/` found no `ANTHROPIC_*`/alternative-provider credential, raw `loggedIn`/`authMethod`/`subscriptionType`, email/org ID, API-key-shaped secret, or environment assignment; invocation records contain only the contracted audit fields. The retained `.control/prompts/` files are the contract's explicit post-cleanup prompt audit copies, not fields embedded in invocation audit JSON.
+
+## Findings
+
+No new issues found.

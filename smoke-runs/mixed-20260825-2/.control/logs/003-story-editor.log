@@ -1,0 +1,13 @@
+`outline.md` is complete on disk.
+
+**Structure:** seven sections — lead → the eight declared profiles → validation before launch → reasoning effort as the sole tunable → why the roles are split → what the run directory preserves → close. Each section records Purpose, Supporting evidence (cited to ledger entries and source line ranges), and Reader takeaway.
+
+**Decisions worth flagging:**
+
+- **Sequence** runs declaration → enforcement → tunable → separation → preservation, so the takeaway's "inspectable after the fact" claim only lands after both halves are shown: declared up front (§2–3) and recorded on disk (§6).
+- **Term plan** is a table at the top assigning each required term to a first-use section. This forced one constraint back onto §2: it must name the four reviewer role keys *without* the word "lens", since §5 is where lens gets defined.
+- **Word budgets** per section total ~660, under the 700 limit, with a cut-priority note telling the Writer to compress §3 and §5 first — §2, §4, and §6 carry the brief's three "done when" items.
+- **Inferences 1–3** are routed to §4, §5, and §7 with an explicit instruction to present them as readings of the cited facts, not as source statements.
+- **Unresolved 1 and 2** are attached to §5 as a do-not-supply note, since "why these eight roles" and "why these effort values" are the two places a Writer would most naturally invent a rationale.
+
+One note on the environment: the workspace directory is empty — `brief.md`, `evidence/sources.md`, and `claim-ledger.md` were supplied inline rather than on disk, and `context/source-hints/` isn't present here. I outlined against the ledger's line-level citations into the three staged sources, so every evidence line in the outline is traceable, but I did not read the source hint files themselves.

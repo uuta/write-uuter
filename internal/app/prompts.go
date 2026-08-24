@@ -9,7 +9,16 @@ import (
 	"strings"
 )
 
+// modelPolicyFile is the required per-bundle model policy. It is bound through
+// the same stable no-follow boundary as the role prompts, so an explicit
+// --prompts-dir bundle and the checked-in bundle are each a complete policy.
+const modelPolicyFile = "models.json"
+
+// modelPolicyArtifact is the durable copy of the validated policy inside a run.
+const modelPolicyArtifact = "model-policy.json"
+
 var requiredPromptFiles = []string{
+	modelPolicyFile,
 	"pm.md",
 	"pm-runtime.md",
 	"researcher.md",
