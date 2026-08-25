@@ -1,7 +1,0 @@
-Review complete. I checked the candidate against the outline's section sequence, purposes, and reader takeaways, and against the term-introduction plan.
-
-**Result: `fix_required`** — one finding.
-
-The narrative sequence and section purposes are otherwise well followed (lead, declaration, enforcement, tunable, why-split, preservation, close all land close to their planned shape and takeaways, and *prompt bundle*, *candidate*, *revision*, and *lens* all appear at their outline-assigned first use). The one deviation: the outline reserves defining *profile* for Section 2, but the candidate defines it in the lead paragraph instead, pulling that definitional work forward and blurring the planned boundary between the framing lead and the declarative Section 2. Flagged as low severity with a suggested fix (move the definition into Section 2 alongside *prompt bundle*).
-
-Wrote `result.json` and `report.md` to the workspace root.

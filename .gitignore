@@ -1,1 +1,13 @@
 /bin/
+
+# Raw agent transcripts from a smoke run. The prompts, provider stdout/stderr,
+# and exit markers are reproducible per-invocation detail, not review evidence.
+# The durable per-invocation profile record under .control/invocations/ is kept.
+/smoke-runs/*/.control/logs/
+/smoke-runs/*/.control/prompts/
+/smoke-runs/*/.control/exits/
+
+# Ephemeral review inputs and specialist lens reports. Only the manager-level
+# summary is durable enough to keep reviewable.
+/docs/review/*
+!/docs/review/manager*.md
