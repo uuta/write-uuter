@@ -12,6 +12,7 @@ type Workflow struct {
 	CurrentRevision    string            `json:"current_revision"`
 	ActiveRole         string            `json:"active_role"`
 	ArtifactPaths      map[string]string `json:"artifact_paths"`
+	ModelPolicyDigest  string            `json:"model_policy_digest"`
 	ReviewAttemptCount int               `json:"review_attempt_count"`
 	StartedAt          time.Time         `json:"started_at"`
 	UpdatedAt          time.Time         `json:"updated_at"`
@@ -63,4 +64,19 @@ type pmRequest struct {
 	RequestPath      string `json:"request_path"`
 	ContextDirectory string `json:"context_directory"`
 	OutputPath       string `json:"output_path"`
+}
+
+// InvocationAudit is the immutable record published for every launched
+// invocation before the process is considered ready. Its values come from the
+// same validated profile that built the process arguments. It never records
+// authentication, environment, prompt, or secret material.
+type InvocationAudit struct {
+	Invocation        string `json:"invocation"`
+	Role              string `json:"role"`
+	Lens              string `json:"lens,omitempty"`
+	Candidate         int    `json:"candidate,omitempty"`
+	Provider          string `json:"provider"`
+	Model             string `json:"model"`
+	ReasoningEffort   string `json:"reasoning_effort"`
+	ModelPolicyDigest string `json:"model_policy_digest"`
 }

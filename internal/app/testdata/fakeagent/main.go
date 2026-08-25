@@ -68,6 +68,97 @@ type invocationLog struct {
 	Workspace      string            `json:"workspace"`
 	WorkspaceFiles []string          `json:"workspace_files"`
 	Isolation      map[string]string `json:"isolation"`
+	Args           []string          `json:"args"`
+	Executable     string            `json:"executable"`
+	ExecutableTag  string            `json:"executable_tag"`
+	Environment    map[string]string `json:"environment"`
+}
+
+// executableTag reports which fixture executable this process was copied from.
+// The harness appends the marker to each fake so a staged copy still proves
+// which of --codex/--claude selected it.
+const executableTagMarker = "#write-uuter-fake-tag:"
+
+func executableTag() string {
+	path, err := os.Executable()
+	if err != nil {
+		return "unknown:" + err.Error()
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return "unknown:" + err.Error()
+	}
+	window := data
+	if len(window) > 256 {
+		window = window[len(window)-256:]
+	}
+	index := strings.LastIndex(string(window), executableTagMarker)
+	if index < 0 {
+		return "untagged"
+	}
+	return strings.TrimSpace(strings.SplitN(string(window[index+len(executableTagMarker):]), "\n", 2)[0])
+}
+
+// environmentProbe records only whether a credential- or provider-selecting
+// variable reached this process. Values are never recorded.
+func environmentProbe() map[string]string {
+	probe := map[string]string{}
+	for _, name := range []string{
+		"ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN", "ANTHROPIC_BASE_URL", "ANTHROPIC_MODEL",
+		"CLAUDE_CODE_USE_BEDROCK", "CLAUDE_CODE_USE_VERTEX", "CLAUDE_CODE_USE_FOUNDRY",
+		"AWS_BEARER_TOKEN_BEDROCK", "AWS_ACCESS_KEY_ID", "GOOGLE_APPLICATION_CREDENTIALS",
+		"OPENAI_API_KEY", "CODEX_API_KEY",
+	} {
+		if _, found := os.LookupEnv(name); found {
+			probe[name] = "PRESENT"
+		} else {
+			probe[name] = "ABSENT"
+		}
+	}
+	for _, name := range []string{"HOME", "CLAUDE_CONFIG_DIR", "CLAUDE_CODE_TMPDIR", "CODEX_HOME"} {
+		if value := os.Getenv(name); value != "" {
+			probe[name] = value
+		} else {
+			probe[name] = "ABSENT"
+		}
+	}
+	return probe
+}
+
+// runAuthStatus answers the controller Max preflight. The scenario file decides
+// which authentication state this fixture reports.
+func runAuthStatus(scenario string) {
+	switch scenario {
+	case "auth_nonzero":
+		fmt.Fprintln(os.Stderr, "fake claude: auth status failed")
+		os.Exit(3)
+	case "auth_malformed":
+		fmt.Println("not json at all")
+	case "auth_logged_out":
+		fmt.Println(`{"loggedIn":false,"authMethod":"none","subscriptionType":"none"}`)
+	case "auth_api_key":
+		fmt.Println(`{"loggedIn":true,"authMethod":"apiKey","apiProvider":"firstParty","subscriptionType":"none"}`)
+	case "auth_not_max":
+		fmt.Println(`{"loggedIn":true,"authMethod":"claude.ai","apiProvider":"firstParty","subscriptionType":"pro"}`)
+	case "auth_missing_field":
+		fmt.Println(`{"loggedIn":true,"authMethod":"claude.ai"}`)
+	case "auth_duplicate_key":
+		fmt.Println(`{"loggedIn":true,"loggedIn":false,"authMethod":"claude.ai","subscriptionType":"max"}`)
+	case "auth_two_documents":
+		fmt.Println(`{"loggedIn":true,"authMethod":"claude.ai","subscriptionType":"max"}{"loggedIn":false}`)
+	case "auth_oversized":
+		// A wrong or broken executable can emit unbounded output. The
+		// controller must bound what it keeps and say so, rather than grow
+		// with the response or report it as a malformed status document.
+		filler := strings.Repeat("x", 1024)
+		for index := 0; index < 512; index++ {
+			fmt.Println(filler)
+		}
+	default:
+		// The real CLI also returns account identity fields. They are present
+		// here so the controller is exercised against, and must ignore, them.
+		fmt.Println(`{"loggedIn":true,"authMethod":"claude.ai","apiProvider":"firstParty","email":"fixture@example.invalid","orgId":"00000000-0000-0000-0000-000000000000","orgName":"fixture","subscriptionType":"max"}`)
+	}
 }
 
 func main() {
@@ -84,6 +175,10 @@ func main() {
 			return
 		}
 	}
+	if len(os.Args) > 2 && os.Args[1] == "auth" && os.Args[2] == "status" {
+		runAuthStatus(fixtureScenario(""))
+		return
+	}
 	prompt, _ := io.ReadAll(os.Stdin)
 	role := os.Getenv("WRITE_UUTER_ROLE")
 	lens := os.Getenv("WRITE_UUTER_LENS")
@@ -92,12 +187,7 @@ func main() {
 	workDir := os.Getenv("WRITE_UUTER_WORK_DIR")
 	invocation := os.Getenv("WRITE_UUTER_INVOCATION")
 	executable, _ := os.Executable()
-	fixtureDir := filepath.Dir(executable)
-	scenarioBytes, err := os.ReadFile(filepath.Join(workDir, ".write-uuter-test-scenario"))
-	if err != nil {
-		scenarioBytes, _ = os.ReadFile(filepath.Join(fixtureDir, "scenario"))
-	}
-	scenario := strings.TrimSpace(string(scenarioBytes))
+	scenario := fixtureScenario(workDir)
 	logPath := filepath.Join(workDir, ".write-uuter-test-log.json")
 	isolation := map[string]string{}
 	writeLog := func() {
@@ -105,11 +195,20 @@ func main() {
 			PID: os.Getpid(), Role: role, Lens: lens, Candidate: candidate,
 			Revision: revision, Invocation: invocation, Prompt: string(prompt),
 			Workspace: workDir, WorkspaceFiles: workspaceFiles(workDir), Isolation: isolation,
+			Args: os.Args[1:], Executable: executable, ExecutableTag: executableTag(),
+			Environment: environmentProbe(),
 		})
 	}
 	writeLog()
 	defer writeLog()
 
+	if scenario == "model_unavailable" && role == "writer" {
+		// The provider CLI refuses the declared model. The controller must
+		// block with the effective profile instead of retrying elsewhere.
+		fmt.Fprintln(os.Stderr, "fake provider: model is not available for this account")
+		writeLog()
+		os.Exit(7)
+	}
 	switch role {
 	case "pm":
 		runPM(workDir, scenario)
@@ -383,6 +482,76 @@ func runPM(workDir, scenario string) {
 	}
 }
 
+// fixtureScenario resolves the scenario for this process. The controller stages
+// it into each workspace; a preflight invocation has no workspace and reads the
+// fixture directory instead.
+func fixtureScenario(workDir string) string {
+	if workDir != "" {
+		if data, err := os.ReadFile(filepath.Join(workDir, ".write-uuter-test-scenario")); err == nil {
+			return strings.TrimSpace(string(data))
+		}
+	}
+	executable, err := os.Executable()
+	if err != nil {
+		return ""
+	}
+	data, _ := os.ReadFile(filepath.Join(filepath.Dir(executable), "scenario"))
+	return strings.TrimSpace(string(data))
+}
+
+// probeClaudeIsolation records the Claude-specific boundary. The staged client
+// may read the account record that identifies the logged-in session, but not
+// the keychain stores, the rest of the user's Claude state, or the home
+// directory; a model-invoked tool - anything reached through a shell - may
+// read none of it and may not start the system keychain client at all.
+// managedSettingsRoot contains the admin-managed Claude policy tree. The
+// directory itself exists on every macOS host, so probing it proves denial
+// rather than absence.
+const managedSettingsRoot = "/Library/Application Support"
+
+func probeClaudeIsolation(result map[string]string) {
+	home := filepath.Join("/Users", os.Getenv("USER"))
+	keychain := filepath.Join(home, "Library", "Keychains")
+	for label, path := range map[string]string{
+		"client_user_claude_config": filepath.Join(home, ".claude.json"),
+		"client_user_claude_dir":    filepath.Join(home, ".claude", "settings.json"),
+		"client_user_home":          home,
+		"client_keychain_file":      keychain,
+		// Admin-managed policy still applies under --safe-mode and can inject
+		// provider routing, models, keys, and hooks, so neither the managed
+		// tree nor the directory that would contain it may be readable. The
+		// containing directory exists on every host, which keeps the check
+		// from passing merely because the managed tree is absent.
+		"client_managed_settings_root": managedSettingsRoot,
+		"client_managed_settings":      filepath.Join(managedSettingsRoot, "ClaudeCode"),
+	} {
+		if _, err := os.ReadDir(path); err == nil {
+			result[label] = "READ_SUCCEEDED"
+		} else if _, err := os.ReadFile(path); err == nil {
+			result[label] = "READ_SUCCEEDED"
+		} else {
+			result[label] = err.Error()
+		}
+	}
+	for label, script := range map[string]string{
+		"tool_user_claude_config":  "cat " + filepath.Join(home, ".claude.json"),
+		"tool_keychain_file":       "cat " + filepath.Join(keychain, "login.keychain-db"),
+		"tool_keychain_client":     "/usr/bin/security list-keychains",
+		"tool_managed_settings":    "ls " + managedSettingsRoot,
+		"tool_managed_settings_db": "cat " + filepath.Join(managedSettingsRoot, "ClaudeCode", "managed-settings.json"),
+	} {
+		command := exec.Command("/bin/sh", "-c", script)
+		command.Stdout = io.Discard
+		var failure strings.Builder
+		command.Stderr = &failure
+		if err := command.Run(); err == nil {
+			result[label] = "LOOKUP_SUCCEEDED"
+		} else {
+			result[label] = err.Error() + ":" + failure.String()
+		}
+	}
+}
+
 func probeIsolation(workDir string) {
 	privateRoot := filepath.Dir(filepath.Dir(workDir))
 	runDir := filepath.Join(filepath.Dir(privateRoot), "run")
@@ -483,6 +652,9 @@ func probeIsolation(workDir string) {
 		} else {
 			result[name] = "ABSENT"
 		}
+	}
+	if os.Getenv("CLAUDE_CODE_TMPDIR") != "" {
+		probeClaudeIsolation(result)
 	}
 	data, _ := json.MarshalIndent(result, "", "  ")
 	mustWrite(filepath.Join(workDir, ".write-uuter-isolation.probe"), string(data)+"\n")

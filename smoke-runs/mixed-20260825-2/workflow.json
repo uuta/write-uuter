@@ -1,0 +1,28 @@
+{
+  "schema_version": 1,
+  "status": "succeeded",
+  "phase": "complete",
+  "current_candidate": 3,
+  "current_revision": "sha256:1f134fc8c2c77dbaf95f81638d75a3e7834880a0a942c32cfb5e5fdf050c9844",
+  "active_role": "",
+  "artifact_paths": {
+    "article": "article.md",
+    "assets": "evidence/assets",
+    "brief": "brief.md",
+    "claim_ledger": "claim-ledger.md",
+    "drafts": "drafts",
+    "firsthand": "evidence/firsthand.md",
+    "invocations": ".control/invocations",
+    "model_policy": "model-policy.json",
+    "outline": "outline.md",
+    "pm_decisions": "pm-decisions",
+    "reviews": "reviews",
+    "sources": "evidence/sources.md",
+    "workflow": "workflow.json"
+  },
+  "model_policy_digest": "sha256:f5a91c462dea2aebe51b2870213c4a193ce0c1576f95ec983b018ae30b16752b",
+  "review_attempt_count": 9,
+  "started_at": "2026-08-24T15:25:23.120527Z",
+  "updated_at": "2026-08-24T15:50:15.463366Z",
+  "completed_at": "2026-08-24T15:50:15.463365Z"
+}

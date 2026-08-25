@@ -9,45 +9,50 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
 )
 
 type tmuxRuntime struct {
-	executable      string
-	runner          string
-	session         string
-	codex           string
-	codexRuntime    []string
-	runDir          string
-	privateRoot     string
-	controlDir      string
-	workspacesDir   string
-	codexHomesDir   string
-	sourceCodexHome string
-	controlStore    *artifactStore
-	fakeLogDir      string
-	detachedPIDDir  string
-	exitDelay       string
-	readyDelay      string
-	readyWaitBudget time.Duration
-	removeAudit     string
-	auditRemoved    bool
-	failRemoveOnce  bool
-	failCleanup     bool
-	testScenario    []byte
-	commandTimeout  time.Duration
-	sequence        int
-	cleaned         bool
-	closed          bool
-	storeClosed     bool
-	invocations     []invocation
+	executable string
+	runner     string
+	session    string
+	// providerClients holds the staged runtime executables for every provider
+	// the validated policy references. Index 0 is the provider client itself.
+	providerClients  map[string][]string
+	runDir           string
+	privateRoot      string
+	controlDir       string
+	workspacesDir    string
+	providerHomesDir string
+	sourceCodexHome  string
+	controlStore     *artifactStore
+	fakeLogDir       string
+	detachedPIDDir   string
+	exitDelay        string
+	readyDelay       string
+	readyWaitBudget  time.Duration
+	removeAudit      string
+	auditRemoved     bool
+	failRemoveOnce   bool
+	failCleanup      bool
+	testScenario     []byte
+	commandTimeout   time.Duration
+	sequence         int
+	cleaned          bool
+	closed           bool
+	storeClosed      bool
+	invocations      []invocation
 }
 
 type invocation struct {
-	ID                string
+	ID string
+	// Role is the policy role key, so the profile that built the argument
+	// vector and the profile recorded in the audit entry are the same value.
 	Role              string
+	Profile           roleProfile
 	Lens              string
 	Candidate         int
 	Revision          string
@@ -58,7 +63,7 @@ type invocation struct {
 	OwnershipRelative string
 	ProfileRelative   string
 	WorkspacePath     string
-	CodexHomePath     string
+	ProviderHomePath  string
 	ClientPath        string
 	Window            string
 	launchAttempted   bool
@@ -67,18 +72,25 @@ type invocation struct {
 	archived          bool
 }
 
-func newTmuxRuntime(tmuxExecutable, codexExecutable string, agentTimeout time.Duration, runDir string) (*tmuxRuntime, error) {
+// newTmuxRuntime stages exactly the provider executables the validated policy
+// references. A provider no role selects is never resolved, so an unused
+// provider CLI does not have to be installed.
+func newTmuxRuntime(tmuxExecutable string, providerExecutables map[string]string, agentTimeout time.Duration, runDir string) (*tmuxRuntime, error) {
 	tmuxPath, err := exec.LookPath(tmuxExecutable)
 	if err != nil {
 		return nil, fmt.Errorf("locate tmux executable: %w", err)
 	}
-	codexPath, err := exec.LookPath(codexExecutable)
-	if err != nil {
-		return nil, fmt.Errorf("locate Codex executable: %w", err)
-	}
-	codexPath, err = filepath.EvalSymlinks(codexPath)
-	if err != nil {
-		return nil, fmt.Errorf("resolve Codex executable: %w", err)
+	resolved := make(map[string]string, len(providerExecutables))
+	for provider, configured := range providerExecutables {
+		path, lookErr := exec.LookPath(configured)
+		if lookErr != nil {
+			return nil, fmt.Errorf("locate %s executable: %w", providerLabel(provider), lookErr)
+		}
+		path, lookErr = filepath.EvalSymlinks(path)
+		if lookErr != nil {
+			return nil, fmt.Errorf("resolve %s executable: %w", providerLabel(provider), lookErr)
+		}
+		resolved[provider] = path
 	}
 	runnerSource, err := os.Executable()
 	if err != nil {
@@ -99,8 +111,8 @@ func newTmuxRuntime(tmuxExecutable, codexExecutable string, agentTimeout time.Du
 	}
 	controlDir := filepath.Join(privateRoot, "control")
 	workspacesDir := filepath.Join(privateRoot, "workspaces")
-	codexHomesDir := filepath.Join(privateRoot, "codex-homes")
-	for _, directory := range []string{controlDir, workspacesDir, codexHomesDir} {
+	providerHomesDir := filepath.Join(privateRoot, "provider-homes")
+	for _, directory := range []string{controlDir, workspacesDir, providerHomesDir} {
 		if err := os.Mkdir(directory, 0o700); err != nil {
 			cleanupRoot()
 			return nil, err
@@ -113,29 +125,41 @@ func newTmuxRuntime(tmuxExecutable, codexExecutable string, agentTimeout time.Du
 	}
 	var testScenario []byte
 	if os.Getenv("WRITE_UUTER_FAKE_LOG_DIR") != "" {
-		testScenario, _ = os.ReadFile(filepath.Join(filepath.Dir(codexPath), "scenario"))
-	}
-	stagedCodexPath := filepath.Join(controlDir, "codex")
-	if err := installPrivateRunner(codexPath, stagedCodexPath); err != nil {
-		cleanupRoot()
-		return nil, fmt.Errorf("stage Codex executable: %w", err)
-	}
-	codexRuntime := []string{stagedCodexPath}
-	codeModeSource := filepath.Join(filepath.Dir(codexPath), "codex-code-mode-host")
-	if info, statErr := os.Lstat(codeModeSource); statErr == nil {
-		if !info.Mode().IsRegular() {
-			cleanupRoot()
-			return nil, fmt.Errorf("Codex code-mode host is not a regular file: %s", codeModeSource)
+		for _, provider := range sortedProviders(resolved) {
+			if data, readErr := os.ReadFile(filepath.Join(filepath.Dir(resolved[provider]), "scenario")); readErr == nil {
+				testScenario = data
+				break
+			}
 		}
-		codeModeTarget := filepath.Join(controlDir, "codex-code-mode-host")
-		if err := installPrivateRunner(codeModeSource, codeModeTarget); err != nil {
+	}
+	providerClients := make(map[string][]string, len(resolved))
+	for _, provider := range sortedProviders(resolved) {
+		sourcePath := resolved[provider]
+		stagedPath := filepath.Join(controlDir, providerClientName(provider))
+		if err := installPrivateRunner(sourcePath, stagedPath); err != nil {
 			cleanupRoot()
-			return nil, fmt.Errorf("stage Codex code-mode host: %w", err)
+			return nil, fmt.Errorf("stage %s executable: %w", providerLabel(provider), err)
 		}
-		codexRuntime = append(codexRuntime, codeModeTarget)
-	} else if !errors.Is(statErr, os.ErrNotExist) {
-		cleanupRoot()
-		return nil, fmt.Errorf("inspect Codex code-mode host: %w", statErr)
+		runtimeExecutables := []string{stagedPath}
+		if provider == providerCodex {
+			codeModeSource := filepath.Join(filepath.Dir(sourcePath), "codex-code-mode-host")
+			if info, statErr := os.Lstat(codeModeSource); statErr == nil {
+				if !info.Mode().IsRegular() {
+					cleanupRoot()
+					return nil, fmt.Errorf("Codex code-mode host is not a regular file: %s", codeModeSource)
+				}
+				codeModeTarget := filepath.Join(controlDir, "codex-code-mode-host")
+				if err := installPrivateRunner(codeModeSource, codeModeTarget); err != nil {
+					cleanupRoot()
+					return nil, fmt.Errorf("stage Codex code-mode host: %w", err)
+				}
+				runtimeExecutables = append(runtimeExecutables, codeModeTarget)
+			} else if !errors.Is(statErr, os.ErrNotExist) {
+				cleanupRoot()
+				return nil, fmt.Errorf("inspect Codex code-mode host: %w", statErr)
+			}
+		}
+		providerClients[provider] = runtimeExecutables
 	}
 	controlStore, err := openArtifactStore(controlDir)
 	if err != nil {
@@ -168,9 +192,9 @@ func newTmuxRuntime(tmuxExecutable, codexExecutable string, agentTimeout time.Du
 		sourceCodexHome = filepath.Join(home, ".codex")
 	}
 	return &tmuxRuntime{
-		executable: tmuxPath, runner: runnerPath, codex: stagedCodexPath, codexRuntime: codexRuntime, runDir: runDir,
+		executable: tmuxPath, runner: runnerPath, providerClients: providerClients, runDir: runDir,
 		privateRoot: privateRoot, controlDir: controlDir, workspacesDir: workspacesDir,
-		codexHomesDir: codexHomesDir, sourceCodexHome: sourceCodexHome,
+		providerHomesDir: providerHomesDir, sourceCodexHome: sourceCodexHome,
 		controlStore: controlStore, commandTimeout: commandTimeout,
 		fakeLogDir: os.Getenv("WRITE_UUTER_FAKE_LOG_DIR"), detachedPIDDir: os.Getenv("WRITE_UUTER_TEST_DETACHED_PID_DIR"),
 		exitDelay: os.Getenv("WRITE_UUTER_TEST_EXIT_MARKER_DELAY"), readyDelay: os.Getenv("WRITE_UUTER_TEST_READY_MARKER_DELAY"),
@@ -219,7 +243,11 @@ func installPrivateRunner(source, target string) error {
 	return nil
 }
 
-func (runtime *tmuxRuntime) prepareInvocation(role, lens string, candidate int, revision, prompt string) (invocation, error) {
+func (runtime *tmuxRuntime) prepareInvocation(role, lens string, candidate int, revision, prompt string, profile roleProfile) (invocation, error) {
+	runtimeSources, staged := runtime.providerClients[profile.Provider]
+	if !staged {
+		return invocation{}, fmt.Errorf("no staged %s client for role %s", providerLabel(profile.Provider), role)
+	}
 	runtime.sequence++
 	id := fmt.Sprintf("%03d-%s", runtime.sequence, strings.ReplaceAll(role, "_", "-"))
 	workspace, err := os.MkdirTemp(runtime.workspacesDir, id+"-*")
@@ -236,39 +264,37 @@ func (runtime *tmuxRuntime) prepareInvocation(role, lens string, candidate int, 
 			return invocation{}, err
 		}
 	}
-	codexHome := filepath.Join(runtime.codexHomesDir, id)
-	if err := os.Mkdir(codexHome, 0o700); err != nil {
+	providerHome := filepath.Join(runtime.providerHomesDir, id)
+	if err := os.Mkdir(providerHome, 0o700); err != nil {
 		_ = os.RemoveAll(workspace)
 		return invocation{}, err
 	}
-	for _, credential := range []string{"auth.json", "installation_id"} {
-		if err := copyOptionalCredential(filepath.Join(runtime.sourceCodexHome, credential), filepath.Join(codexHome, credential)); err != nil {
-			_ = os.RemoveAll(workspace)
-			_ = os.RemoveAll(codexHome)
-			return invocation{}, fmt.Errorf("stage Codex credential %s: %w", credential, err)
+	if profile.Provider == providerCodex {
+		// Codex authenticates from a file-scoped home. Claude Code authenticates
+		// through the OS keychain, so its staged home holds run-owned
+		// configuration only and never receives a copied credential.
+		for _, credential := range []string{"auth.json", "installation_id"} {
+			if err := copyOptionalCredential(filepath.Join(runtime.sourceCodexHome, credential), filepath.Join(providerHome, credential)); err != nil {
+				_ = os.RemoveAll(workspace)
+				_ = os.RemoveAll(providerHome)
+				return invocation{}, fmt.Errorf("stage Codex credential %s: %w", credential, err)
+			}
 		}
 	}
 	clientDir := filepath.Join(runtime.controlDir, "clients", id)
 	if err := os.Mkdir(clientDir, 0o700); err != nil {
 		_ = os.RemoveAll(workspace)
-		_ = os.RemoveAll(codexHome)
-		return invocation{}, fmt.Errorf("create single-use Codex client directory: %w", err)
+		_ = os.RemoveAll(providerHome)
+		return invocation{}, fmt.Errorf("create single-use %s client directory: %w", providerLabel(profile.Provider), err)
 	}
-	clientPath := filepath.Join(clientDir, "codex")
-	if err := installPrivateRunner(runtime.codex, clientPath); err != nil {
-		_ = os.RemoveAll(workspace)
-		_ = os.RemoveAll(codexHome)
-		_ = os.RemoveAll(clientDir)
-		return invocation{}, fmt.Errorf("stage single-use Codex client: %w", err)
-	}
-	runtimeExecutables := []string{clientPath}
-	for _, runtimeSource := range runtime.codexRuntime[1:] {
+	var runtimeExecutables []string
+	for _, runtimeSource := range runtimeSources {
 		runtimeTarget := filepath.Join(clientDir, filepath.Base(runtimeSource))
 		if err := installPrivateRunner(runtimeSource, runtimeTarget); err != nil {
 			_ = os.RemoveAll(workspace)
-			_ = os.RemoveAll(codexHome)
+			_ = os.RemoveAll(providerHome)
 			_ = os.RemoveAll(clientDir)
-			return invocation{}, fmt.Errorf("stage single-use Codex runtime %s: %w", filepath.Base(runtimeSource), err)
+			return invocation{}, fmt.Errorf("stage single-use %s runtime %s: %w", providerLabel(profile.Provider), filepath.Base(runtimeSource), err)
 		}
 		runtimeExecutables = append(runtimeExecutables, runtimeTarget)
 	}
@@ -276,13 +302,13 @@ func (runtime *tmuxRuntime) prepareInvocation(role, lens string, candidate int, 
 		canonical, canonicalErr := filepath.EvalSymlinks(executable)
 		if canonicalErr != nil {
 			_ = os.RemoveAll(workspace)
-			_ = os.RemoveAll(codexHome)
+			_ = os.RemoveAll(providerHome)
 			_ = os.RemoveAll(clientDir)
-			return invocation{}, fmt.Errorf("canonicalize single-use Codex runtime: %w", canonicalErr)
+			return invocation{}, fmt.Errorf("canonicalize single-use %s runtime: %w", providerLabel(profile.Provider), canonicalErr)
 		}
 		runtimeExecutables[index] = canonical
 	}
-	clientPath = runtimeExecutables[0]
+	clientPath := runtimeExecutables[0]
 	keepClient := false
 	defer func() {
 		if !keepClient {
@@ -294,22 +320,25 @@ func (runtime *tmuxRuntime) prepareInvocation(role, lens string, candidate int, 
 		_ = os.RemoveAll(workspace)
 		return invocation{}, err
 	}
-	profile, err := isolationProfile(workspace, codexHome, runtimeExecutables)
+	sandboxProfile, err := isolationProfile(isolationRequest{
+		Provider: profile.Provider, Workspace: workspace, ProviderHome: providerHome,
+		RuntimeExecutables: runtimeExecutables,
+	})
 	if err != nil {
 		_ = os.RemoveAll(workspace)
 		return invocation{}, err
 	}
 	profileRelative := filepath.Join("profiles", id+".sb")
-	if err := runtime.controlStore.writeAtomic(profileRelative, []byte(profile), 0o400); err != nil {
+	if err := runtime.controlStore.writeAtomic(profileRelative, []byte(sandboxProfile), 0o400); err != nil {
 		_ = os.RemoveAll(workspace)
 		return invocation{}, err
 	}
 	inv := invocation{
-		ID: id, Role: role, Lens: lens, Candidate: candidate, Revision: revision,
+		ID: id, Role: role, Profile: profile, Lens: lens, Candidate: candidate, Revision: revision,
 		PromptRelative: promptRelative, ExitRelative: filepath.Join("exits", id+".exit"),
 		LogRelative: filepath.Join("logs", id+".log"), ReadyRelative: filepath.Join("ready", id+".ready"),
 		OwnershipRelative: filepath.Join("ownership", id+".json"),
-		ProfileRelative:   profileRelative, WorkspacePath: workspace, CodexHomePath: codexHome,
+		ProfileRelative:   profileRelative, WorkspacePath: workspace, ProviderHomePath: providerHome,
 		ClientPath: clientPath, Window: id,
 	}
 	runtime.invocations = append(runtime.invocations, inv)
@@ -362,13 +391,15 @@ func (runtime *tmuxRuntime) command(inv invocation) string {
 		readyDelay = ""
 	}
 	arguments := []string{
-		runtime.runner, "__agent", "--codex", inv.ClientPath, "--workspace", inv.WorkspacePath,
+		runtime.runner, "__agent", "--client", inv.ClientPath,
+		"--provider", inv.Profile.Provider, "--model", inv.Profile.Model, "--effort", inv.Profile.ReasoningEffort,
+		"--workspace", inv.WorkspacePath,
 		"--prompt", filepath.Join(runtime.controlDir, inv.PromptRelative), "--log", filepath.Join(runtime.controlDir, inv.LogRelative),
 		"--exit", filepath.Join(runtime.controlDir, inv.ExitRelative), "--ready", filepath.Join(runtime.controlDir, inv.ReadyRelative),
 		"--ownership", filepath.Join(runtime.controlDir, inv.OwnershipRelative),
 		"--profile", filepath.Join(runtime.controlDir, inv.ProfileRelative), "--role", inv.Role, "--lens", inv.Lens,
 		"--candidate", strconv.Itoa(inv.Candidate), "--revision", inv.Revision, "--invocation", inv.ID,
-		"--codex-home", inv.CodexHomePath,
+		"--provider-home", inv.ProviderHomePath,
 		"--exit-marker-delay", runtime.exitDelay, "--ready-marker-delay", readyDelay,
 	}
 	parts := []string{"exec"}
@@ -596,7 +627,9 @@ func (runtime *tmuxRuntime) waitForWorker(ctx context.Context, deadlineUnixNano 
 		}
 		if exited {
 			if status != 0 {
-				return fmt.Errorf("%s worker exited with status %d", worker.Role, status)
+				// No fallback: the declared profile is reported so a blocked run
+				// records exactly which provider, model, and effort failed.
+				return fmt.Errorf("%s worker exited with status %d (%s)", worker.Role, status, worker.Profile.describe())
 			}
 			if err := runtime.waitWindowAbsent(ctx, worker.Window); err != nil {
 				return fmt.Errorf("verify %s worker termination: %w", worker.Role, err)
@@ -747,14 +780,14 @@ func (runtime *tmuxRuntime) closeCredentials() error {
 	deadline := time.Now().Add(runtime.commandTimeout)
 	var lastErr error
 	for {
-		lastErr = os.RemoveAll(runtime.codexHomesDir)
+		lastErr = os.RemoveAll(runtime.providerHomesDir)
 		if lastErr == nil {
-			if _, err := os.Lstat(runtime.codexHomesDir); errors.Is(err, os.ErrNotExist) {
+			if _, err := os.Lstat(runtime.providerHomesDir); errors.Is(err, os.ErrNotExist) {
 				return nil
 			} else if err != nil {
 				lastErr = err
 			} else {
-				lastErr = fmt.Errorf("private Codex credential directory still exists after removal")
+				lastErr = fmt.Errorf("private provider credential directory still exists after removal")
 			}
 		}
 		if time.Now().After(deadline) {
@@ -1117,4 +1150,36 @@ func (runtime *tmuxRuntime) closePrivate() error {
 		}
 		time.Sleep(25 * time.Millisecond)
 	}
+}
+
+// providerLabel names a provider in operator-facing messages.
+func providerLabel(provider string) string {
+	switch provider {
+	case providerClaudeCode:
+		return "Claude Code"
+	case providerCodex:
+		return "Codex"
+	default:
+		return provider
+	}
+}
+
+// providerClientName is the on-disk name of a staged provider client. It is
+// also the argv[0] basename the client observes.
+func providerClientName(provider string) string {
+	switch provider {
+	case providerClaudeCode:
+		return "claude"
+	default:
+		return "codex"
+	}
+}
+
+func sortedProviders(executables map[string]string) []string {
+	providers := make([]string, 0, len(executables))
+	for provider := range executables {
+		providers = append(providers, provider)
+	}
+	sort.Strings(providers)
+	return providers
 }

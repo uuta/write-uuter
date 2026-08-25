@@ -21,7 +21,10 @@ import (
 func RunAgent(arguments []string) (returnErr error) {
 	flags := flag.NewFlagSet("__agent", flag.ContinueOnError)
 	flags.SetOutput(io.Discard)
-	codex := flags.String("codex", "", "")
+	client := flags.String("client", "", "")
+	provider := flags.String("provider", "", "")
+	model := flags.String("model", "", "")
+	effort := flags.String("effort", "", "")
 	workspace := flags.String("workspace", "", "")
 	promptPath := flags.String("prompt", "", "")
 	logPath := flags.String("log", "", "")
@@ -34,21 +37,25 @@ func RunAgent(arguments []string) (returnErr error) {
 	candidate := flags.Int("candidate", 0, "")
 	revision := flags.String("revision", "", "")
 	invocation := flags.String("invocation", "", "")
-	codexHome := flags.String("codex-home", "", "")
+	providerHome := flags.String("provider-home", "", "")
 	exitMarkerDelay := flags.String("exit-marker-delay", "", "")
 	readyMarkerDelay := flags.String("ready-marker-delay", "", "")
 	if err := flags.Parse(arguments); err != nil || flags.NArg() != 0 {
 		return fmt.Errorf("invalid internal agent runner arguments")
 	}
 	for name, value := range map[string]string{
-		"codex": *codex, "workspace": *workspace, "prompt": *promptPath,
+		"client": *client, "provider": *provider, "model": *model, "effort": *effort,
+		"workspace": *workspace, "prompt": *promptPath,
 		"log": *logPath, "exit": *exitPath, "ready": *readyPath,
 		"ownership": *ownershipPath,
-		"profile":   *profilePath, "role": *role, "invocation": *invocation, "codex-home": *codexHome,
+		"profile":   *profilePath, "role": *role, "invocation": *invocation, "provider-home": *providerHome,
 	} {
 		if strings.TrimSpace(value) == "" {
 			return fmt.Errorf("internal agent runner is missing %s", name)
 		}
+	}
+	if *provider != providerCodex && *provider != providerClaudeCode {
+		return fmt.Errorf("internal agent runner received unsupported provider %q", *provider)
 	}
 	status := 1
 	defer func() {
@@ -90,12 +97,8 @@ func RunAgent(arguments []string) (returnErr error) {
 			time.Sleep(delay)
 		}
 	}
-	codexArguments := []string{
-		"--dangerously-bypass-approvals-and-sandbox", "-C", *workspace,
-		"exec", "--ephemeral", "--ignore-user-config", "--ignore-rules",
-		"--skip-git-repo-check", "-",
-	}
-	executable, commandArguments, err := isolatedCommand(*profilePath, *codex, codexArguments)
+	clientArguments := providerArguments(*provider, *workspace, *model, *effort)
+	executable, commandArguments, err := isolatedCommand(*profilePath, *client, clientArguments)
 	if err != nil {
 		return err
 	}
@@ -104,21 +107,21 @@ func RunAgent(arguments []string) (returnErr error) {
 	command.Stdin = prompt
 	command.Stdout = logFile
 	command.Stderr = logFile
-	command.Env = agentEnvironment(*workspace, *codexHome, *role, *lens, *candidate, *revision, *invocation)
+	command.Env = agentEnvironment(*provider, *workspace, *providerHome, *role, *lens, *candidate, *revision, *invocation)
 	configureProcessGroup(command)
 	if err := command.Start(); err != nil {
-		return fmt.Errorf("start Codex: %w", err)
+		return fmt.Errorf("start %s client: %w", *provider, err)
 	}
 	identity, err := tracker.waitFor(command.Process.Pid, time.Now().Add(2*time.Second))
 	if err != nil {
 		_ = command.Process.Kill()
 		_ = command.Wait()
-		return fmt.Errorf("capture Codex process ownership: %w", err)
+		return fmt.Errorf("capture %s process ownership: %w", *provider, err)
 	}
 	if err := publishJSONAtomic(*readyPath, identity); err != nil {
 		_ = command.Process.Kill()
 		_ = command.Wait()
-		return fmt.Errorf("publish live Codex ready marker: %w", err)
+		return fmt.Errorf("publish live %s ready marker: %w", *provider, err)
 	}
 	waitErr := command.Wait()
 	status = 0
@@ -136,17 +139,52 @@ func RunAgent(arguments []string) (returnErr error) {
 	}
 	trackerClosed = true
 	if status != 0 {
-		return fmt.Errorf("Codex exited with status %d", status)
+		return fmt.Errorf("%s exited with status %d", *provider, status)
 	}
 	return nil
 }
 
-func agentEnvironment(workspace, codexHome, role, lens string, candidate int, revision, invocation string) []string {
+// providerArguments builds the exact non-interactive argument vector for one
+// provider. Model and reasoning effort are always explicit: neither CLI is
+// allowed to pick a default, and neither is given a fallback model.
+func providerArguments(provider, workspace, model, effort string) []string {
+	switch provider {
+	case providerClaudeCode:
+		// --safe-mode disables user customizations while leaving Max OAuth
+		// usable; --bare is forbidden because it disables OAuth and keychain
+		// reads and accepts only an API key. --no-session-persistence keeps
+		// conversation state out of the user's Claude directories. The prompt
+		// arrives on stdin.
+		return []string{
+			"--print",
+			"--safe-mode",
+			"--dangerously-skip-permissions",
+			"--no-session-persistence",
+			"--model", model,
+			"--effort", effort,
+		}
+	default:
+		return []string{
+			"--model", model,
+			"--config", "model_reasoning_effort=" + strconv.Quote(effort),
+			"--dangerously-bypass-approvals-and-sandbox", "-C", workspace,
+			"exec", "--ephemeral", "--ignore-user-config", "--ignore-rules",
+			"--skip-git-repo-check", "-",
+		}
+	}
+}
+
+// providerBaseEnvironment is the allowlisted host environment every provider
+// process and the Claude authentication preflight receive. ANTHROPIC_API_KEY
+// and every alternative API, Bedrock, Vertex, Foundry, or provider-selection
+// credential is absent by construction, so an ambient credential can never
+// move a run to API billing or another provider.
+func providerBaseEnvironment() []string {
 	allowed := []string{
 		"HOME", "USER", "LOGNAME", "PATH", "SHELL", "LANG", "LC_ALL", "TERM",
 		"SSL_CERT_FILE", "SSL_CERT_DIR",
 	}
-	environment := make([]string, 0, len(allowed)+6)
+	environment := make([]string, 0, len(allowed)+8)
 	for _, key := range allowed {
 		if value, found := os.LookupEnv(key); found {
 			environment = append(environment, key+"="+value)
@@ -157,8 +195,26 @@ func agentEnvironment(workspace, codexHome, role, lens string, candidate int, re
 			environment = append(environment, key+"="+value)
 		}
 	}
+	return environment
+}
+
+func agentEnvironment(provider, workspace, providerHome, role, lens string, candidate int, revision, invocation string) []string {
+	environment := providerBaseEnvironment()
+	switch provider {
+	case providerClaudeCode:
+		// Claude Code keeps a scratch root at <CLAUDE_CODE_TMPDIR>/claude-<uid>
+		// and defaults it to /tmp, which is a shared user path outside this run.
+		// Point it at the run-owned provider home instead, so nothing this
+		// invocation writes outlives the run. HOME is deliberately left alone:
+		// the Max session is resolved from the user's top-level Claude
+		// configuration file and the login keychain, and the sandbox - not the
+		// environment - is what keeps every other part of the user's Claude
+		// state out of reach.
+		environment = append(environment, "CLAUDE_CODE_TMPDIR="+providerHome)
+	default:
+		environment = append(environment, "CODEX_HOME="+providerHome)
+	}
 	environment = append(environment,
-		"CODEX_HOME="+codexHome,
 		"WRITE_UUTER_WORK_DIR="+workspace,
 		"WRITE_UUTER_ROLE="+role,
 		"WRITE_UUTER_LENS="+lens,
@@ -168,6 +224,17 @@ func agentEnvironment(workspace, codexHome, role, lens string, candidate int, re
 		"TMPDIR="+filepath.Join(workspace, ".tmp"),
 	)
 	return environment
+}
+
+func replaceEnvironmentValue(environment []string, key, value string) []string {
+	prefix := key + "="
+	result := make([]string, 0, len(environment)+1)
+	for _, entry := range environment {
+		if !strings.HasPrefix(entry, prefix) {
+			result = append(result, entry)
+		}
+	}
+	return append(result, prefix+value)
 }
 
 func proxyWithoutUserinfo(value string) bool {

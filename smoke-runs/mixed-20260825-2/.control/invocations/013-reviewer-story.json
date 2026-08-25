@@ -1,0 +1,10 @@
+{
+  "invocation": "013-reviewer-story",
+  "role": "reviewer",
+  "lens": "story",
+  "candidate": 3,
+  "provider": "claude_code",
+  "model": "claude-sonnet-5",
+  "reasoning_effort": "medium",
+  "model_policy_digest": "sha256:f5a91c462dea2aebe51b2870213c4a193ce0c1576f95ec983b018ae30b16752b"
+}

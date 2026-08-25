@@ -1,0 +1,10 @@
+{
+  "invocation": "015-reviewer-copy",
+  "role": "reviewer",
+  "lens": "copy",
+  "candidate": 3,
+  "provider": "codex",
+  "model": "gpt-5.6-luna",
+  "reasoning_effort": "low",
+  "model_policy_digest": "sha256:f5a91c462dea2aebe51b2870213c4a193ce0c1576f95ec983b018ae30b16752b"
+}

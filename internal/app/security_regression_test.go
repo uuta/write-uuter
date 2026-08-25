@@ -47,7 +47,7 @@ func TestProxyWithoutUserinfoAcceptsOnlyCredentialFreeOrigin(t *testing.T) {
 
 func TestAgentEnvironmentOmitsCredentialBearingNoProxy(t *testing.T) {
 	t.Setenv("NO_PROXY", "secret.invalid:token")
-	for _, entry := range agentEnvironment(t.TempDir(), t.TempDir(), "role", "", 1, "rev", "inv") {
+	for _, entry := range agentEnvironment(providerCodex, t.TempDir(), t.TempDir(), "role", "", 1, "rev", "inv") {
 		if strings.HasPrefix(entry, "NO_PROXY=") || strings.Contains(entry, "secret.invalid") {
 			t.Fatalf("credential-bearing NO_PROXY crossed agent boundary: %q", entry)
 		}

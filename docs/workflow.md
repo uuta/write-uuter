@@ -2,16 +2,21 @@
 
 ## Controller sequence
 
-The issue-1 implementation is a single-run, non-resumable controller. It first
-parses every required level-two brief section and verifies that the target does
-not exist. It builds the initial workspace in a temporary sibling directory
+The controller is single-run and non-resumable. It first parses every required
+level-two brief section, binds the prompt bundle, validates `models.json`
+completely, and verifies that the target does not exist. When the validated
+policy uses `claude_code` it then runs the sanitized `claude auth status`
+preflight and continues only for a logged-in `claude.ai` Max session. Every one
+of those checks fails before the run directory is created and before tmux
+starts, so an invalid policy or an unusable Claude session leaves no partial
+state. It builds the initial workspace in a temporary sibling directory
 and commits that directory with an operating-system no-replace rename only
 after initialization succeeds. A concurrently created directory or symlink is
 never replaced.
 
 ```mermaid
 flowchart TD
-    v[Validate brief and new target] --> i[Atomically initialize run]
+    v[Validate brief, model policy, Claude Max session, and new target] --> i[Atomically initialize run]
     i --> pm[Start persistent PM in tmux]
     pm --> r[Researcher]
     r --> s[Story Editor]
@@ -68,7 +73,9 @@ and remains active while Go starts one worker window at a time. Go verifies
 both the PM Codex process identity and this application-level handshake before
 starting any worker, and rechecks PM liveness before accepting worker output.
 Each role runs in a fresh private workspace outside the run
-directory. Go stages only its allowed inputs, waits for a natural successful
+directory, launched through a provider-neutral runner with the explicit
+provider, model, and reasoning effort its policy role declares. The immutable
+invocation record is published before the process is treated as ready. Go stages only its allowed inputs, waits for a natural successful
 exit marker and tmux-window disappearance, validates output without following
 symlinks, and then copies regular files into the run. The marker is published
 by a same-directory temporary-file rename only after the Codex process and its

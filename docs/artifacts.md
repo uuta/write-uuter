@@ -6,6 +6,7 @@
 <run-dir>/
 ├── brief.md
 ├── workflow.json
+├── model-policy.json                 # exact validated policy for this run
 ├── evidence/
 │   ├── sources.md
 │   ├── firsthand.md                 # optional
@@ -24,13 +25,48 @@
 ├── pm-decisions/
 │   └── article-00N.md
 ├── article.md                        # success only
-└── .control/                         # post-cleanup audit copies
+└── .control/
+    ├── invocations/                  # published before each process is ready
+    ├── prompts/                      # post-cleanup audit copies
+    ├── logs/
+    └── exits/
 ```
 
 Earlier candidates, partial lens sequences, reviews, and PM decisions are kept
 when a revision occurs or a run blocks. `article.md` is written only after all
 four final-candidate lenses pass PM routing and is byte-for-byte identical to
 that candidate.
+
+## Model policy and invocation audit
+
+`model-policy.json` is a byte-exact copy of the `models.json` the controller
+validated for this run, and `workflow.json.model_policy_digest` is its SHA-256
+digest. Both are written during initialization, so a blocked run preserves them
+too.
+
+Before any launched process is considered ready, the controller atomically
+publishes one immutable record per invocation under `.control/invocations/`:
+
+```json
+{
+  "invocation": "008-reviewer-copy",
+  "role": "reviewer",
+  "lens": "copy",
+  "candidate": 1,
+  "provider": "codex",
+  "model": "gpt-5.6-luna",
+  "reasoning_effort": "low",
+  "model_policy_digest": "sha256:..."
+}
+```
+
+The recorded values come from the same validated profile that built the process
+arguments, so the artifacts and the launched command cannot disagree. Records
+are retained for successful, blocked, timed-out, and non-zero invocations, and
+never contain authentication values, environment values, prompts, or secrets.
+A run that blocks because a provider, model, or quota is unavailable records the
+effective provider, model, and reasoning effort in `block_reason` and never
+retries with a different profile.
 
 ## Review result
 
@@ -108,7 +144,8 @@ truth. Schema version 1 records:
 - `phase`: current controller phase;
 - `current_candidate` and `current_revision` (`sha256:<hex>`);
 - `active_role`;
-- stable relative `artifact_paths`;
+- stable relative `artifact_paths`, including `model_policy` and `invocations`;
+- `model_policy_digest`: SHA-256 of the validated policy copied into the run;
 - `review_attempt_count` (one per launched reviewer process; it is incremented
   only after tmux has been asked to start that reviewer, so a failure before
   the launch request never claims a reviewer process, while a launch request
