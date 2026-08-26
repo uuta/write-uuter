@@ -519,6 +519,13 @@ func (control *controller) runWriter(candidate int) error {
 		}
 		prompt += contextBlock(relative, data)
 	}
+	styleGuide, err := loadStyleGuide(control.contentRoot)
+	if err != nil {
+		return err
+	}
+	if len(styleGuide) != 0 {
+		prompt += contextBlock("style-guide.md", styleGuide)
+	}
 	previousCandidate := control.workflow.CurrentCandidate
 	previousRevision := control.workflow.CurrentRevision
 	err = control.runWorker("writer", "", candidate, "", "writing", prompt,
@@ -529,6 +536,11 @@ func (control *controller) runWriter(candidate int) error {
 					return readErr
 				}
 				if err := workspace.writeAtomic(filepath.Join("context", relative), data, 0o444); err != nil {
+					return err
+				}
+			}
+			if len(styleGuide) != 0 {
+				if err := workspace.writeAtomic(filepath.Join("context", "style-guide.md"), styleGuide, 0o444); err != nil {
 					return err
 				}
 			}
@@ -723,14 +735,12 @@ func (control *controller) reviewerContext(candidate int, lens string, candidate
 	case "clarity":
 		files["clarity-fields.md"] = []byte(fmt.Sprintf("Audience:\n%s\n\nConstraints:\n%s\n", control.brief.Sections["Audience"], control.brief.Sections["Constraints"]))
 	case "copy":
-		if stylePath, styleErr := findStyleGuide(control.contentRoot); styleErr != nil {
+		styleGuide, styleErr := loadStyleGuide(control.contentRoot)
+		if styleErr != nil {
 			return nil, styleErr
-		} else if stylePath != "" {
-			style, err := loadPrompt(control.contentRoot, stylePath)
-			if err != nil {
-				return nil, err
-			}
-			files["style-guide.md"] = []byte(style)
+		}
+		if len(styleGuide) != 0 {
+			files["style-guide.md"] = styleGuide
 		}
 	}
 	return files, nil
@@ -1590,6 +1600,18 @@ func findStyleGuide(contentRoot string) (string, error) {
 		return relative, nil
 	}
 	return "", nil
+}
+
+func loadStyleGuide(contentRoot string) ([]byte, error) {
+	stylePath, err := findStyleGuide(contentRoot)
+	if err != nil || stylePath == "" {
+		return nil, err
+	}
+	style, err := loadPrompt(contentRoot, stylePath)
+	if err != nil {
+		return nil, err
+	}
+	return []byte(style), nil
 }
 
 // resolveClaudeExecutable resolves and canonicalizes the Claude client before

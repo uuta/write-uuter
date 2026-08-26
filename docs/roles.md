@@ -106,6 +106,8 @@ The Writer owns exactly one assigned `drafts/article-00N.md`. The initial
 assignment uses the brief, evidence, ledger, and outline. A revision also gets
 the prior candidate, its PM decision, and the reached review result/report so
 the validated finding's exact problem and suggested direction are available.
+When present, the repository style guide is also supplied as read-only context
+for both initial candidates and revisions.
 The Writer cannot classify findings, change earlier candidates, or create
 `article.md`.
 
@@ -123,7 +125,7 @@ revision, plus:
 | Evidence | sources, optional firsthand evidence, claim ledger |
 | Story | outline |
 | Clarity | extracted audience and constraints |
-| Copy | optional repository style guide |
+| Copy | optional repository style guide (also supplied to the Writer) |
 
 Each owns `reviews/article-00N/<lens>/result.json` and `report.md`. The report
 must contain one complete five-field entry for every JSON finding in the same

@@ -976,7 +976,7 @@ func TestBlackBoxPMDecisionRequiresPresentNonNullDecisionArrays(t *testing.T) {
 	}
 }
 
-func TestBlackBoxCopyStyleGuideUsesContentRootNotPromptBundle(t *testing.T) {
+func TestBlackBoxWriterAndCopyStyleGuideUseContentRootNotPromptBundle(t *testing.T) {
 	binary, fake, runDir, fixtureDir := prepareScenario(t, "happy")
 	contentRoot := t.TempDir()
 	const styleMarker = "CONTENT_ROOT_COPY_STYLE_MARKER"
@@ -989,25 +989,31 @@ func TestBlackBoxCopyStyleGuideUsesContentRootNotPromptBundle(t *testing.T) {
 		pmLog, _ := os.ReadFile(filepath.Join(runDir, ".control", "logs", "001-pm.log"))
 		t.Fatalf("CLI failed with external prompt bundle and content-root style guide: %v\n%s\nPM log:\n%s", err, output, pmLog)
 	}
+	seenWriter := false
 	seenCopy := false
 	for _, record := range readInvocationRecords(t, fixtureDir) {
-		if !strings.HasPrefix(record.Role, "reviewer_") {
-			continue
-		}
 		hasStyleFile := false
 		for _, relative := range record.WorkspaceFiles {
 			if relative == "context/style-guide.md" {
 				hasStyleFile = true
 			}
 		}
-		if record.Lens == "copy" {
+		if record.Role == "writer" {
+			seenWriter = true
+			if !strings.Contains(record.Prompt, styleMarker) || !hasStyleFile {
+				t.Errorf("Writer did not receive content-root style guide: files=%v", record.WorkspaceFiles)
+			}
+		} else if record.Lens == "copy" {
 			seenCopy = true
 			if !strings.Contains(record.Prompt, styleMarker) || !hasStyleFile {
 				t.Errorf("Copy reviewer did not receive content-root style guide: files=%v", record.WorkspaceFiles)
 			}
 		} else if strings.Contains(record.Prompt, styleMarker) || hasStyleFile {
-			t.Errorf("%s reviewer received Copy-only style guide", record.Lens)
+			t.Errorf("%s/%s received Writer-and-Copy-only style guide", record.Role, record.Lens)
 		}
+	}
+	if !seenWriter {
+		t.Fatal("Writer did not run")
 	}
 	if !seenCopy {
 		t.Fatal("Copy reviewer did not run")

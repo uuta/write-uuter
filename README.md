@@ -169,7 +169,7 @@ Publication target, Constraints, Done when, Source hints
 Relative source-hint paths are resolved from the directory containing the
 input brief. The process working directory is the content root. If present,
 `STYLE.md`, `style-guide.md`, or `docs/style-guide.md` under that root is staged
-only for the Copy reviewer; prompt bundles may live elsewhere.
+only for the Writer and Copy reviewer; prompt bundles may live elsewhere.
 
 ## Runtime model
 
