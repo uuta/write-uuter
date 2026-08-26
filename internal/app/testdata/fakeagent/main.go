@@ -79,6 +79,45 @@ type invocationLog struct {
 // which of --codex/--claude selected it.
 const executableTagMarker = "#write-uuter-fake-tag:"
 
+// secretSentinelPrefix is the marker the harness embeds in every fixture
+// Cloudflare credential value. The fixture scans every surface it can observe
+// for it, so a leak into an environment value, an argument, the prompt, or a
+// staged workspace file is reported instead of merely being unlikely.
+const secretSentinelPrefix = "write-uuter-fixture-secret-"
+
+func probeSecretLeak(prompt, workDir string) string {
+	for _, entry := range os.Environ() {
+		if strings.Contains(entry, secretSentinelPrefix) {
+			name, _, _ := strings.Cut(entry, "=")
+			return "LEAKED:env:" + name
+		}
+	}
+	for index, argument := range os.Args {
+		if strings.Contains(argument, secretSentinelPrefix) {
+			return "LEAKED:arg:" + strconv.Itoa(index)
+		}
+	}
+	if strings.Contains(prompt, secretSentinelPrefix) {
+		return "LEAKED:prompt"
+	}
+	leak := ""
+	_ = filepath.WalkDir(workDir, func(path string, entry fs.DirEntry, err error) error {
+		if err != nil || entry.IsDir() || leak != "" {
+			return nil
+		}
+		data, readErr := os.ReadFile(path)
+		if readErr == nil && strings.Contains(string(data), secretSentinelPrefix) {
+			relative, _ := filepath.Rel(workDir, path)
+			leak = "LEAKED:file:" + filepath.ToSlash(relative)
+		}
+		return nil
+	})
+	if leak != "" {
+		return leak
+	}
+	return "CLEAN"
+}
+
 func executableTag() string {
 	path, err := os.Executable()
 	if err != nil {
@@ -108,6 +147,7 @@ func environmentProbe() map[string]string {
 		"CLAUDE_CODE_USE_BEDROCK", "CLAUDE_CODE_USE_VERTEX", "CLAUDE_CODE_USE_FOUNDRY",
 		"AWS_BEARER_TOKEN_BEDROCK", "AWS_ACCESS_KEY_ID", "GOOGLE_APPLICATION_CREDENTIALS",
 		"OPENAI_API_KEY", "CODEX_API_KEY",
+		"CLOUDFLARE_ACCOUNT_ID", "CLOUDFLARE_API_TOKEN",
 	} {
 		if _, found := os.LookupEnv(name); found {
 			probe[name] = "PRESENT"
@@ -199,6 +239,7 @@ func main() {
 			Environment: environmentProbe(),
 		})
 	}
+	isolation["secret_scan"] = probeSecretLeak(string(prompt), workDir)
 	writeLog()
 	defer writeLog()
 
@@ -242,6 +283,9 @@ func main() {
 			if err := os.Symlink("../empty-assets", filepath.Join(workDir, "evidence", "assets")); err != nil {
 				panic(err)
 			}
+		}
+		if strings.HasPrefix(scenario, "shot_") {
+			writeScreenshotScenario(workDir, scenario)
 		}
 		if scenario == "asset_nested_symlink" {
 			if err := os.MkdirAll(filepath.Join(workDir, "evidence", "assets"), 0o755); err != nil {
@@ -841,4 +885,100 @@ func writeAtomicFile(path, content string) error {
 	}
 	keep = true
 	return nil
+}
+
+// screenshotLedger names explicit claim IDs so a screenshot request can be
+// linked to a real ledger entry. It still distinguishes all five required
+// classifications.
+const screenshotLedger = `# Claim ledger
+
+- Fact (claim-004): the public report page shows the described interface.
+- Fact (claim-005): the public changelog lists the release.
+- Fact (claim-006): the public pricing page lists the tier.
+- Fact (claim-007): the public status page lists the incident.
+- Fact (claim-008): the public docs page lists the endpoint.
+- Firsthand observation: none.
+- Inference: labeled.
+- Opinion: labeled.
+- Unresolved: none.
+`
+
+// writeScreenshotScenario emits one deterministic Researcher screenshot
+// request artifact. Each case is a documented controller rejection or an
+// accepted request shape.
+func writeScreenshotScenario(workDir, scenario string) {
+	mustWrite(filepath.Join(workDir, "claim-ledger.md"), screenshotLedger)
+	target := filepath.Join(workDir, "evidence", "screenshot-requests.json")
+	entry := func(id, url, claim string) string {
+		return fmt.Sprintf(`{"id":%q,"url":%q,"reason":"Shows the state described by %s","supports":[%q]}`, id, url, claim, claim)
+	}
+	switch scenario {
+	case "shot_none":
+		return
+	case "shot_asset_dir":
+		if err := os.MkdirAll(filepath.Join(workDir, "evidence", "assets", "screenshots"), 0o755); err != nil {
+			panic(err)
+		}
+		return
+	case "shot_empty":
+		mustWrite(target, "{\"screenshots\": []}\n")
+	case "shot_one", "shot_selector":
+		selector := ""
+		if scenario == "shot_selector" {
+			selector = `,"selector":"main"`
+		}
+		mustWrite(target, fmt.Sprintf("{\"screenshots\":[%s]}\n",
+			strings.TrimSuffix(entry("shot-001", "https://example.com/report", "claim-004"), "}")+selector+"}"))
+	case "shot_live":
+		// Selected only by the manual authenticated smoke run. No automated
+		// test picks it, so the suite never touches the network.
+		mustWrite(target, entryDocument(entry("shot-001", "https://developers.cloudflare.com/browser-rendering/", "claim-004")))
+	case "shot_multi":
+		mustWrite(target, fmt.Sprintf("{\"screenshots\":[%s,%s,%s]}\n",
+			entry("shot-001", "https://example.com/report", "claim-004"),
+			entry("shot-002", "https://example.com/changelog", "claim-005"),
+			entry("shot-003", "https://example.com/pricing", "claim-006")))
+	case "shot_five", "shot_six":
+		entries := []string{
+			entry("shot-001", "https://example.com/report", "claim-004"),
+			entry("shot-002", "https://example.com/changelog", "claim-005"),
+			entry("shot-003", "https://example.com/pricing", "claim-006"),
+			entry("shot-004", "https://example.com/status", "claim-007"),
+			entry("shot-005", "https://example.com/docs", "claim-008"),
+		}
+		if scenario == "shot_six" {
+			entries = append(entries, entry("shot-006", "https://example.com/extra", "claim-004"))
+		}
+		mustWrite(target, fmt.Sprintf("{\"screenshots\":[%s]}\n", strings.Join(entries, ",")))
+	case "shot_bad_json":
+		mustWrite(target, "{\"screenshots\":[{\"id\":\"shot-001\"\n")
+	case "shot_missing_field":
+		mustWrite(target, "{\"shots\":[]}\n")
+	case "shot_null_list":
+		mustWrite(target, "{\"screenshots\":null}\n")
+	case "shot_dup_key":
+		mustWrite(target, `{"screenshots":[{"id":"shot-001","id":"shot-002","url":"https://example.com/report","reason":"r","supports":["claim-004"]}]}`+"\n")
+	case "shot_dup_id":
+		mustWrite(target, fmt.Sprintf("{\"screenshots\":[%s,%s]}\n",
+			entry("shot-001", "https://example.com/report", "claim-004"),
+			entry("shot-001", "https://example.com/changelog", "claim-005")))
+	case "shot_case_id":
+		mustWrite(target, fmt.Sprintf("{\"screenshots\":[%s,%s]}\n",
+			entry("shot-001", "https://example.com/report", "claim-004"),
+			entry("SHOT-001", "https://example.com/changelog", "claim-005")))
+	case "shot_unknown_field":
+		mustWrite(target, `{"screenshots":[{"id":"shot-001","url":"https://example.com/report","reason":"r","supports":["claim-004"],"crop":true}]}`+"\n")
+	case "shot_unknown_claim":
+		mustWrite(target, entryDocument(entry("shot-001", "https://example.com/report", "claim-999")))
+	case "shot_unsafe_url":
+		mustWrite(target, `{"screenshots":[{"id":"shot-001","url":"https://admin:secret@localhost/status","reason":"r","supports":["claim-004"]}]}`+"\n")
+	case "shot_unsafe_id":
+		mustWrite(target, `{"screenshots":[{"id":"../escape","url":"https://example.com/report","reason":"r","supports":["claim-004"]}]}`+"\n")
+	default:
+		panic("unknown screenshot scenario " + scenario)
+	}
+}
+
+func entryDocument(entry string) string {
+	return fmt.Sprintf("{\"screenshots\":[%s]}\n", entry)
 }

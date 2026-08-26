@@ -145,6 +145,62 @@ invocations pass an explicit `--model` and
 provider-selection credential is removed from provider child environments, so
 an ambient credential cannot move a run to API billing or another provider.
 
+## Screenshot evidence
+
+The Researcher may ask for public page screenshots by writing the optional
+`evidence/screenshot-requests.json` documented in
+[artifacts](docs/artifacts.md). The Go controller - never an agent - performs
+each capture with the Cloudflare Browser Rendering Chromium quick action:
+
+```text
+POST https://api.cloudflare.com/client/v4/accounts/{account_id}/browser-rendering/screenshot
+```
+
+It reads `CLOUDFLARE_ACCOUNT_ID` and `CLOUDFLARE_API_TOKEN` from its own
+environment only. The token needs Browser Rendering Write/Edit permission.
+Neither value reaches a prompt, a durable artifact, a log, an error, a process
+argument, or an agent environment, and both are stripped from the tmux client
+environment as well. Transport errors that embed the request URL are scrubbed
+before they are reported.
+
+| Contract | Value |
+| --- | --- |
+| Requests per run | 0-5, captured sequentially in artifact order |
+| Viewport | fixed 1280x800, `fullPage: false` |
+| Output | PNG only, at most 10 MiB, dimensions 1-20000 and at most 40M pixels |
+| Per-request timeout | 60 s, no automatic retry |
+| Page targeting | optional CSS `selector` only |
+
+Cookies, HTTP authentication, extra headers, injected scripts or styles,
+clicks, waits, and multi-step navigation are never sent, and there is no
+fallback to a local Chromium, Playwright, or an MCP server. Successful captures
+become read-only `evidence/assets/screenshots/<id>.png` files plus a generated
+`evidence/screenshots.json` recording the request ID, path, requested URL and
+selector, timestamp, supported claims and rationale, engine, media type, byte
+size, dimensions, and SHA-256 digest. The Writer and the Evidence Reviewer
+receive both as read-only context.
+
+A run whose Researcher requested no screenshot behaves exactly as before and
+needs no Cloudflare variables. Otherwise a missing credential, an invalid
+request, an unsafe URL, an unknown claim ID, a failed or non-2xx response, a
+timeout, or an invalid or oversized image blocks the run before drafting, with
+a credential-free `block_reason`. A non-2xx response is reported by status code
+and the documented Cloudflare error codes only; the response body is never
+copied into an artifact, because filtering arbitrary upstream text cannot prove
+it carries no secret.
+
+The declared image size is bounded before the PNG is decoded, so a small body
+that declares an enormous canvas is rejected rather than allocated.
+
+For local development the base URL and per-request timeout can be redirected
+with `WRITE_UUTER_TEST_BROWSER_RENDERING_BASE_URL` and
+`WRITE_UUTER_TEST_SCREENSHOT_TIMEOUT`. Both are controller-only test seams:
+they never become sandbox rules or agent environment variables. The base URL
+override is accepted only for a loopback origin (`127.0.0.1`, `::1`, or
+`localhost`) with no userinfo, query, or fragment, and is validated before the
+credentials are read; any other value fails the run, because the redirected
+request would carry the API token.
+
 Claude invocations keep the real `HOME`, because the Max session is resolved
 from the user's account record; only `CLAUDE_CODE_TMPDIR` is redirected, to a
 run-owned scratch directory that is removed with the run. The OS sandbox, not

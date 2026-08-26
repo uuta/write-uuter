@@ -1,0 +1,26 @@
+{
+  "schema_version": 1,
+  "engine": "cloudflare-chromium",
+  "viewport": {
+    "width": 1280,
+    "height": 800
+  },
+  "screenshots": [
+    {
+      "id": "shot-001",
+      "path": "evidence/assets/screenshots/shot-001.png",
+      "requested_url": "https://developers.cloudflare.com/browser-rendering/",
+      "captured_at": "2026-08-26T11:08:47.341152Z",
+      "supports": [
+        "claim-004"
+      ],
+      "reason": "Shows the state described by claim-004",
+      "engine": "cloudflare-chromium",
+      "media_type": "image/png",
+      "byte_size": 126650,
+      "width": 1280,
+      "height": 800,
+      "sha256": "sha256:4e80f1e995b610953b420f6dc410818b0a604c8fa4682af60169088d8360bddc"
+    }
+  ]
+}

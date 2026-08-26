@@ -95,6 +95,12 @@ The Researcher owns `evidence/sources.md`, optional
 `evidence/firsthand.md`/assets, and `claim-ledger.md`. The ledger distinguishes
 fact, firsthand observation, inference, opinion, and unresolved claims.
 
+It may also write the optional `evidence/screenshot-requests.json` described in
+[artifacts](artifacts.md). The Researcher never receives Cloudflare
+credentials, never calls a capture API, and never writes
+`evidence/assets/screenshots/`; the controller performs, validates, and records
+every capture.
+
 ## Story Editor
 
 The Story Editor owns `outline.md`. Every planned section records purpose,
@@ -107,7 +113,11 @@ assignment uses the brief, evidence, ledger, and outline. A revision also gets
 the prior candidate, its PM decision, and the reached review result/report so
 the validated finding's exact problem and suggested direction are available.
 When present, the repository style guide is also supplied as read-only context
-for both initial candidates and revisions.
+for both initial candidates and revisions. When the controller captured
+screenshots, `evidence/screenshots.json` and the validated images are supplied
+read-only as well, so prose can refer to available evidence without inventing
+assets. Final placement, cropping, captioning, and alt text are out of the
+Writer's scope.
 The Writer cannot classify findings, change earlier candidates, or create
 `article.md`.
 
@@ -122,10 +132,15 @@ revision, plus:
 
 | Lens | Additional context |
 | --- | --- |
-| Evidence | sources, optional firsthand evidence, claim ledger |
+| Evidence | sources, optional firsthand evidence, claim ledger, optional screenshot manifest and images |
 | Story | outline |
 | Clarity | extracted audience and constraints |
 | Copy | optional repository style guide (also supplied to the Writer) |
+
+The Evidence Reviewer is the only lens that receives screenshot image bytes. A
+valid PNG is not evidence on its own: the reviewer must reject a blank, loading,
+skeleton, error, or unrelated image, and any screenshot the candidate describes
+inaccurately.
 
 Each owns `reviews/article-00N/<lens>/result.json` and `report.md`. The report
 must contain one complete five-field entry for every JSON finding in the same

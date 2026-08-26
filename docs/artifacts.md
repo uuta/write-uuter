@@ -10,7 +10,11 @@
 ├── evidence/
 │   ├── sources.md
 │   ├── firsthand.md                 # optional
+│   ├── screenshot-requests.json     # optional, Researcher-owned
+│   ├── screenshots.json             # generated, only with captured images
 │   └── assets/
+│       └── screenshots/
+│           └── shot-001.png         # controller-owned captured evidence
 ├── claim-ledger.md
 ├── outline.md
 ├── drafts/
@@ -67,6 +71,74 @@ never contain authentication values, environment values, prompts, or secrets.
 A run that blocks because a provider, model, or quota is unavailable records the
 effective provider, model, and reasoning effort in `block_reason` and never
 retries with a different profile.
+
+## Screenshot evidence
+
+`evidence/screenshot-requests.json` is optional and Researcher-owned. It holds
+zero to five entries; `id`, `url`, `reason`, and at least one `supports` claim
+ID are required, and `selector` is the only optional page-targeting field:
+
+```json
+{
+  "screenshots": [
+    {
+      "id": "shot-001",
+      "url": "https://example.com/report",
+      "reason": "Shows the interface described by claim-004",
+      "supports": ["claim-004"],
+      "selector": "main"
+    }
+  ]
+}
+```
+
+IDs are filename-safe (letters, digits, `-`, `_`) and unique when compared
+case-insensitively, because they become file names and the run may live on a
+case-insensitive file system. Unknown fields
+and duplicate object keys are rejected recursively. Every `supports` entry must
+appear in `claim-ledger.md` as a whole token, so `claim-004` never matches
+`claim-0041`. A URL must be a public `https://` page with a DNS hostname on the
+default port; embedded credentials, `localhost`, `.local`, `.internal`, `.lan`,
+`.home`, `.intranet`, `.corp`, IP literals, single-label hosts, non-default
+ports, and non-HTTPS schemes are rejected. An explicitly empty `screenshots`
+list means the same as no artifact: no capture, and no Cloudflare credential.
+The Researcher may not create `evidence/assets/screenshots/`; that directory is
+controller-owned. The artifact is copied into the run only when it asks for at
+least one capture, and it is stored read-only (`0444`).
+
+`evidence/screenshots.json` is controller-generated. No agent writes it:
+
+```json
+{
+  "schema_version": 1,
+  "engine": "cloudflare-chromium",
+  "viewport": { "width": 1280, "height": 800 },
+  "screenshots": [
+    {
+      "id": "shot-001",
+      "path": "evidence/assets/screenshots/shot-001.png",
+      "requested_url": "https://example.com/report",
+      "selector": "main",
+      "captured_at": "2026-08-26T10:00:00Z",
+      "supports": ["claim-004"],
+      "reason": "Shows the interface described by claim-004",
+      "engine": "cloudflare-chromium",
+      "media_type": "image/png",
+      "byte_size": 51234,
+      "width": 1280,
+      "height": 800,
+      "sha256": "sha256:..."
+    }
+  ]
+}
+```
+
+The manifest and the images are read-only (`0444`) immutable inputs to later
+roles. Their bytes are exactly the accepted capture response, so the visual
+pass planned in #3 can consume them in place without copying or rewriting them.
+Binding those bytes into the revision of a candidate that references them is
+owned by that visual pass; this slice fixes and digests the bytes so the
+binding can be added without re-acquiring anything.
 
 ## Review result
 
@@ -144,7 +216,9 @@ truth. Schema version 1 records:
 - `phase`: current controller phase;
 - `current_candidate` and `current_revision` (`sha256:<hex>`);
 - `active_role`;
-- stable relative `artifact_paths`, including `model_policy` and `invocations`;
+- stable relative `artifact_paths`, including `model_policy`, `invocations`,
+  `screenshot_requests`, `screenshots`, and `screenshot_assets` (the last three
+  name stable paths that exist only when a capture happened);
 - `model_policy_digest`: SHA-256 of the validated policy copied into the run;
 - `review_attempt_count` (one per launched reviewer process; it is incremented
   only after tmux has been asked to start that reviewer, so a failure before
