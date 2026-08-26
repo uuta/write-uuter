@@ -19,7 +19,8 @@ flowchart TD
     v[Validate brief, model policy, Claude Max session, and new target] --> i[Atomically initialize run]
     i --> pm[Start persistent PM in tmux]
     pm --> r[Researcher]
-    r --> s[Story Editor]
+    r --> shot[Controller captures requested screenshots]
+    shot --> s[Story Editor]
     s --> w[Writer creates candidate 001]
     w --> e[Fresh Evidence Reviewer]
     e --> pe[PM classifies findings]
@@ -55,6 +56,12 @@ only when those files exist and pass validation:
 
 - research has non-empty sources and a claim ledger naming Fact, Firsthand
   observation, Inference, Opinion, and Unresolved;
+- an optional screenshot request holds at most five entries with unique
+  filename-safe IDs, a public HTTPS DNS URL, a reason, and claim IDs the ledger
+  names; unknown fields and duplicate keys are rejected recursively;
+- every captured image is a complete PNG of at most 10 MiB whose declared
+  dimensions are inside the accepted range and pixel budget before it is
+  decoded, and match its decoded ones afterwards;
 - the outline records Purpose, Supporting evidence, and Reader takeaway;
 - each candidate is non-empty and has no TODO placeholder;
 - reviewer JSON has an allowed status, exact lens and SHA-256 revision, unique
@@ -65,6 +72,41 @@ only when those files exist and pass validation:
 
 A reviewer changing its candidate is an artifact-contract failure. Stale lens
 or revision metadata is rejected rather than retried into a passing state.
+
+## Screenshot capture
+
+Between the Researcher and every later role the controller captures each
+requested screenshot itself. No agent receives `CLOUDFLARE_ACCOUNT_ID` or
+`CLOUDFLARE_API_TOKEN`, constructs the authenticated call, or sees a raw API
+response; the tmux client environment is stripped of both variables as well, so
+nothing the controller starts inherits them. Captures use the Cloudflare
+Chromium quick action `POST
+/accounts/{account_id}/browser-rendering/screenshot`, run strictly one at a
+time in artifact order, use a fixed 1280x800 viewport and PNG output, and have
+a 60-second per-request timeout with no automatic retry. Cookies, HTTP
+authentication, extra headers, injected scripts or styles, clicks, waits, and
+multi-step navigation are never sent; an optional CSS selector is the only
+page-targeting option.
+
+A run whose Researcher requested nothing skips this step entirely and needs no
+Cloudflare credential. Otherwise a missing credential, an invalid request, an
+unsafe URL, an unknown claim ID, a non-2xx response, a wrong media type, a
+timeout, an invalid or oversized image, or a persistence failure blocks the run
+before the Story Editor and the Writer start. Diagnostics name the requested
+page, the request ID, and the failure; the account ID and API token are scrubbed
+from every message, including transport errors that embed the request URL. A
+non-2xx response contributes only its status code and the documented Cloudflare
+error codes: the response body itself never reaches an artifact.
+Because a capture starts no process, the blocked path leaves nothing extra to
+clean up and follows the ordinary terminal cleanup contract.
+
+Successful captures are stored as read-only `evidence/assets/screenshots/
+<id>.png` alongside a controller-generated `evidence/screenshots.json`. Writer
+and Evidence Reviewer receive both as read-only context; the manifest joins the
+prompt and the images are staged as files, never inlined into an assignment.
+Only the Evidence lens receives the image bytes, and it must reject a
+screenshot that does not visibly contain the information its `supports` claim
+names - a valid PNG proves nothing about content.
 
 ## Lifecycle and terminal states
 

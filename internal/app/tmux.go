@@ -997,6 +997,7 @@ func (runtime *tmuxRuntime) runClient(arguments ...string) ([]byte, bool, error)
 	ctx, cancel := context.WithTimeout(context.Background(), runtime.commandTimeout)
 	defer cancel()
 	command := exec.CommandContext(ctx, runtime.executable, arguments...)
+	command.Env = controllerCommandEnvironment()
 	var combined bytes.Buffer
 	command.Stdout = &combined
 	command.Stderr = &combined

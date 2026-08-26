@@ -70,6 +70,20 @@ func (store *artifactStore) mkdirAll(name string, mode os.FileMode) error {
 	return nil
 }
 
+// lstat resolves one artifact name without following a final symlink. A
+// missing parent component is reported as os.ErrNotExist, so an absent tree is
+// indistinguishable from an absent entry.
+func (store *artifactStore) lstat(name string) (os.FileInfo, error) {
+	name, err := cleanLocalPath(name)
+	if err != nil {
+		return nil, err
+	}
+	if err := store.validateParents(name); err != nil {
+		return nil, err
+	}
+	return store.root.Lstat(name)
+}
+
 func (store *artifactStore) readRegular(name string) ([]byte, error) {
 	name, err := cleanLocalPath(name)
 	if err != nil {

@@ -15,3 +15,44 @@ The brief is available at `context/brief.md`. Local source hints resolved by
 the controller are staged under `context/source-hints/`; use those copies
 rather than reading the source repository. URL hints may be researched over
 the network. Write outputs relative to this isolated workspace.
+
+## Optional screenshot evidence
+
+When a public web page records a state that supports a specific claim, you may
+request a screenshot by writing `evidence/screenshot-requests.json` in this
+workspace. The artifact is optional: omit it entirely when no page screenshot
+would be useful. Never request an image only to decorate the article.
+
+```json
+{
+  "screenshots": [
+    {
+      "id": "shot-001",
+      "url": "https://example.com/report",
+      "reason": "Shows the interface described by claim-004",
+      "supports": ["claim-004"],
+      "selector": "main"
+    }
+  ]
+}
+```
+
+The controller rejects anything outside this shape, so a malformed request
+blocks the run instead of being ignored:
+
+- zero to five entries;
+- `id`, `url`, `reason`, and at least one `supports` claim ID are required;
+- `selector` is optional and is the only page-targeting option available;
+- IDs are unique and filename-safe (letters, digits, `-`, `_`);
+- unknown fields and duplicate JSON keys are rejected recursively;
+- every `supports` entry must be a claim ID that `claim-ledger.md` names;
+- `url` must be a public `https://` page with a DNS hostname on the default
+  port. Embedded credentials, `localhost`, `.local` and similar private
+  suffixes, IP literals, and non-HTTPS schemes are rejected.
+
+You never receive Cloudflare credentials and never call a capture API. The Go
+controller performs each capture, validates the image, and generates
+`evidence/screenshots.json`. Do not write `evidence/assets/screenshots/`: that
+directory is controller-owned. Logins, cookies, clicks, waits, scrolling,
+multi-step navigation, and page scripts are not available in this slice, so do
+not request a page that only renders behind them.

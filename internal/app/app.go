@@ -54,6 +54,13 @@ type controller struct {
 	pm                  invocation
 	reachedLenses       map[int][]string
 	decisionBindings    map[int]map[string]decisionBinding
+	// screenshotRequests is the validated Researcher request list. It is empty
+	// for every run that asked for no screenshot, and that run never reads a
+	// Cloudflare credential.
+	screenshotRequests []ScreenshotRequest
+	// screenshotManifest is the exact controller-generated manifest handed to
+	// later roles as read-only context.
+	screenshotManifest []byte
 	// publishedArticle is the exact file identity this controller committed as
 	// article.md. Rollback removes only that identity.
 	publishedArticle os.FileInfo
@@ -201,7 +208,9 @@ func (control *controller) initialize(briefData []byte) error {
 			"brief": "brief.md", "workflow": "workflow.json", "sources": "evidence/sources.md",
 			"model_policy": modelPolicyArtifact, "invocations": ".control/invocations",
 			"firsthand": "evidence/firsthand.md", "assets": "evidence/assets", "claim_ledger": "claim-ledger.md",
-			"outline": "outline.md", "drafts": "drafts", "reviews": "reviews",
+			"screenshot_requests": screenshotRequestArtifact, "screenshots": screenshotManifestArtifact,
+			"screenshot_assets": screenshotAssetDir,
+			"outline":           "outline.md", "drafts": "drafts", "reviews": "reviews",
 			"pm_decisions": "pm-decisions", "article": "article.md",
 		},
 		StartedAt: now, UpdatedAt: now,
@@ -304,6 +313,11 @@ func (control *controller) execute() error {
 	if err := control.runResearcher(); err != nil {
 		return control.block(err.Error())
 	}
+	// Screenshot capture happens here, before any later role starts, so a
+	// failed or unsafe request blocks the run rather than reaching the Writer.
+	if err := control.captureScreenshots(); err != nil {
+		return control.block(err.Error())
+	}
 	if err := control.runStoryEditor(); err != nil {
 		return control.block(err.Error())
 	}
@@ -367,7 +381,7 @@ func (control *controller) runResearcher() error {
 					return fmt.Errorf("claim-ledger.md does not distinguish %s", classification)
 				}
 			}
-			return nil
+			return control.validateScreenshotRequests(workspace, ledger)
 		},
 		func(workspace *artifactStore) error {
 			if _, err := control.store.copyRegularFrom(workspace, "evidence/sources.md", "evidence/sources.md", 0o644); err != nil {
@@ -383,16 +397,56 @@ func (control *controller) runResearcher() error {
 			} else if !errors.Is(err, os.ErrNotExist) {
 				return err
 			}
+			if len(control.screenshotRequests) != 0 {
+				if _, err := control.store.copyRegularFrom(workspace, screenshotRequestArtifact, screenshotRequestArtifact, 0o444); err != nil {
+					return err
+				}
+			}
 			return control.store.copyTreeFrom(workspace, "evidence/assets", "evidence/assets")
 		},
 		func() error {
+			control.screenshotRequests = nil
 			return errors.Join(
 				control.store.remove("evidence/sources.md"),
 				control.store.remove("claim-ledger.md"),
 				control.store.remove("evidence/firsthand.md"),
+				control.store.remove(screenshotRequestArtifact),
 				control.store.removeAll("evidence/assets"),
 			)
 		})
+}
+
+// validateScreenshotRequests reads and fully validates the optional Researcher
+// screenshot artifact against the same claim ledger the Researcher produced.
+// The controller-owned asset directory stays controller-owned: a Researcher
+// that writes there fails the contract instead of forging provenance.
+func (control *controller) validateScreenshotRequests(workspace *artifactStore, ledger []byte) error {
+	if _, err := workspace.lstat(screenshotAssetDir); err == nil {
+		return fmt.Errorf("%s is controller-owned and must not be written by the Researcher", screenshotAssetDir)
+	}
+	// Any other probe outcome - absent, or an unsafe parent component - is left
+	// to the existing asset-tree validation performed when the tree is copied,
+	// so this check never restates or masks that contract.
+	data, err := workspace.readRegular(screenshotRequestArtifact)
+	if errors.Is(err, os.ErrNotExist) {
+		control.screenshotRequests = nil
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	requests, err := parseScreenshotRequests(data, ledger)
+	if err != nil {
+		return err
+	}
+	if len(requests) == 0 {
+		// An explicit empty list is valid and means the same thing as no
+		// artifact: no capture, and no Cloudflare credential is required.
+		control.screenshotRequests = nil
+		return nil
+	}
+	control.screenshotRequests = requests
+	return nil
 }
 
 func (control *controller) localSourceHints() (map[string][]byte, error) {
@@ -526,6 +580,15 @@ func (control *controller) runWriter(candidate int) error {
 	if len(styleGuide) != 0 {
 		prompt += contextBlock("style-guide.md", styleGuide)
 	}
+	// Validated screenshot evidence is read-only Writer context. The manifest
+	// is text and joins the prompt; the images are staged as files only.
+	screenshotManifest, screenshotImages, err := control.screenshotContext()
+	if err != nil {
+		return err
+	}
+	if len(screenshotManifest) != 0 {
+		prompt += contextBlock(screenshotManifestArtifact, screenshotManifest)
+	}
 	previousCandidate := control.workflow.CurrentCandidate
 	previousRevision := control.workflow.CurrentRevision
 	err = control.runWorker("writer", "", candidate, "", "writing", prompt,
@@ -541,6 +604,14 @@ func (control *controller) runWriter(candidate int) error {
 			}
 			if len(styleGuide) != 0 {
 				if err := workspace.writeAtomic(filepath.Join("context", "style-guide.md"), styleGuide, 0o444); err != nil {
+					return err
+				}
+			}
+			if len(screenshotManifest) != 0 {
+				if err := workspace.writeAtomic(filepath.Join("context", screenshotManifestArtifact), screenshotManifest, 0o444); err != nil {
+					return err
+				}
+				if err := stageScreenshotImages(workspace, screenshotImages); err != nil {
 					return err
 				}
 			}
@@ -636,6 +707,12 @@ func (control *controller) runReviewer(candidate int, lens string) (ReviewResult
 	if err != nil {
 		return result, err
 	}
+	var screenshotImages map[string][]byte
+	if lens == "evidence" {
+		if _, screenshotImages, err = control.screenshotContext(); err != nil {
+			return result, err
+		}
+	}
 	contextNames := make([]string, 0, len(contextFiles))
 	for label := range contextFiles {
 		contextNames = append(contextNames, label)
@@ -655,6 +732,11 @@ func (control *controller) runReviewer(candidate int, lens string) (ReviewResult
 				if err := workspace.writeAtomic(target, data, 0o444); err != nil {
 					return err
 				}
+			}
+			// Only the Evidence lens inspects the screenshots themselves, so
+			// only it receives the image bytes, read-only and unchanged.
+			if lens == "evidence" && len(control.screenshotManifest) != 0 {
+				return stageScreenshotImages(workspace, screenshotImages)
 			}
 			return nil
 		},
@@ -722,6 +804,9 @@ func (control *controller) reviewerContext(candidate int, lens string, candidate
 			if err := read(relative); err != nil {
 				return nil, err
 			}
+		}
+		if len(control.screenshotManifest) != 0 {
+			files[screenshotManifestArtifact] = control.screenshotManifest
 		}
 		if data, err := control.store.readRegular("evidence/firsthand.md"); err == nil {
 			files["evidence/firsthand.md"] = data

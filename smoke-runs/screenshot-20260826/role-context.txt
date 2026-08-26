@@ -1,0 +1,27 @@
+Per-invocation screenshot context and credential probes
+(recorded by the deterministic fixture agent inside its own workspace)
+
+role=pm lens=
+  CLOUDFLARE_ACCOUNT_ID=ABSENT CLOUDFLARE_API_TOKEN=ABSENT
+  screenshot context: none
+role=researcher lens=
+  CLOUDFLARE_ACCOUNT_ID=ABSENT CLOUDFLARE_API_TOKEN=ABSENT
+  screenshot context: ['evidence/screenshot-requests.json']
+role=story_editor lens=
+  CLOUDFLARE_ACCOUNT_ID=ABSENT CLOUDFLARE_API_TOKEN=ABSENT
+  screenshot context: none
+role=writer lens=
+  CLOUDFLARE_ACCOUNT_ID=ABSENT CLOUDFLARE_API_TOKEN=ABSENT
+  screenshot context: ['context/evidence/assets/screenshots/', 'context/evidence/assets/screenshots/shot-001.png', 'context/evidence/screenshots.json']
+role=reviewer_evidence lens=evidence
+  CLOUDFLARE_ACCOUNT_ID=ABSENT CLOUDFLARE_API_TOKEN=ABSENT
+  screenshot context: ['context/evidence/assets/screenshots/', 'context/evidence/assets/screenshots/shot-001.png', 'context/evidence/screenshots.json']
+role=reviewer_story lens=story
+  CLOUDFLARE_ACCOUNT_ID=ABSENT CLOUDFLARE_API_TOKEN=ABSENT
+  screenshot context: none
+role=reviewer_clarity lens=clarity
+  CLOUDFLARE_ACCOUNT_ID=ABSENT CLOUDFLARE_API_TOKEN=ABSENT
+  screenshot context: none
+role=reviewer_copy lens=copy
+  CLOUDFLARE_ACCOUNT_ID=ABSENT CLOUDFLARE_API_TOKEN=ABSENT
+  screenshot context: none

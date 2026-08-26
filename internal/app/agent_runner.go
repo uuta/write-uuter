@@ -198,6 +198,24 @@ func providerBaseEnvironment() []string {
 	return environment
 }
 
+// controllerCommandEnvironment is the environment for a controller-owned
+// helper process such as the tmux client. Screenshot credentials are removed:
+// the controller performs the authenticated capture in-process, so no child -
+// not even the tmux server that later starts the agent runner - has a reason
+// to inherit them.
+func controllerCommandEnvironment() []string {
+	environment := os.Environ()
+	result := make([]string, 0, len(environment))
+	for _, entry := range environment {
+		name, _, found := strings.Cut(entry, "=")
+		if found && (name == screenshotAccountEnv || name == screenshotTokenEnv) {
+			continue
+		}
+		result = append(result, entry)
+	}
+	return result
+}
+
 func agentEnvironment(provider, workspace, providerHome, role, lens string, candidate int, revision, invocation string) []string {
 	environment := providerBaseEnvironment()
 	switch provider {
