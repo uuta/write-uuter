@@ -12,9 +12,13 @@ article or make PM review decisions. Finish only after the owned files are
 complete on disk.
 
 The brief is available at `context/brief.md`. Local source hints resolved by
-the controller are staged under `context/source-hints/`; use those copies
-rather than reading the source repository. URL hints may be researched over
-the network. Write outputs relative to this isolated workspace.
+the controller are staged under `context/source-hints/`, and the assignment
+lists every staged path exactly. Read those paths directly with your file-read
+capability and use those copies rather than reading the source repository. A
+shell, glob, or directory listing is neither needed nor available here, so a
+denied shell command is the expected boundary and not a reason to leave a
+claim unresolved. URL hints may be researched over the network. Write outputs
+relative to this isolated workspace.
 
 ## Optional screenshot evidence
 

@@ -21,8 +21,10 @@ flowchart TD
     pm --> r[Researcher]
     r --> shot[Controller captures requested screenshots]
     shot --> s[Story Editor]
-    s --> w[Writer creates candidate 001]
-    w --> e[Fresh Evidence Reviewer]
+    s --> w[Writer prose draft 001]
+    w --> ve[Fresh Visual Editor plans visuals]
+    ve --> asm[Writer assembly creates candidate 001]
+    asm --> e[Fresh Evidence Reviewer]
     e --> pe[PM classifies findings]
     pe -->|no must-fix| sr[Fresh Story Reviewer]
     sr --> ps[PM classifies findings]
@@ -35,8 +37,8 @@ flowchart TD
     ps -->|validated must-fix| b
     pc -->|validated must-fix| b
     pp -->|validated must-fix| b
-    b -->|yes| rw[Writer creates next candidate]
-    rw --> e
+    b -->|yes| rw[Writer prose draft for the next candidate]
+    rw --> ve
     b -->|no| blocked[Block and preserve artifacts]
     pe -->|human judgment| blocked
     ps -->|human judgment| blocked
@@ -47,6 +49,73 @@ flowchart TD
 Review lenses are never parallel. A must-fix stops the remaining lenses for
 that candidate and the replacement restarts at Evidence. Optional and invalid
 findings do not consume a candidate. A human-judgment decision blocks.
+
+Every candidate takes the same three-pass sequence before review: a Writer
+prose draft, a fresh sequential Visual Editor, then a fresh Writer assembly
+invocation. The visual pass is not a candidate of its own, so the
+three-candidate review budget is unchanged.
+
+## Visual and reading-flow pass
+
+The Writer owns article Markdown throughout. The prose draft
+(`drafts/article-00N-prose.md`) is explanation only: a Mermaid block or an
+inline image reference in it fails the artifact contract.
+
+The Visual Editor then runs as a fresh sequential worker with the same
+concurrency limit as any other role. It receives the brief, the outline, the
+claim ledger, the current prose draft, and the controller-staged visual inputs,
+and it writes `plan.md` and `plan.json` in its own workspace. It never writes a
+durable candidate, never decides whether a reviewer finding is valid, and never
+edits the run directory. Supported plan actions are exactly `mermaid`,
+`existing_local_asset`, `restructure_text`, and `none`; there is no image quota
+and no per-heading rule, and a plan whose entries are all `none` or
+`restructure_text` is a valid outcome.
+
+The Writer assembly invocation then applies the validated plan: it reproduces
+each planned Mermaid diagram inside a fenced ```mermaid block, references each
+planned image exactly once as `![alt](path)` at the staged relative path, and
+shortens the explanation the visual now carries. Only that assembled candidate
+(`drafts/article-00N.md`) enters review and may become `article.md`.
+
+That inline form is the one Go checks, because it is the one a validated plan
+can bind to a staged asset and to the candidate revision: every image written
+that way must be a target the plan placed, at the exact staged relative path.
+The scan does not stop at text it does not recognize, so a later unplanned
+inline image is still found.
+
+write-uuter is not a CommonMark or raw-HTML parser and does not try to
+recognize every syntax that might render an image somewhere downstream. Other
+Markdown image syntaxes and raw HTML are prohibited editorial output: the
+Writer and Visual Editor contracts forbid them, and the Copy lens owns Markdown
+mechanics and relative-path review. Rendering and publishing integrations stay
+out of scope.
+
+Go validates the assembly rather than trusting it: every planned diagram and
+image must be present, no unplanned image reference may exist, and a candidate
+that placed a diagram or an image must contain fewer explanation characters
+than its prose draft, so a visual replaces prose instead of duplicating it.
+Explanation characters are every non-whitespace character outside fenced blocks
+and outside `![alt](path)` references, and the assembly assignment states the
+exact count the article must stay below.
+
+## Visual inputs
+
+`brief.md` may carry an optional level-two `## Visual inputs` section. Each
+non-empty list item names one file relative to the content root. An absent or
+empty section is valid and means the run stages no local image; Mermaid and
+text restructuring stay available either way.
+
+Supported formats are PNG, JPEG, and WebP. Before the run directory is created
+and before any agent starts, the controller checks the extension and the file
+signature, enforces a 10 MiB per-file limit, and holds a private copy of the
+bytes, so replacing the source file afterwards cannot change what an agent or a
+candidate sees. Absolute paths, parent traversal, symlinked files, symlinked
+path components, directories, special files, missing files, and unsupported
+formats are all rejected at that point, leaving no run directory behind. Every
+screenshot the controller captured joins the same pool, so evidence images are
+placeable without being re-acquired. The pool is recorded in the generated
+`visual-inputs.json`, which is written only when the run actually staged
+something.
 
 ## Artifact gates
 
@@ -63,15 +132,50 @@ only when those files exist and pass validation:
   dimensions are inside the accepted range and pixel budget before it is
   decoded, and match its decoded ones afterwards;
 - the outline records Purpose, Supporting evidence, and Reader takeaway;
-- each candidate is non-empty and has no TODO placeholder;
+- each prose draft is non-empty, has no TODO placeholder, and contains no
+  Mermaid block and no inline image reference;
+- each visual plan uses the supported schema version, the exact source prose
+  revision, at least one evaluated opportunity, unique plain opportunity IDs, a
+  supported action, a non-empty location and rationale, a fenceless diagram for
+  `mermaid`, a controller-staged asset placed at most once plus meaningful alt
+  text for `existing_local_asset`, and nothing extra for `restructure_text` or
+  `none`; unknown fields and duplicate keys are rejected recursively, and
+  `plan.md` must record every opportunity ID and its action;
+- each assembled candidate is non-empty, has no TODO placeholder, contains
+  every planned diagram and image, writes every supported inline image
+  reference at a target the plan placed, and holds fewer explanation characters
+  than its prose draft whenever it placed one;
+- each candidate manifest and every regular file it names still hash to the
+  recorded bytes before review begins and again at publication;
 - reviewer JSON has an allowed status, exact lens and SHA-256 revision, unique
   complete findings, plus a report with the same finding fields;
 - PM decisions cover every finding, use allowed classifications, match the
   current revision, explain every invalid classification, and preserve the
   exact accepted classifications and routing outcome of every earlier lens.
 
-A reviewer changing its candidate is an artifact-contract failure. Stale lens
-or revision metadata is rejected rather than retried into a passing state.
+A reviewer changing its candidate or a staged visual asset is an
+artifact-contract failure. Stale lens or revision metadata is rejected rather
+than retried into a passing state.
+
+## Candidate revision
+
+The reviewed revision covers the assembled Markdown and the bytes of every
+referenced local asset, so a visual cannot be replaced after its candidate
+passed review. A candidate that references no local asset keeps the SHA-256 of
+its Markdown, which leaves runs without visual assets unchanged. Any referenced
+asset makes the revision the SHA-256 of this canonical block, with assets in
+lexicographic path order:
+
+```text
+write-uuter/candidate-revision/v1
+article sha256:<article digest>
+assets <count>
+<asset path> sha256:<asset digest>
+```
+
+The controller recomputes that revision from the durable bytes before each
+lens starts, at the publication boundary, and again after the succeeded state
+is persisted.
 
 ## Screenshot capture
 
@@ -104,6 +208,8 @@ Successful captures are stored as read-only `evidence/assets/screenshots/
 <id>.png` alongside a controller-generated `evidence/screenshots.json`. Writer
 and Evidence Reviewer receive both as read-only context; the manifest joins the
 prompt and the images are staged as files, never inlined into an assignment.
+The Visual Editor receives the manifest and the same images through the visual
+input pool, so a capture can be placed where it helps.
 Only the Evidence lens receives the image bytes, and it must reject a
 screenshot that does not visibly contain the information its `supports` claim
 names - a valid PNG proves nothing about content.

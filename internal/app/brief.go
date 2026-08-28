@@ -17,6 +17,20 @@ var briefHeadings = []string{
 	"Constraints",
 	"Done when",
 	"Source hints",
+	visualBriefSection,
+}
+
+// optionalBriefSections may be present but empty. `Source hints` has always
+// been allowed to be empty; `Visual inputs` may also be omitted entirely, so
+// every brief written before the visual pass existed stays valid.
+var optionalBriefSections = map[string]bool{
+	"Source hints":     true,
+	visualBriefSection: true,
+}
+
+// absentBriefSections may be omitted from a brief altogether.
+var absentBriefSections = map[string]bool{
+	visualBriefSection: true,
 }
 
 type briefDocument struct {
@@ -68,8 +82,10 @@ func parseBrief(raw string) (briefDocument, error) {
 	for _, heading := range briefHeadings {
 		value, found := sections[heading]
 		if !found {
-			problems = append(problems, fmt.Sprintf("missing section: %s", heading))
-		} else if heading != "Source hints" && strings.TrimSpace(value) == "" {
+			if !absentBriefSections[heading] {
+				problems = append(problems, fmt.Sprintf("missing section: %s", heading))
+			}
+		} else if !optionalBriefSections[heading] && strings.TrimSpace(value) == "" {
 			problems = append(problems, fmt.Sprintf("empty section: %s", heading))
 		}
 	}

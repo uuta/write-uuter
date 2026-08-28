@@ -22,6 +22,7 @@ var policyRoles = []string{
 	"pm",
 	"researcher",
 	"story_editor",
+	"visual_editor",
 	"writer",
 	"reviewer_evidence",
 	"reviewer_story",

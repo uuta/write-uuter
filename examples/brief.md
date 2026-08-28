@@ -43,3 +43,7 @@ budget, and inspectable terminal artifacts.
 - ../docs/workflow.md
 - ../docs/roles.md
 - ../docs/artifacts.md
+
+## Visual inputs
+
+- examples/assets/run-artifacts.png
