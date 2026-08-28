@@ -67,6 +67,7 @@ var checkedInPolicy = map[string]auditRecord{
 	"pm":                {Provider: "codex", Model: "gpt-5.6-sol", ReasoningEffort: "high"},
 	"researcher":        {Provider: "claude_code", Model: "claude-sonnet-5", ReasoningEffort: "medium"},
 	"story_editor":      {Provider: "claude_code", Model: "claude-opus-5", ReasoningEffort: "high"},
+	"visual_editor":     {Provider: "claude_code", Model: "claude-opus-5", ReasoningEffort: "high"},
 	"writer":            {Provider: "claude_code", Model: "claude-opus-5", ReasoningEffort: "medium"},
 	"reviewer_evidence": {Provider: "codex", Model: "gpt-5.6-sol", ReasoningEffort: "medium"},
 	"reviewer_story":    {Provider: "claude_code", Model: "claude-sonnet-5", ReasoningEffort: "medium"},
@@ -192,6 +193,62 @@ func TestBlackBoxHappyPathAndReviewerIsolation(t *testing.T) {
 	assertProcessesGone(t, records)
 }
 
+// The Researcher must be able to read every staged local source hint without a
+// shell, a glob, or a directory listing, all of which the sandbox denies. The
+// recorded invocation prompt therefore has to name each staged path exactly,
+// in a deterministic order, rather than only naming the directory.
+func TestBlackBoxResearcherPromptNamesEveryStagedSourceHint(t *testing.T) {
+	run := executeScenario(t, "happy")
+	if run.err != nil {
+		t.Fatalf("CLI failed: %v\n%s", run.err, run.output)
+	}
+	var researcher *invocationRecord
+	for _, record := range readInvocationRecords(t, run.fixtureDir) {
+		if record.Role == "researcher" {
+			copied := record
+			researcher = &copied
+		}
+	}
+	if researcher == nil {
+		t.Fatal("no researcher invocation was recorded")
+	}
+	// examples/brief.md lists four local source hints, so the fixture covers
+	// both the multi-hint case and ordering.
+	want := []string{
+		"context/source-hints/001-README.md",
+		"context/source-hints/002-workflow.md",
+		"context/source-hints/003-roles.md",
+		"context/source-hints/004-artifacts.md",
+	}
+	staged := make(map[string]bool, len(researcher.WorkspaceFiles))
+	for _, name := range researcher.WorkspaceFiles {
+		staged[name] = true
+	}
+	previous := -1
+	for _, relative := range want {
+		index := strings.Index(researcher.Prompt, relative)
+		if index < 0 {
+			t.Errorf("researcher prompt does not name staged source hint %s", relative)
+			continue
+		}
+		if index <= previous {
+			t.Errorf("researcher prompt lists %s out of sorted order", relative)
+		}
+		previous = index
+		if !staged[relative] {
+			t.Errorf("researcher prompt names %s but the workspace does not stage it: %v", relative, researcher.WorkspaceFiles)
+		}
+	}
+	// Naming the directory alone is what forced discovery through a denied
+	// shell, so the assignment must also tell the role no listing is needed.
+	for _, required := range []string{"complete and exact", "no\ndirectory listing, glob, or shell command is needed"} {
+		if !strings.Contains(researcher.Prompt, required) {
+			t.Errorf("researcher prompt is missing %q", required)
+		}
+	}
+	assertProcessesGone(t, readInvocationRecords(t, run.fixtureDir))
+}
+
 func TestBlackBoxMustFixCreatesRevisionAndRestartsEvidence(t *testing.T) {
 	run := executeScenario(t, "mustfix_once")
 	if run.err != nil {
@@ -222,9 +279,12 @@ func TestBlackBoxMustFixCreatesRevisionAndRestartsEvidence(t *testing.T) {
 	records := readInvocationRecords(t, run.fixtureDir)
 	foundRevisionContext := false
 	for _, record := range records {
+		// A candidate now runs two Writer invocations: the prose draft carries
+		// the validated finding, and the later assembly pass applies the plan.
 		if record.Role == "writer" && record.Candidate == 2 {
-			foundRevisionContext = strings.Contains(record.Prompt, "The opening needs a verified detail.") &&
-				strings.Contains(record.Prompt, "Add the supported workflow detail.")
+			foundRevisionContext = foundRevisionContext ||
+				(strings.Contains(record.Prompt, "The opening needs a verified detail.") &&
+					strings.Contains(record.Prompt, "Add the supported workflow detail."))
 		}
 	}
 	if !foundRevisionContext {
@@ -554,7 +614,7 @@ func TestBlackBoxFinalCandidateMutationCannotPublish(t *testing.T) {
 		t.Fatal("CLI unexpectedly published mutated candidate")
 	}
 	state := readWorkflow(t, runDir)
-	if state.Status != "blocked" || !strings.Contains(state.BlockReason, "changed before publication") {
+	if state.Status != "blocked" || !strings.Contains(state.BlockReason, "changed outside the controller") {
 		t.Fatalf("unexpected workflow: %+v", state)
 	}
 	assertNoArticle(t, runDir)
@@ -921,7 +981,7 @@ func TestBlackBoxReviewerHostFilesystemReadsAreDenied(t *testing.T) {
 		pmLog, _ := os.ReadFile(filepath.Join(runDir, ".control", "logs", "001-pm.log"))
 		t.Fatalf("CLI failed: %v\n%s\nPM log:\n%s", runErr, output, pmLog)
 	}
-	probePath := filepath.Join(protectedAncestor, "isolation-008-reviewer-copy.probe")
+	probePath := filepath.Join(protectedAncestor, "isolation-010-reviewer-copy.probe")
 	data, err := os.ReadFile(probePath)
 	if err != nil {
 		t.Fatal(err)
@@ -983,6 +1043,13 @@ func TestBlackBoxWriterAndCopyStyleGuideUseContentRootNotPromptBundle(t *testing
 	if err := os.WriteFile(filepath.Join(contentRoot, "STYLE.md"), []byte("# Style\n\n"+styleMarker+"\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
+	// Visual inputs are content-root relative too, so the example brief's
+	// staged image has to exist below this content root as well.
+	if err := os.MkdirAll(filepath.Join(contentRoot, "examples", "assets"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	copyFile(t, filepath.Join(repositoryRoot(t), "examples", "assets", "run-artifacts.png"),
+		filepath.Join(contentRoot, "examples", "assets", "run-artifacts.png"), 0o644)
 	command := newRunCommand(t, binary, fake, runDir, "5s", filepath.Join(repositoryRoot(t), "examples", "brief.md"))
 	command.Dir = contentRoot
 	if output, err := command.CombinedOutput(); err != nil {
@@ -1935,7 +2002,10 @@ func assertReviewerFilesystem(t *testing.T, record invocationRecord) {
 			}
 		}
 	}
-	for _, common := range []string{"context/", "context/brief.md", "context/article.md", "context/revision.txt", "result.json", "report.md"} {
+	// Every lens reviews the same visual decisions, so the plan and the
+	// manifest that binds it to this revision are common inputs.
+	for _, common := range []string{"context/", "context/brief.md", "context/article.md", "context/revision.txt",
+		"context/visual-plan.md", "context/visual-manifest.json", "result.json", "report.md"} {
 		if !files[common] {
 			t.Errorf("%s reviewer workspace missing %s: %v", record.Lens, common, record.WorkspaceFiles)
 		}
@@ -1943,7 +2013,7 @@ func assertReviewerFilesystem(t *testing.T, record invocationRecord) {
 	want := map[string][]string{
 		"evidence": {"context/evidence/", "context/evidence/sources.md", "context/claim-ledger.md"},
 		"story":    {"context/outline.md"},
-		"clarity":  {"context/clarity-fields.md"},
+		"clarity":  {"context/clarity-fields.md", "context/prose.md"},
 		"copy":     {},
 	}
 	for _, expected := range want[record.Lens] {

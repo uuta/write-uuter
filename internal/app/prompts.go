@@ -23,6 +23,7 @@ var requiredPromptFiles = []string{
 	"pm-runtime.md",
 	"researcher.md",
 	"story-editor.md",
+	"visual-editor.md",
 	"writer.md",
 	"reviewer-output.md",
 	"reviewer-evidence.md",

@@ -313,13 +313,17 @@ func TestBlackBoxScreenshotCaptureProducesManifestDigestAndRoleContext(t *testin
 	}
 
 	records := readInvocationRecords(t, run.fixtureDir)
-	sawWriter, sawEvidence := false, false
+	sawWriter, sawEvidence, sawVisualEditor := false, false, false
 	for _, invocation := range records {
 		files := workspaceFileSet(invocation)
 		hasManifest := files["context/evidence/screenshots.json"]
 		hasImage := files["context/evidence/assets/screenshots/shot-001.png"]
+		// The assembly Writer invocation places the already validated plan and
+		// is identified by the plan staged into its workspace, so only the
+		// prose draft invocation owns the screenshot context.
+		assembly := files["context/visual-plan.json"]
 		switch {
-		case invocation.Role == "writer":
+		case invocation.Role == "writer" && !assembly:
 			sawWriter = true
 			if !hasManifest || !hasImage {
 				t.Errorf("writer did not receive read-only screenshot context: %v", invocation.WorkspaceFiles)
@@ -332,6 +336,17 @@ func TestBlackBoxScreenshotCaptureProducesManifestDigestAndRoleContext(t *testin
 			if !hasManifest || !hasImage {
 				t.Errorf("evidence reviewer did not receive read-only screenshot context: %v", invocation.WorkspaceFiles)
 			}
+		case invocation.Role == "visual_editor":
+			sawVisualEditor = true
+			// A captured screenshot is a placeable visual input, so the
+			// Visual Editor gets the manifest describing what each capture
+			// supports. It reads the image from the staged input pool.
+			if !hasManifest {
+				t.Errorf("visual editor did not receive the screenshot manifest: %v", invocation.WorkspaceFiles)
+			}
+			if !files["context/visual-inputs/shot-001.png"] {
+				t.Errorf("visual editor did not receive the staged screenshot input: %v", invocation.WorkspaceFiles)
+			}
 		default:
 			if hasManifest || hasImage {
 				t.Errorf("%s/%s received screenshot context it does not own", invocation.Role, invocation.Lens)
@@ -341,8 +356,8 @@ func TestBlackBoxScreenshotCaptureProducesManifestDigestAndRoleContext(t *testin
 			t.Errorf("%s prompt embedded raw image bytes", invocation.Role)
 		}
 	}
-	if !sawWriter || !sawEvidence {
-		t.Fatalf("writer/evidence invocations were not observed")
+	if !sawWriter || !sawEvidence || !sawVisualEditor {
+		t.Fatalf("writer/evidence/visual editor invocations were not observed")
 	}
 	assertNoCredentialLeak(t, run, records)
 	assertProcessesGone(t, records)

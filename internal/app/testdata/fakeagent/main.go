@@ -300,13 +300,19 @@ func main() {
 		}
 	case "story_editor":
 		mustWrite(filepath.Join(workDir, "outline.md"), "# Outline\n\n## Workflow STORY_ONLY_MARKER\n\n- Purpose: Explain the workflow.\n- Supporting evidence: Repository docs.\n- Reader takeaway: Durable gates make runs inspectable.\n")
+	case "visual_editor":
+		runVisualEditor(workDir, scenario, candidate, revision)
 	case "writer":
-		target := filepath.Join(workDir, "drafts", fmt.Sprintf("article-%03d.md", candidate))
+		if fileExists(filepath.Join(workDir, "context", "visual-plan.json")) {
+			runWriterAssembly(workDir, scenario, candidate)
+			return
+		}
+		target := filepath.Join(workDir, "drafts", fmt.Sprintf("article-%03d-prose.md", candidate))
 		if scenario == "partial" {
 			mustWrite(target, "# Partial but initially valid\n")
 			time.Sleep(300 * time.Millisecond)
 		}
-		mustWrite(target, fmt.Sprintf("# An inspectable editorial workflow\n\nCANDIDATE_ONLY_MARKER COMPLETE_MARKER version %03d turns a brief into durable evidence, an outline, a draft, and sequential reviews.\n", candidate))
+		mustWrite(target, proseDraft(candidate))
 	default:
 		if strings.HasPrefix(role, "reviewer_") {
 			runReviewer(workDir, scenario, candidate, lens, revision)
@@ -410,6 +416,210 @@ func runReviewer(workDir, scenario string, candidate int, lens, revision string)
 		return
 	}
 	mustJSON(filepath.Join(workDir, "result.json"), result)
+}
+
+// proseDraft is the deterministic Writer prose draft. Its second section is a
+// deliberately long sequential explanation, so a visual pass that replaces it
+// with a diagram or an image measurably shortens the article.
+func proseDraft(candidate int) string {
+	return fmt.Sprintf("# An inspectable editorial workflow\n\n"+
+		"CANDIDATE_ONLY_MARKER COMPLETE_MARKER version %03d turns a brief into durable evidence, an outline, a draft, and sequential reviews.\n\n"+
+		"## How the stages connect\n\n%s\n", candidate, longExplanation)
+}
+
+const longExplanation = "The controller first reads the brief and validates every required section. " +
+	"It then starts one persistent PM process for the whole run. " +
+	"The Researcher runs next and records the sources and the claim ledger. " +
+	"The Story Editor then builds an outline from that evidence. " +
+	"The Writer then drafts one candidate from that outline. " +
+	"The Evidence reviewer then inspects the candidate. " +
+	"The Story reviewer then inspects the same candidate. " +
+	"The Clarity reviewer then inspects it again. " +
+	"The Copy reviewer inspects it last. " +
+	"The controller then copies the accepted candidate to the published article."
+
+const fakeMermaid = "flowchart TD\n" +
+	"    brief[Brief] --> research[Researcher]\n" +
+	"    research --> outline[Story Editor]\n" +
+	"    outline --> draft[Writer prose draft]\n" +
+	"    draft --> visual[Visual Editor]\n" +
+	"    visual --> assembly[Writer assembly]\n" +
+	"    assembly --> review[Four review lenses]\n" +
+	"    review --> article[article.md]"
+
+type visualOpportunity struct {
+	ID        string `json:"id"`
+	Location  string `json:"location"`
+	Action    string `json:"action"`
+	Rationale string `json:"rationale"`
+	Mermaid   string `json:"mermaid,omitempty"`
+	AssetID   string `json:"asset_id,omitempty"`
+	AltText   string `json:"alt_text,omitempty"`
+}
+
+type visualPlan struct {
+	SchemaVersion  int                 `json:"schema_version"`
+	SourceRevision string              `json:"source_revision"`
+	Opportunities  []visualOpportunity `json:"opportunities"`
+}
+
+type visualInputManifest struct {
+	SchemaVersion int `json:"schema_version"`
+	Inputs        []struct {
+		ID         string `json:"id"`
+		Origin     string `json:"origin"`
+		Source     string `json:"source"`
+		MediaType  string `json:"media_type"`
+		ByteSize   int    `json:"byte_size"`
+		SHA256     string `json:"sha256"`
+		StagedPath string `json:"staged_path"`
+	} `json:"inputs"`
+}
+
+// stagedVisualInputID returns the first controller-staged visual input ID, so
+// the existing-asset scenario places a real staged asset rather than a guess.
+func stagedVisualInputID(workDir string) string {
+	var manifest visualInputManifest
+	if readJSON(filepath.Join(workDir, "context", "visual-inputs.json"), &manifest) != nil || len(manifest.Inputs) == 0 {
+		return ""
+	}
+	return manifest.Inputs[0].ID
+}
+
+// runVisualEditor emits one deterministic plan. Each case is either an
+// accepted plan shape or a documented controller rejection.
+func runVisualEditor(workDir, scenario string, candidate int, revision string) {
+	if scenario == "visual_timeout" {
+		time.Sleep(time.Minute)
+	}
+	if scenario == "visual_edit_prose" {
+		mustWrite(filepath.Join(workDir, "context", "drafts", fmt.Sprintf("article-%03d-prose.md", candidate)), "mutated\n")
+	}
+	plan := visualPlan{SchemaVersion: 1, SourceRevision: revision}
+	switch scenario {
+	case "visual_none":
+		plan.Opportunities = []visualOpportunity{
+			{ID: "vis-001", Location: "section: How the stages connect", Action: "restructure_text",
+				Rationale: "The sequence reads as one long sentence run and is clearer split into short steps."},
+			{ID: "vis-002", Location: "section: opening", Action: "none",
+				Rationale: "The opening is two sentences long and a visual would add nothing."},
+		}
+	case "visual_asset", "visual_wrong_asset_target":
+		assetID := stagedVisualInputID(workDir)
+		plan.Opportunities = []visualOpportunity{
+			{ID: "vis-001", Location: "section: How the stages connect", Action: "existing_local_asset",
+				AssetID: assetID, AltText: "Staged diagram of the controller stages in order",
+				Rationale: "A staged diagram already shows the stage order the paragraph spells out."},
+			{ID: "vis-002", Location: "section: opening", Action: "none",
+				Rationale: "The opening is two sentences long and a visual would add nothing."},
+		}
+	case "visual_unstaged":
+		plan.Opportunities = []visualOpportunity{
+			{ID: "vis-001", Location: "section: How the stages connect", Action: "existing_local_asset",
+				AssetID: "vin-999", AltText: "An asset the controller never staged",
+				Rationale: "Placing an unstaged asset must be rejected."},
+		}
+	case "visual_bad_action":
+		plan.Opportunities = []visualOpportunity{
+			{ID: "vis-001", Location: "section: How the stages connect", Action: "screenshot",
+				Rationale: "An action outside the supported vocabulary must be rejected."},
+		}
+	default:
+		plan.Opportunities = []visualOpportunity{
+			{ID: "vis-001", Location: "section: How the stages connect", Action: "mermaid", Mermaid: fakeMermaid,
+				Rationale: "The paragraph describes one sequence of stages, which a flow diagram shows at a glance."},
+			{ID: "vis-002", Location: "section: opening", Action: "none",
+				Rationale: "The opening is two sentences long and a visual would add nothing."},
+		}
+	}
+	if scenario == "visual_stale" {
+		plan.SourceRevision = "sha256:stale"
+	}
+	var report strings.Builder
+	report.WriteString("# Visual and reading-flow plan\n\n")
+	for _, opportunity := range plan.Opportunities {
+		fmt.Fprintf(&report, "- ID: %s\n- Location: %s\n- Action: %s\n- Rationale: %s\n\n",
+			opportunity.ID, opportunity.Location, opportunity.Action, opportunity.Rationale)
+	}
+	if scenario != "visual_missing_report" {
+		mustWrite(filepath.Join(workDir, "plan.md"), report.String())
+	}
+	if scenario == "visual_bad_json" {
+		mustWrite(filepath.Join(workDir, "plan.json"), "{\"schema_version\": 1, \"opportunities\": [\n")
+		return
+	}
+	mustJSON(filepath.Join(workDir, "plan.json"), plan)
+}
+
+// runWriterAssembly applies whatever plan the controller validated, so the
+// fixture exercises the real assembly contract instead of a fixed article.
+func runWriterAssembly(workDir, scenario string, candidate int) {
+	var plan visualPlan
+	if err := readJSON(filepath.Join(workDir, "context", "visual-plan.json"), &plan); err != nil {
+		panic(err)
+	}
+	var article strings.Builder
+	fmt.Fprintf(&article, "# An inspectable editorial workflow\n\n"+
+		"CANDIDATE_ONLY_MARKER COMPLETE_MARKER version %03d turns a brief into durable evidence, an outline, a draft, and sequential reviews.\n\n"+
+		"## How the stages connect\n\n", candidate)
+	restructured := false
+	for _, opportunity := range plan.Opportunities {
+		switch opportunity.Action {
+		case "mermaid":
+			article.WriteString("```mermaid\n" + opportunity.Mermaid + "\n```\n\n")
+		case "existing_local_asset":
+			path := stagedAssetPath(workDir, candidate, opportunity.AssetID)
+			if scenario == "visual_wrong_asset_target" {
+				// A relative path that is not the staged one the plan bound.
+				path = "assets/" + filepath.Base(path)
+			}
+			fmt.Fprintf(&article, "![%s](%s)\n\n", opportunity.AltText, path)
+		case "restructure_text":
+			restructured = true
+		}
+	}
+	switch {
+	case scenario == "visual_duplicate_prose":
+		article.WriteString(longExplanation + "\n")
+	case restructured:
+		article.WriteString("- The controller validates the brief and starts the PM.\n" +
+			"- Research, outline, prose draft, visual plan, and assembly follow in order.\n" +
+			"- Four sequential lenses review the assembled candidate before publication.\n")
+	default:
+		article.WriteString("Each stage hands the next a validated artifact.\n")
+	}
+	article.WriteString(scenarioArticleExtras(scenario))
+	mustWrite(filepath.Join(workDir, "drafts", fmt.Sprintf("article-%03d.md", candidate)), article.String())
+}
+
+// unplannedInlineImage is the one assembly defect Go checks for: an image
+// written in the supported inline form whose target the validated plan never
+// placed. It follows the planned visual, so it also proves the scan does not
+// stop at the placement it already matched.
+const unplannedInlineImage = "\n![An unplanned diagram](visuals/article-999/assets/unplanned.png)\n"
+
+// scenarioArticleExtras appends the Markdown one assembly scenario adds.
+func scenarioArticleExtras(scenario string) string {
+	if scenario == "visual_unplanned_inline" {
+		return unplannedInlineImage
+	}
+	return ""
+}
+
+// stagedAssetPath resolves the exact relative path the controller staged for
+// one planned asset, extension included.
+func stagedAssetPath(workDir string, candidate int, assetID string) string {
+	directory := fmt.Sprintf("visuals/article-%03d/assets", candidate)
+	entries, err := os.ReadDir(filepath.Join(workDir, "context", directory))
+	if err != nil {
+		return directory + "/" + assetID
+	}
+	for _, entry := range entries {
+		if strings.TrimSuffix(entry.Name(), filepath.Ext(entry.Name())) == assetID {
+			return directory + "/" + entry.Name()
+		}
+	}
+	return directory + "/" + assetID
 }
 
 func standardFinding(id string) finding {

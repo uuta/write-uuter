@@ -195,7 +195,9 @@ func TestBlackBoxEveryRoleLaunchesItsDeclaredProfile(t *testing.T) {
 	if run.err != nil {
 		t.Fatalf("CLI failed: %v\n%s", run.err, run.output)
 	}
-	records := assertPolicyBinding(t, run.runDir, run.fixtureDir, 8)
+	// PM, researcher, story editor, Writer prose draft, Visual Editor, Writer
+	// assembly, and four review lenses.
+	records := assertPolicyBinding(t, run.runDir, run.fixtureDir, 10)
 	seen := map[string]bool{}
 	for _, record := range records {
 		seen[policyRoleForInvocation(record)] = true
@@ -214,17 +216,21 @@ func TestBlackBoxRevisionsPreserveDeclaredProfiles(t *testing.T) {
 	if run.err != nil {
 		t.Fatalf("CLI failed: %v\n%s", run.err, run.output)
 	}
-	// PM, researcher, story editor, evidence review of candidate 1, two writers,
-	// and four reviews of candidate 2.
-	records := assertPolicyBinding(t, run.runDir, run.fixtureDir, 10)
+	// PM, researcher, story editor, the three-pass candidate sequence twice,
+	// the evidence review of candidate 1, and four reviews of candidate 2.
+	records := assertPolicyBinding(t, run.runDir, run.fixtureDir, 14)
 	writers := 0
+	visualEditors := 0
 	for _, record := range records {
-		if record.Role == "writer" {
+		switch record.Role {
+		case "writer":
 			writers++
+		case "visual_editor":
+			visualEditors++
 		}
 	}
-	if writers != 2 {
-		t.Fatalf("got %d writer invocations, want 2", writers)
+	if writers != 4 || visualEditors != 2 {
+		t.Fatalf("got %d writer and %d visual editor invocations, want 4 and 2", writers, visualEditors)
 	}
 }
 
@@ -279,7 +285,7 @@ func TestBlackBoxProviderProcessesNeverReceiveExternalCredentials(t *testing.T) 
 	if output, err := command.CombinedOutput(); err != nil {
 		t.Fatalf("CLI failed with hostile ambient provider environment: %v\n%s", err, output)
 	}
-	records := assertPolicyBinding(t, runDir, fixtureDir, 8)
+	records := assertPolicyBinding(t, runDir, fixtureDir, 10)
 	realHome, err := os.UserHomeDir()
 	if err != nil {
 		t.Fatal(err)
@@ -439,8 +445,8 @@ func TestBlackBoxInvalidPolicyFailsBeforeRunCreation(t *testing.T) {
 		{"unknown top-level field", `{"schema_version": 1, "roles": {}, "default": {"provider": "codex"}}`, "unknown field"},
 		{"missing role", mutate(func(roles map[string]any) { delete(roles, "reviewer_copy") }), "missing required role profile(s) reviewer_copy"},
 		{"unknown role", mutate(func(roles map[string]any) {
-			roles["visual_editor"] = map[string]any{"provider": "claude_code", "model": "claude-opus-5", "reasoning_effort": "medium"}
-		}), "unknown role(s) visual_editor"},
+			roles["layout_editor"] = map[string]any{"provider": "claude_code", "model": "claude-opus-5", "reasoning_effort": "medium"}
+		}), "unknown role(s) layout_editor"},
 		{"unknown role field", mutate(func(roles map[string]any) {
 			roles["writer"] = map[string]any{"provider": "claude_code", "model": "claude-opus-5", "reasoning_effort": "medium", "fallback": "claude-fable-5"}
 		}), "unknown field"},
@@ -583,8 +589,8 @@ func TestBlackBoxClaudeKeychainAccessIsProcessScoped(t *testing.T) {
 	if run.err != nil {
 		t.Fatalf("CLI failed: %v\n%s", run.err, run.output)
 	}
-	// 007-reviewer-clarity is a Claude Code invocation in the checked-in policy.
-	data, err := os.ReadFile(filepath.Join(run.fixtureDir, "logs", "isolation-007-reviewer-clarity.probe"))
+	// 009-reviewer-clarity is a Claude Code invocation in the checked-in policy.
+	data, err := os.ReadFile(filepath.Join(run.fixtureDir, "logs", "isolation-009-reviewer-clarity.probe"))
 	if err != nil {
 		t.Fatalf("Claude reviewer did not publish an isolation probe: %v", err)
 	}
@@ -664,6 +670,7 @@ const codexOnlyPolicy = `{
     "pm": {"provider": "codex", "model": "gpt-5.6-sol", "reasoning_effort": "high"},
     "researcher": {"provider": "codex", "model": "gpt-5.6-luna", "reasoning_effort": "medium"},
     "story_editor": {"provider": "codex", "model": "gpt-5.6-sol", "reasoning_effort": "high"},
+    "visual_editor": {"provider": "codex", "model": "gpt-5.6-sol", "reasoning_effort": "high"},
     "writer": {"provider": "codex", "model": "gpt-5.6-sol", "reasoning_effort": "medium"},
     "reviewer_evidence": {"provider": "codex", "model": "gpt-5.6-sol", "reasoning_effort": "medium"},
     "reviewer_story": {"provider": "codex", "model": "gpt-5.6-luna", "reasoning_effort": "medium"},
@@ -679,6 +686,7 @@ const hostilePolicy = `{
     "pm": {"provider": "codex", "model": "gpt-hostile", "reasoning_effort": "low"},
     "researcher": {"provider": "codex", "model": "gpt-hostile", "reasoning_effort": "low"},
     "story_editor": {"provider": "codex", "model": "gpt-hostile", "reasoning_effort": "low"},
+    "visual_editor": {"provider": "codex", "model": "gpt-hostile", "reasoning_effort": "low"},
     "writer": {"provider": "codex", "model": "gpt-hostile", "reasoning_effort": "low"},
     "reviewer_evidence": {"provider": "codex", "model": "gpt-hostile", "reasoning_effort": "low"},
     "reviewer_story": {"provider": "codex", "model": "gpt-hostile", "reasoning_effort": "low"},
@@ -702,8 +710,8 @@ func TestBlackBoxAdminManagedClaudeSettingsCannotCrossSandboxBoundary(t *testing
 	if run.err != nil {
 		t.Fatalf("CLI failed: %v\n%s", run.err, run.output)
 	}
-	// 007-reviewer-clarity is a Claude Code invocation in the checked-in policy.
-	data, err := os.ReadFile(filepath.Join(run.fixtureDir, "logs", "isolation-007-reviewer-clarity.probe"))
+	// 009-reviewer-clarity is a Claude Code invocation in the checked-in policy.
+	data, err := os.ReadFile(filepath.Join(run.fixtureDir, "logs", "isolation-009-reviewer-clarity.probe"))
 	if err != nil {
 		t.Fatalf("Claude reviewer did not publish an isolation probe: %v", err)
 	}
@@ -730,5 +738,5 @@ func TestBlackBoxAdminManagedClaudeSettingsCannotCrossSandboxBoundary(t *testing
 	// No invocation may diverge from the recorded profile: the run policy copy,
 	// the workflow digest, every audit record, and every launched argv still
 	// agree after the boundary probes have run.
-	assertPolicyBinding(t, run.runDir, run.fixtureDir, 8)
+	assertPolicyBinding(t, run.runDir, run.fixtureDir, 10)
 }

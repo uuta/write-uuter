@@ -98,6 +98,7 @@ fallback.
 | `pm` | `codex` | `gpt-5.6-sol` | `high` |
 | `researcher` | `claude_code` | `claude-sonnet-5` | `medium` |
 | `story_editor` | `claude_code` | `claude-opus-5` | `high` |
+| `visual_editor` | `claude_code` | `claude-opus-5` | `high` |
 | `writer` | `claude_code` | `claude-opus-5` | `medium` |
 | `reviewer_evidence` | `codex` | `gpt-5.6-sol` | `medium` |
 | `reviewer_story` | `claude_code` | `claude-sonnet-5` | `medium` |
@@ -105,7 +106,9 @@ fallback.
 | `reviewer_copy` | `codex` | `gpt-5.6-luna` | `low` |
 
 `Human Editor` is a human role and has no profile. Schema version 1 supports
-exactly the eight role keys above and the providers `claude_code` and `codex`.
+exactly the nine role keys above and the providers `claude_code` and `codex`.
+Both Writer invocations of a candidate - the prose draft and the assembly pass
+- resolve the same `writer` profile.
 Accepted `reasoning_effort` values are `minimal`, `low`, `medium`, and `high`
 for `codex`, and `low`, `medium`, `high`, `xhigh`, and `max` for `claude_code`.
 There is no global model allowlist: exact availability is decided by the
@@ -214,18 +217,75 @@ admin-managed settings tree - stays denied to the client. A model-invoked tool
 is a different process path, so it can read neither the account record nor the
 keychain, cannot start the keychain client, and cannot reach the user's home.
 
+## Visual and reading-flow pass
+
+Every candidate takes the same three passes before review: a Writer prose
+draft, a fresh Visual Editor, and a fresh Writer assembly invocation. Only the
+assembled candidate is reviewed and only it can become `article.md`. The visual
+pass does not consume one of the three review candidates.
+
+The Visual Editor decides where a diagram, a staged image, or a change of shape
+would make an explanation clearer, and records every opportunity it evaluated -
+including the ones it rejected - in `visuals/article-00N/plan.md`. Supported
+actions are exactly `mermaid`, `existing_local_asset`, `restructure_text`, and
+`none`. There is no image quota, no per-heading rule, and a run can succeed
+with no visual at all. There is no image generation, no remote download, and no
+new browser capture in this slice.
+
+The Writer assembly pass then applies the validated plan and shortens the prose
+a visual now carries. Go checks the result: every planned diagram and image
+must be present, no unplanned image may appear, and a candidate that placed a
+visual must contain fewer explanation characters than its prose draft. "No
+unplanned image" is exact rather than exhaustive: every image written in the
+supported inline `![alt](path)` form must be one the plan placed, at the staged
+relative path it bound. Go is not a CommonMark or HTML parser; other image
+syntaxes and raw HTML are prohibited by the Writer and Visual Editor contracts
+and reviewed by the Copy lens.
+
+The reviewed revision covers the assembled Markdown and the bytes of every
+referenced local asset, so a visual cannot change after its candidate passed
+review. See [artifacts](docs/artifacts.md) for the exact digest definition.
+
+### Visual inputs
+
+`brief.md` may carry an optional level-two `## Visual inputs` section listing
+local images the run may place:
+
+```md
+## Visual inputs
+
+- images/current-workflow.png
+- evidence/browser-result.webp
+```
+
+Each non-empty list item is a path relative to the content root. An absent or
+empty section is valid, and Mermaid and text restructuring stay available
+without it. PNG, JPEG, and WebP are supported, checked on both the extension
+and the file signature, with a documented 10 MiB per-file limit. Absolute
+paths, parent traversal, symlinked files, symlinked path components,
+directories, special files, missing files, and unsupported formats are rejected
+before the run directory is created and before any agent starts. The controller
+holds a private copy of the accepted bytes, so replacing a source file
+afterwards cannot change what a run sees. Captured screenshots join the same
+pool and can be placed in the article without being re-acquired.
+
+## Brief
+
 The brief requires these case-insensitive level-two headings; all except
-`Source hints` need non-whitespace content:
+`Source hints` need non-whitespace content, and `Visual inputs` is optional:
 
 ```text
 Question, Audience, Provisional takeaway, Scope, Out of scope,
-Publication target, Constraints, Done when, Source hints
+Publication target, Constraints, Done when, Source hints,
+Visual inputs (optional)
 ```
 
 Relative source-hint paths are resolved from the directory containing the
-input brief. The process working directory is the content root. If present,
+input brief, while `Visual inputs` paths are resolved from the content root.
+The process working directory is the content root. If present,
 `STYLE.md`, `style-guide.md`, or `docs/style-guide.md` under that root is staged
-only for the Writer and Copy reviewer; prompt bundles may live elsewhere.
+only for the Writer - including its assembly pass - and the Copy reviewer;
+prompt bundles may live elsewhere.
 
 ## Runtime model
 
@@ -251,9 +311,10 @@ through an atomic marker after controller-launched and controller-trackable
 descendants are gone. An intentionally ancestry-escaping hostile process is
 outside this slice's guarantee; complete containment is deferred to a future
 container/VM design.
-Researcher, Story Editor, Writer, then fresh Evidence, Story, Clarity, and Copy
-reviewer processes run sequentially. Reviewers never receive the run directory
-or edit candidates. Only PM-validated must-fix findings create a new candidate;
+Researcher, Story Editor, Writer prose draft, Visual Editor, Writer assembly,
+then fresh Evidence, Story, Clarity, and Copy reviewer processes run
+sequentially. Reviewers never receive the run directory or edit candidates,
+plans, manifests, or assets. Only PM-validated must-fix findings create a new candidate;
 candidate 003 is the hard limit.
 
 See [workflow](docs/workflow.md), [roles](docs/roles.md), and

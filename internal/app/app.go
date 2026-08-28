@@ -61,6 +61,18 @@ type controller struct {
 	// screenshotManifest is the exact controller-generated manifest handed to
 	// later roles as read-only context.
 	screenshotManifest []byte
+	// visualInputs is the validated pool of local images this run staged. It
+	// is empty for every brief without a `## Visual inputs` section whose
+	// Researcher requested no screenshot, and the bytes are the controller's
+	// private copies rather than re-reads of the original paths.
+	visualInputs []visualInput
+	// visualInputManifest is the exact controller-generated input manifest
+	// handed to the Visual Editor as read-only context.
+	visualInputManifest []byte
+	// visualPlans records the validated plan accepted for each candidate.
+	visualPlans map[int]VisualPlan
+	// visualAssets records the durable assets each accepted plan placed.
+	visualAssets map[int][]VisualAssetRecord
 	// publishedArticle is the exact file identity this controller committed as
 	// article.md. Rollback removes only that identity.
 	publishedArticle os.FileInfo
@@ -153,6 +165,13 @@ func Run(config Config) error {
 		config: config, brief: brief, runDir: runDir, prompts: prompts, contentRoot: contentRoot,
 		policy: policy, providerExecutables: providerExecutables,
 		reachedLenses: make(map[int][]string), decisionBindings: make(map[int]map[string]decisionBinding),
+		visualPlans: make(map[int]VisualPlan), visualAssets: make(map[int][]VisualAssetRecord),
+	}
+	// Optional visual inputs are validated and privately copied here, before
+	// the run directory exists and before any agent starts, so an unsafe or
+	// unusable path leaves no partial state behind.
+	if err := control.loadVisualInputs(); err != nil {
+		return err
 	}
 	if err := control.initialize(briefData); err != nil {
 		return err
@@ -186,7 +205,7 @@ func (control *controller) initialize(briefData []byte) error {
 			_ = store.Close()
 		}
 	}()
-	for _, relative := range []string{"evidence/assets", "drafts", "reviews", "pm-decisions", ".control/prompts", ".control/exits", ".control/logs", ".control/invocations"} {
+	for _, relative := range []string{"evidence/assets", "drafts", "visuals", "reviews", "pm-decisions", ".control/prompts", ".control/exits", ".control/logs", ".control/invocations"} {
 		if err := store.mkdirAll(relative, 0o755); err != nil {
 			return fmt.Errorf("initialize workspace: %w", err)
 		}
@@ -211,6 +230,7 @@ func (control *controller) initialize(briefData []byte) error {
 			"screenshot_requests": screenshotRequestArtifact, "screenshots": screenshotManifestArtifact,
 			"screenshot_assets": screenshotAssetDir,
 			"outline":           "outline.md", "drafts": "drafts", "reviews": "reviews",
+			"visual_inputs": visualInputManifestArtifact, "visuals": "visuals",
 			"pm_decisions": "pm-decisions", "article": "article.md",
 		},
 		StartedAt: now, UpdatedAt: now,
@@ -318,10 +338,15 @@ func (control *controller) execute() error {
 	if err := control.captureScreenshots(); err != nil {
 		return control.block(err.Error())
 	}
+	// Captured screenshots join the visual input pool, so the visual pass
+	// consumes evidence in place instead of re-acquiring anything.
+	if err := control.publishVisualInputs(); err != nil {
+		return control.block(err.Error())
+	}
 	if err := control.runStoryEditor(); err != nil {
 		return control.block(err.Error())
 	}
-	if err := control.runWriter(1); err != nil {
+	if err := control.produceCandidate(1); err != nil {
 		return control.block(err.Error())
 	}
 	for candidate := 1; candidate <= 3; candidate++ {
@@ -338,7 +363,7 @@ func (control *controller) execute() error {
 		if candidate == 3 {
 			return control.block("review budget exhausted: candidate article-003 has validated must-fix findings")
 		}
-		if err := control.runWriter(candidate + 1); err != nil {
+		if err := control.produceCandidate(candidate + 1); err != nil {
 			return control.block(err.Error())
 		}
 	}
@@ -354,14 +379,36 @@ func (control *controller) runResearcher() error {
 	if err != nil {
 		return err
 	}
+	// The staged hints are the Researcher's only copy of the local sources, and
+	// a model-invoked shell, glob, or directory listing is denied by the
+	// sandbox on purpose. The assignment therefore names every staged path
+	// exactly, so the role reads each one directly instead of discovering it.
+	// localSourceHints stores them in an unordered map, so the prompt sorts the
+	// names and is deterministic for the same brief.
+	hintNames := make([]string, 0, len(sourceHints))
+	for relative := range sourceHints {
+		hintNames = append(hintNames, relative)
+	}
+	sort.Strings(hintNames)
 	prompt := base + contextBlock("brief.md", []byte(control.brief.Raw))
+	prompt += "\n\n## Assignment\n\nThe brief is staged at `context/brief.md`."
+	if len(hintNames) == 0 {
+		prompt += " This run staged no local source hint, so work from the brief and any URL hints it names."
+	} else {
+		prompt += fmt.Sprintf(" The controller resolved and staged %d local source hint(s) as read-only regular"+
+			"\nfiles. The following list is complete and exact. Read each path directly with your file-read capability; no"+
+			"\ndirectory listing, glob, or shell command is needed, and none is available to you.\n", len(hintNames))
+		for _, relative := range hintNames {
+			prompt += "\n- `" + filepath.ToSlash(filepath.Join("context", "source-hints", relative)) + "`"
+		}
+	}
 	return control.runWorker("researcher", "", 0, "", "research", prompt,
 		func(workspace *artifactStore) error {
 			if err := workspace.writeAtomic("context/brief.md", []byte(control.brief.Raw), 0o444); err != nil {
 				return err
 			}
-			for relative, data := range sourceHints {
-				if err := workspace.writeAtomic(filepath.Join("context", "source-hints", relative), data, 0o444); err != nil {
+			for _, relative := range hintNames {
+				if err := workspace.writeAtomic(filepath.Join("context", "source-hints", relative), sourceHints[relative], 0o444); err != nil {
 					return err
 				}
 			}
@@ -548,17 +595,37 @@ func (control *controller) runStoryEditor() error {
 		})
 }
 
+// produceCandidate runs the canonical per-candidate sequence: a Writer prose
+// draft, a fresh sequential Visual Editor, then a fresh Writer assembly pass.
+// Only the assembled candidate enters review and may become article.md. The
+// visual pass never consumes one of the three review candidates.
+func (control *controller) produceCandidate(candidate int) error {
+	if err := control.runWriter(candidate); err != nil {
+		return err
+	}
+	if err := control.runVisualEditor(candidate); err != nil {
+		return err
+	}
+	return control.runWriterAssembly(candidate)
+}
+
+// runWriter produces the prose draft of one candidate. The Writer owns article
+// Markdown throughout, but diagrams and images are placed by the later
+// assembly pass, so the prose draft carries explanation only.
 func (control *controller) runWriter(candidate int) error {
 	base, err := control.prompts.load("writer.md")
 	if err != nil {
 		return err
 	}
-	target := fmt.Sprintf("drafts/article-%03d.md", candidate)
-	prompt := base + fmt.Sprintf("\n\n## Assignment\n\nWrite candidate %03d to `%s` in this isolated workspace.", candidate, target)
+	target := proseDraftPath(candidate)
+	prompt := base + fmt.Sprintf("\n\n## Assignment\n\nWrite the prose draft of candidate %03d to `%s` in this isolated workspace."+
+		"\n\nWrite explanation only. Do not add a Mermaid block or an image reference: a separate Visual Editor pass evaluates"+
+		"\nvisual opportunities next, and a fresh Writer assembly invocation places the approved visuals and shortens the prose"+
+		"\nthey replace.", candidate, target)
 	inputs := []string{"brief.md", "evidence/sources.md", "claim-ledger.md", "outline.md"}
 	if candidate > 1 {
 		previous := candidate - 1
-		inputs = append(inputs, fmt.Sprintf("drafts/article-%03d.md", previous), fmt.Sprintf("pm-decisions/article-%03d.md", previous))
+		inputs = append(inputs, candidateDraftPath(previous), visualPlanPath(previous), fmt.Sprintf("pm-decisions/article-%03d.md", previous))
 		for _, lens := range control.reachedLenses[previous] {
 			inputs = append(inputs,
 				filepath.Join("reviews", fmt.Sprintf("article-%03d", previous), lens, "result.json"),
@@ -589,8 +656,7 @@ func (control *controller) runWriter(candidate int) error {
 	if len(screenshotManifest) != 0 {
 		prompt += contextBlock(screenshotManifestArtifact, screenshotManifest)
 	}
-	previousCandidate := control.workflow.CurrentCandidate
-	previousRevision := control.workflow.CurrentRevision
+	previousProseRevision := control.workflow.CurrentProseRevision
 	err = control.runWorker("writer", "", candidate, "", "writing", prompt,
 		func(workspace *artifactStore) error {
 			for _, relative := range inputs {
@@ -625,23 +691,309 @@ func (control *controller) runWriter(candidate int) error {
 			if strings.Contains(strings.ToLower(string(data)), "todo") {
 				return fmt.Errorf("candidate contains unresolved TODO placeholder")
 			}
-			return nil
+			return validateProseDraft(data)
 		},
 		func(workspace *artifactStore) error {
 			data, copyErr := control.store.copyRegularFrom(workspace, target, target, 0o644)
 			if copyErr != nil {
 				return copyErr
 			}
+			control.workflow.CurrentProseRevision = revisionFor(data)
+			return nil
+		},
+		func() error {
+			control.workflow.CurrentProseRevision = previousProseRevision
+			return control.store.remove(target)
+		})
+	return err
+}
+
+// runVisualEditor runs one fresh sequential Visual Editor per candidate. It
+// receives only the brief, outline, claim ledger, current prose draft, and the
+// controller-staged visual inputs, and it never writes a durable candidate: it
+// emits an inspectable plan the controller validates before the assembly pass
+// applies it.
+func (control *controller) runVisualEditor(candidate int) error {
+	base, err := control.prompts.load("visual-editor.md")
+	if err != nil {
+		return err
+	}
+	proseRelative := proseDraftPath(candidate)
+	proseData, err := control.store.readRegular(proseRelative)
+	if err != nil {
+		return err
+	}
+	proseRevision := revisionFor(proseData)
+	if proseRevision != control.workflow.CurrentProseRevision {
+		return fmt.Errorf("prose draft revision changed outside the controller")
+	}
+	available := make(map[string]visualInput, len(control.visualInputs))
+	for _, input := range control.visualInputs {
+		available[input.ID] = input
+	}
+	prompt := base + fmt.Sprintf("\n\n## Assignment\n\nCandidate: `article-%03d`\nSource prose revision: `%s`"+
+		"\n\nWrite exactly two files in this workspace root:"+
+		"\n\n- `plan.md`: one entry per evaluated opportunity, naming its ID, its location in the prose draft, the selected"+
+		"\n  action, and the concrete reason that action improves explanation or reading flow."+
+		"\n- `plan.json`: the same decisions as `{\"schema_version\": %d, \"source_revision\": \"%s\", \"opportunities\": [...]}`."+
+		"\n\nSupported actions are exactly %s. Use `source_revision` verbatim. Every entry needs an `id`, a `location`, an"+
+		"\n`action`, and a `rationale`. Each `id` is unique within the plan and uses only letters, digits, `-`, and `_`,"+
+		"\nnever starting with `-` or `_`."+
+		"\n\n- A `mermaid` entry adds the diagram body in `mermaid`. Write the body only: no ``` fence anywhere in it."+
+		"\n- An `existing_local_asset` entry adds a staged `asset_id` and meaningful `alt_text`. Each staged asset may be"+
+		"\n  placed at most once, and `alt_text` must contain none of the characters `[`, `]`, `(`, or `)`, because it is"+
+		"\n  embedded directly in `![alt text](path)`."+
+		"\n- A `restructure_text` or `none` entry adds no `mermaid`, `asset_id`, or `alt_text`."+
+		"\n\nRecord at least one evaluated opportunity even when no visual is appropriate."+
+		"\n\nBounds: at most %d opportunities; `location` at most %d bytes; `rationale` at most %d bytes; `alt_text` at most"+
+		"\n%d bytes; a `mermaid` body at most %d bytes. Unknown fields and duplicate keys are rejected.",
+		candidate, proseRevision, visualSchemaVersion, proseRevision, strings.Join(visualPlanActions, ", "),
+		visualMaxOpportunities, visualMaxLocationBytes, visualMaxRationaleBytes, visualMaxAltTextBytes, visualMaxMermaidBytes)
+	if len(available) != 0 {
+		prompt += fmt.Sprintf("\n\nStaged visual inputs are read-only regular files under `context/visual-inputs/`. Placing one copies it to"+
+			"\n`%s`, keeping its extension, which is the exact relative path the assembled article will reference.",
+			visualAssetPath(candidate, "<asset_id>", ".<ext>"))
+	} else {
+		prompt += "\n\nThis run staged no local image, so only `mermaid`, `restructure_text`, and `none` are available."
+	}
+	inputs := []string{"brief.md", "outline.md", "claim-ledger.md", proseRelative}
+	for _, relative := range inputs {
+		data, readErr := control.store.readRegular(relative)
+		if readErr != nil {
+			return readErr
+		}
+		prompt += contextBlock(relative, data)
+	}
+	if len(control.visualInputManifest) != 0 {
+		prompt += contextBlock(visualInputManifestArtifact, control.visualInputManifest)
+	}
+	if len(control.screenshotManifest) != 0 {
+		prompt += contextBlock(screenshotManifestArtifact, control.screenshotManifest)
+	}
+	var plan VisualPlan
+	var planReport []byte
+	return control.runWorker("visual_editor", "", candidate, proseRevision, "visual planning", prompt,
+		func(workspace *artifactStore) error {
+			for _, relative := range inputs {
+				data, readErr := control.store.readRegular(relative)
+				if readErr != nil {
+					return readErr
+				}
+				if err := workspace.writeAtomic(filepath.Join("context", relative), data, 0o444); err != nil {
+					return err
+				}
+			}
+			if len(control.visualInputManifest) != 0 {
+				if err := workspace.writeAtomic(filepath.Join("context", visualInputManifestArtifact), control.visualInputManifest, 0o444); err != nil {
+					return err
+				}
+			}
+			if len(control.screenshotManifest) != 0 {
+				if err := workspace.writeAtomic(filepath.Join("context", screenshotManifestArtifact), control.screenshotManifest, 0o444); err != nil {
+					return err
+				}
+			}
+			return control.stageVisualInputs(workspace)
+		},
+		func(workspace *artifactStore) error {
+			stagedProse, readErr := workspace.readRegular(filepath.Join("context", proseRelative))
+			if readErr != nil || revisionFor(stagedProse) != proseRevision {
+				return fmt.Errorf("Visual Editor edited the prose draft input")
+			}
+			report, readErr := workspace.readNonEmpty("plan.md")
+			if readErr != nil {
+				return readErr
+			}
+			planData, readErr := workspace.readNonEmpty("plan.json")
+			if readErr != nil {
+				return readErr
+			}
+			validated, parseErr := parseVisualPlan(planData, proseRevision, available)
+			if parseErr != nil {
+				return parseErr
+			}
+			if err := validatePlanReport(string(report), validated); err != nil {
+				return err
+			}
+			plan = validated
+			planReport = report
+			return nil
+		},
+		func(_ *artifactStore) error {
+			assets, err := control.planAssets(candidate, plan)
+			if err != nil {
+				return err
+			}
+			if err := control.store.writeAtomic(visualPlanPath(candidate), planReport, 0o644); err != nil {
+				return err
+			}
+			for _, asset := range assets {
+				input, staged := control.visualInput(asset.ID)
+				if !staged {
+					return fmt.Errorf("asset %q is not a controller-staged visual input", asset.ID)
+				}
+				if err := control.store.writeAtomic(asset.Path, input.Data, 0o444); err != nil {
+					return err
+				}
+			}
+			control.visualPlans[candidate] = plan
+			control.visualAssets[candidate] = assets
+			return nil
+		},
+		func() error {
+			delete(control.visualPlans, candidate)
+			delete(control.visualAssets, candidate)
+			return control.store.removeAll(visualDirPath(candidate))
+		})
+}
+
+// runWriterAssembly applies one validated visual plan in a fresh Writer
+// invocation. The Writer stays the only owner of article Markdown: it places
+// the planned diagrams and images and removes the explanation they replace.
+func (control *controller) runWriterAssembly(candidate int) error {
+	base, err := control.prompts.load("writer.md")
+	if err != nil {
+		return err
+	}
+	plan, planned := control.visualPlans[candidate]
+	if !planned {
+		return fmt.Errorf("no validated visual plan for candidate %03d", candidate)
+	}
+	assets := control.visualAssets[candidate]
+	planReport, err := control.store.readRegular(visualPlanPath(candidate))
+	if err != nil {
+		return err
+	}
+	planData, err := json.MarshalIndent(plan, "", "  ")
+	if err != nil {
+		return fmt.Errorf("encode validated visual plan: %w", err)
+	}
+	planData = append(planData, '\n')
+	proseRelative := proseDraftPath(candidate)
+	proseData, err := control.store.readRegular(proseRelative)
+	if err != nil {
+		return err
+	}
+	target := candidateDraftPath(candidate)
+	prompt := base + fmt.Sprintf("\n\n## Assignment\n\nAssemble candidate %03d to `%s` in this isolated workspace by applying the"+
+		"\nvalidated visual plan to the prose draft."+
+		"\n\n- Reproduce every planned Mermaid diagram at its planned location inside a fenced ```mermaid block, byte-for-byte"+
+		"\n  as the plan gives it."+
+		"\n- Reference every planned image exactly once as `![<alt_text>](<path>)`, using the plan's alt text and the path"+
+		"\n  listed below. Add no other image."+
+		"\n- Shorten, split, or reorganize the surrounding explanation so the article does not state the same thing twice in"+
+		"\n  prose and in a visual, and apply every `restructure_text` entry. Where a plan entry's rationale says the visual"+
+		"\n  now carries an explanation, remove or compress that explanation: do not leave a paragraph that walks through the"+
+		"\n  same steps the visual draws."+
+		"\n- Change nothing else: the substance of the prose draft is already reviewed material.",
+		candidate, target)
+	if visualPlacements(plan) != 0 {
+		// The anti-duplication rule is measured, so the assignment states both
+		// the measure and the exact number to stay below.
+		prompt += fmt.Sprintf("\n\nThis plan places a visual, so the assembled article must carry strictly less explanation than the prose"+
+			"\ndraft. Go counts every non-whitespace character outside fenced blocks and outside `![alt](path)` references."+
+			"\nThe prose draft has %d such characters; the assembled article must have fewer. Take the reduction from the"+
+			"\nexplanation each visual now carries rather than from unrelated sections.", proseCharacterCount(string(proseData)))
+	}
+	if len(assets) != 0 {
+		prompt += "\n\nPlanned image paths, staged read-only at the same relative path under `context/`:\n"
+		for _, asset := range assets {
+			prompt += fmt.Sprintf("\n- %s (opportunity %s, alt text %q)", asset.Path, asset.OpportunityID, asset.AltText)
+		}
+	}
+	inputs := []string{"brief.md", "evidence/sources.md", "claim-ledger.md", "outline.md", proseRelative}
+	for _, relative := range inputs {
+		data, readErr := control.store.readRegular(relative)
+		if readErr != nil {
+			return readErr
+		}
+		prompt += contextBlock(relative, data)
+	}
+	prompt += contextBlock(visualPlanPath(candidate), planReport)
+	prompt += contextBlock("visual-plan.json", planData)
+	styleGuide, err := loadStyleGuide(control.contentRoot)
+	if err != nil {
+		return err
+	}
+	if len(styleGuide) != 0 {
+		prompt += contextBlock("style-guide.md", styleGuide)
+	}
+	previousCandidate := control.workflow.CurrentCandidate
+	previousRevision := control.workflow.CurrentRevision
+	return control.runWorker("writer", "", candidate, control.workflow.CurrentProseRevision, "assembling", prompt,
+		func(workspace *artifactStore) error {
+			for _, relative := range inputs {
+				data, readErr := control.store.readRegular(relative)
+				if readErr != nil {
+					return readErr
+				}
+				if err := workspace.writeAtomic(filepath.Join("context", relative), data, 0o444); err != nil {
+					return err
+				}
+			}
+			if err := workspace.writeAtomic(filepath.Join("context", visualPlanPath(candidate)), planReport, 0o444); err != nil {
+				return err
+			}
+			if err := workspace.writeAtomic(filepath.Join("context", "visual-plan.json"), planData, 0o444); err != nil {
+				return err
+			}
+			if len(styleGuide) != 0 {
+				if err := workspace.writeAtomic(filepath.Join("context", "style-guide.md"), styleGuide, 0o444); err != nil {
+					return err
+				}
+			}
+			return control.stageVisualAssets(workspace, assets)
+		},
+		func(workspace *artifactStore) error {
+			data, readErr := workspace.readNonEmpty(target)
+			if readErr != nil {
+				return readErr
+			}
+			if strings.Contains(strings.ToLower(string(data)), "todo") {
+				return fmt.Errorf("candidate contains unresolved TODO placeholder")
+			}
+			return validateAssembledCandidate(data, proseData, plan, assets)
+		},
+		func(workspace *artifactStore) error {
+			data, copyErr := control.store.copyRegularFrom(workspace, target, target, 0o644)
+			if copyErr != nil {
+				return copyErr
+			}
+			manifest := buildVisualManifest(candidate, plan, planReport, proseData, data, assets)
+			manifestData, encodeErr := json.MarshalIndent(manifest, "", "  ")
+			if encodeErr != nil {
+				return fmt.Errorf("encode %s: %w", visualManifestPath(candidate), encodeErr)
+			}
+			if err := control.store.writeAtomic(visualManifestPath(candidate), append(manifestData, '\n'), 0o444); err != nil {
+				return err
+			}
 			control.workflow.CurrentCandidate = candidate
-			control.workflow.CurrentRevision = revisionFor(data)
+			control.workflow.CurrentRevision = manifest.ReviewedRevision
 			return nil
 		},
 		func() error {
 			control.workflow.CurrentCandidate = previousCandidate
 			control.workflow.CurrentRevision = previousRevision
-			return control.store.remove(target)
+			return errors.Join(
+				control.store.remove(visualManifestPath(candidate)),
+				control.store.remove(target),
+			)
 		})
-	return err
+}
+
+// stageVisualAssets copies each placed asset into the assembly workspace at
+// exactly the relative path the assembled article will reference.
+func (control *controller) stageVisualAssets(workspace *artifactStore, assets []VisualAssetRecord) error {
+	for _, asset := range assets {
+		input, staged := control.visualInput(asset.ID)
+		if !staged {
+			return fmt.Errorf("asset %q is not a controller-staged visual input", asset.ID)
+		}
+		if err := workspace.writeAtomic(filepath.Join("context", asset.Path), input.Data, 0o444); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func (control *controller) reviewCandidate(candidate int) (bool, string, error) {
@@ -693,12 +1045,14 @@ func (control *controller) runReviewer(candidate int, lens string) (ReviewResult
 		return result, err
 	}
 	base += "\n\n" + outputContract
-	candidateRelative := fmt.Sprintf("drafts/article-%03d.md", candidate)
-	candidateData, err := control.store.readRegular(candidateRelative)
+	// The reviewed revision covers the assembled Markdown and the bytes of
+	// every referenced local asset, so a malformed or stale manifest, an
+	// unsafe or non-regular asset, and a replaced asset all stop the run
+	// before a lens sees the candidate.
+	revision, candidateData, err := control.candidateBinding(candidate)
 	if err != nil {
 		return result, err
 	}
-	revision := revisionFor(candidateData)
 	if revision != control.workflow.CurrentRevision {
 		return result, fmt.Errorf("candidate revision changed outside the controller")
 	}
@@ -712,6 +1066,12 @@ func (control *controller) runReviewer(candidate int, lens string) (ReviewResult
 		if _, screenshotImages, err = control.screenshotContext(); err != nil {
 			return result, err
 		}
+	}
+	// Only the Evidence lens checks what a placed image actually shows, so
+	// only it receives the asset bytes; every lens receives the plan.
+	visualAssets := []VisualAssetRecord(nil)
+	if lens == "evidence" {
+		visualAssets = control.visualAssets[candidate]
 	}
 	contextNames := make([]string, 0, len(contextFiles))
 	for label := range contextFiles {
@@ -736,14 +1096,25 @@ func (control *controller) runReviewer(candidate int, lens string) (ReviewResult
 			// Only the Evidence lens inspects the screenshots themselves, so
 			// only it receives the image bytes, read-only and unchanged.
 			if lens == "evidence" && len(control.screenshotManifest) != 0 {
-				return stageScreenshotImages(workspace, screenshotImages)
+				if err := stageScreenshotImages(workspace, screenshotImages); err != nil {
+					return err
+				}
 			}
-			return nil
+			return control.stageVisualAssets(workspace, visualAssets)
 		},
 		func(workspace *artifactStore) error {
+			// The reviewed revision covers the article and its assets
+			// together, so the staged inputs are checked against their own
+			// digests rather than against the composite.
 			stagedCandidate, readErr := workspace.readRegular("context/article.md")
-			if readErr != nil || revisionFor(stagedCandidate) != revision {
+			if readErr != nil || revisionFor(stagedCandidate) != revisionFor(candidateData) {
 				return fmt.Errorf("%s reviewer edited the candidate input", lens)
+			}
+			for _, asset := range visualAssets {
+				stagedAsset, assetErr := workspace.readRegular(filepath.Join("context", asset.Path))
+				if assetErr != nil || revisionFor(stagedAsset) != asset.SHA256 {
+					return fmt.Errorf("%s reviewer edited the staged visual asset %s", lens, asset.Path)
+				}
 			}
 			resultData, readErr = workspace.readNonEmpty("result.json")
 			if readErr != nil {
@@ -773,22 +1144,27 @@ func (control *controller) runReviewer(candidate int, lens string) (ReviewResult
 }
 
 func reviewerContextName(label string) string {
-	switch label {
-	case "brief.md":
+	switch {
+	case label == "brief.md":
 		return "brief.md"
+	case strings.HasPrefix(label, "drafts/article-") && strings.HasSuffix(label, "-prose.md"):
+		return "prose.md"
+	case strings.HasPrefix(label, "drafts/article-"):
+		return "article.md"
+	case strings.HasPrefix(label, "visuals/article-") && strings.HasSuffix(label, "/plan.md"):
+		return "visual-plan.md"
+	case strings.HasPrefix(label, "visuals/article-") && strings.HasSuffix(label, "/manifest.json"):
+		return "visual-manifest.json"
 	default:
-		if strings.HasPrefix(label, "drafts/article-") {
-			return "article.md"
-		}
 		return label
 	}
 }
 
 func (control *controller) reviewerContext(candidate int, lens string, candidateData []byte, revision string) (map[string][]byte, error) {
 	files := map[string][]byte{
-		"brief.md": []byte(control.brief.Raw),
-		fmt.Sprintf("drafts/article-%03d.md", candidate): candidateData,
-		"revision.txt": []byte(revision + "\n"),
+		"brief.md":                    []byte(control.brief.Raw),
+		candidateDraftPath(candidate): candidateData,
+		"revision.txt":                []byte(revision + "\n"),
 	}
 	read := func(relative string) error {
 		data, err := control.store.readRegular(relative)
@@ -797,6 +1173,13 @@ func (control *controller) reviewerContext(candidate int, lens string, candidate
 		}
 		files[relative] = data
 		return nil
+	}
+	// Every lens reviews the same visual decisions, so every lens receives the
+	// inspectable plan and the manifest that binds it to this exact revision.
+	for _, relative := range []string{visualPlanPath(candidate), visualManifestPath(candidate)} {
+		if err := read(relative); err != nil {
+			return nil, err
+		}
 	}
 	switch lens {
 	case "evidence":
@@ -819,6 +1202,11 @@ func (control *controller) reviewerContext(candidate int, lens string, candidate
 		}
 	case "clarity":
 		files["clarity-fields.md"] = []byte(fmt.Sprintf("Audience:\n%s\n\nConstraints:\n%s\n", control.brief.Sections["Audience"], control.brief.Sections["Constraints"]))
+		// The Clarity lens judges whether a visual replaced explanation or
+		// merely duplicated it, so it also receives the source prose draft.
+		if err := read(proseDraftPath(candidate)); err != nil {
+			return nil, err
+		}
 	case "copy":
 		styleGuide, styleErr := loadStyleGuide(control.contentRoot)
 		if styleErr != nil {
@@ -1100,7 +1488,8 @@ func (control *controller) stagePMContext(pmStore *artifactStore, request pmRequ
 		"report.md":   reportData,
 		"brief.md":    []byte(control.brief.Raw),
 	}
-	for _, relative := range []string{"evidence/sources.md", "claim-ledger.md", "outline.md", fmt.Sprintf("drafts/article-%03d.md", request.Candidate)} {
+	for _, relative := range []string{"evidence/sources.md", "claim-ledger.md", "outline.md",
+		candidateDraftPath(request.Candidate), visualPlanPath(request.Candidate)} {
 		data, err := control.store.readRegular(relative)
 		if err != nil {
 			return err
@@ -1457,12 +1846,12 @@ func (control *controller) succeed(candidate int) error {
 	if err := control.runtime.archiveAll(control.store); err != nil {
 		return control.block(fmt.Sprintf("archive controller audit files: %v", err))
 	}
-	candidateData, err := control.store.readRegular(fmt.Sprintf("drafts/article-%03d.md", candidate))
+	candidateRevision, _, err := control.candidateBinding(candidate)
 	if err != nil {
 		return control.block(fmt.Sprintf("read accepted candidate: %v", err))
 	}
-	if got := revisionFor(candidateData); got != control.workflow.CurrentRevision {
-		return control.block(fmt.Sprintf("accepted candidate changed before publication: got %s, want %s", got, control.workflow.CurrentRevision))
+	if candidateRevision != control.workflow.CurrentRevision {
+		return control.block(fmt.Sprintf("accepted candidate changed before publication: got %s, want %s", candidateRevision, control.workflow.CurrentRevision))
 	}
 	if err := control.validateFinalAudit(candidate); err != nil {
 		return control.block(fmt.Sprintf("final review audit invalid: %v", err))
@@ -1477,12 +1866,12 @@ func (control *controller) succeed(candidate int) error {
 	if err := control.validateFinalAudit(candidate); err != nil {
 		return control.block(fmt.Sprintf("final review audit changed at publication boundary: %v", err))
 	}
-	finalCandidateData, err := control.store.readRegular(fmt.Sprintf("drafts/article-%03d.md", candidate))
+	finalRevision, finalCandidateData, err := control.candidateBinding(candidate)
 	if err != nil {
 		return control.block(fmt.Sprintf("re-read accepted candidate at publication boundary: %v", err))
 	}
-	if got := revisionFor(finalCandidateData); got != control.workflow.CurrentRevision {
-		return control.block(fmt.Sprintf("accepted candidate changed at publication boundary: got %s, want %s", got, control.workflow.CurrentRevision))
+	if finalRevision != control.workflow.CurrentRevision {
+		return control.block(fmt.Sprintf("accepted candidate changed at publication boundary: got %s, want %s", finalRevision, control.workflow.CurrentRevision))
 	}
 	published, err := control.store.writeAtomicNoReplace("article.md", finalCandidateData, 0o644)
 	// Record the identity before handling the error. A failure after the
@@ -1492,9 +1881,9 @@ func (control *controller) succeed(candidate int) error {
 	if err != nil {
 		return control.block(fmt.Sprintf("stage final article: %v", err))
 	}
-	committedCandidate, candidateErr := control.store.readRegular(fmt.Sprintf("drafts/article-%03d.md", candidate))
+	committedRevision, committedCandidate, candidateErr := control.candidateBinding(candidate)
 	committedArticle, articleErr := control.store.readRegular("article.md")
-	if candidateErr != nil || articleErr != nil || revisionFor(committedCandidate) != control.workflow.CurrentRevision || !bytes.Equal(committedCandidate, committedArticle) {
+	if candidateErr != nil || articleErr != nil || committedRevision != control.workflow.CurrentRevision || !bytes.Equal(committedCandidate, committedArticle) {
 		_ = control.rollbackPublishedArticle()
 		return control.block(fmt.Sprintf("accepted candidate/article changed at final commit boundary: candidate=%v article=%v", candidateErr, articleErr))
 	}
@@ -1508,9 +1897,9 @@ func (control *controller) succeed(candidate int) error {
 		_ = control.rollbackPublishedArticle()
 		return control.block(fmt.Sprintf("persist succeeded workflow: %v", err))
 	}
-	committedCandidate, candidateErr = control.store.readRegular(fmt.Sprintf("drafts/article-%03d.md", candidate))
+	committedRevision, committedCandidate, candidateErr = control.candidateBinding(candidate)
 	committedArticle, articleErr = control.store.readRegular("article.md")
-	if candidateErr != nil || articleErr != nil || revisionFor(committedCandidate) != control.workflow.CurrentRevision || !bytes.Equal(committedCandidate, committedArticle) {
+	if candidateErr != nil || articleErr != nil || committedRevision != control.workflow.CurrentRevision || !bytes.Equal(committedCandidate, committedArticle) {
 		_ = control.rollbackPublishedArticle()
 		return control.block(fmt.Sprintf("accepted candidate/article changed across succeeded-state commit: candidate=%v article=%v", candidateErr, articleErr))
 	}
