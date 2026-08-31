@@ -179,37 +179,38 @@ is persisted.
 
 ## Screenshot capture
 
-Between the Researcher and every later role the controller captures each
-requested screenshot itself. No agent receives `CLOUDFLARE_ACCOUNT_ID` or
-`CLOUDFLARE_API_TOKEN`, constructs the authenticated call, or sees a raw API
-response; the tmux client environment is stripped of both variables as well, so
-nothing the controller starts inherits them. Captures use the Cloudflare
-Chromium quick action `POST
-/accounts/{account_id}/browser-rendering/screenshot`, run strictly one at a
-time in artifact order, use a fixed 1280x800 viewport and PNG output, and have
-a 60-second per-request timeout with no automatic retry. Cookies, HTTP
-authentication, extra headers, injected scripts or styles, clicks, waits, and
-multi-step navigation are never sent; an optional CSS selector is the only
-page-targeting option.
+Between the Researcher and every later role, the controller delegates a
+validated request batch to the absolute executable in
+`WRITE_UUTER_CAPTURE_RUNNER`. It uses a private workspace and the fixed
+version-2 artifact protocol documented in [artifacts](artifacts.md), never a
+shell command. No agent receives provider credentials, direct browser/MCP
+access, provider options, or a raw provider response. The checked-in Cloudflare
+adapter preserves the previous public-page PNG behavior with a fixed 1280x800
+viewport, sequential request order, a 60-second per-request timeout, and no
+fallback backend.
 
 A run whose Researcher requested nothing skips this step entirely and needs no
-Cloudflare credential. Otherwise a missing credential, an invalid request, an
-unsafe URL, an unknown claim ID, a non-2xx response, a wrong media type, a
-timeout, an invalid or oversized image, or a persistence failure blocks the run
-before the Story Editor and the Writer start. Diagnostics name the requested
-page, the request ID, and the failure; the account ID and API token are scrubbed
-from every message, including transport errors that embed the request URL. A
-non-2xx response contributes only its status code and the documented Cloudflare
-error codes: the response body itself never reaches an artifact.
-Because a capture starts no process, the blocked path leaves nothing extra to
-clean up and follows the ordinary terminal cleanup contract.
+runner or provider credential. Otherwise a missing/unhealthy runner, invalid
+request, nonzero exit, timeout, partial output, invalid/ambiguous result, extra
+file, unsafe path or file type, invalid/oversized PNG, or metadata/digest
+mismatch blocks before the Story Editor and Writer. Runner output is never
+copied into diagnostics. The controller terminates the owned process tree and
+verifies removal of the private workspace on both success and failure.
 
-Successful captures are stored as read-only `evidence/assets/screenshots/
-<id>.png` alongside a controller-generated `evidence/screenshots.json`. Writer
+Successful initial captures are stored as read-only
+`evidence/assets/screenshots/<id>.png`; a replacement attempt is stored under
+`evidence/assets/screenshots/attempts/<id>/attempt-002.png`, which cannot alias
+another request's initial path. Both are recorded in a controller-generated
+`evidence/screenshots.json`. A first request-keyed editorial rejection permits
+one fresh runner invocation with neutral prior-attempt provenance. The second
+capture is evaluated independently; a second rejection is persisted as an
+explicit non-placement and stops without another retry. Writer
 and Evidence Reviewer receive both as read-only context; the manifest joins the
 prompt and the images are staged as files, never inlined into an assignment.
-The Visual Editor receives the manifest and the same images through the visual
-input pool, so a capture can be placed where it helps.
+The Visual Editor receives the manifest and currently adoptable images through
+the visual input pool, so a capture can be placed where it helps. A twice
+rejected capture remains durable evidence but is not staged for later
+candidates.
 Only the Evidence lens receives the image bytes, and it must reject a
 screenshot that does not visibly contain the information its `supports` claim
 names - a valid PNG proves nothing about content.

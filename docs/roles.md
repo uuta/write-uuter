@@ -101,10 +101,10 @@ The Researcher owns `evidence/sources.md`, optional
 fact, firsthand observation, inference, opinion, and unresolved claims.
 
 It may also write the optional `evidence/screenshot-requests.json` described in
-[artifacts](artifacts.md). The Researcher never receives Cloudflare
-credentials, never calls a capture API, and never writes
-`evidence/assets/screenshots/`; the controller performs, validates, and records
-every capture.
+[artifacts](artifacts.md). The Researcher never receives provider credentials
+or direct browser/MCP access and never writes `evidence/assets/screenshots/`;
+the controller validates request semantics, delegates through the external
+capture-runner protocol, and independently validates and records every result.
 
 ## Story Editor
 

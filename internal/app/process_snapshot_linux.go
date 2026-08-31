@@ -11,6 +11,8 @@ import (
 	"strings"
 )
 
+func boundaryProcessIdentities(_ string) ([]processIdentity, error) { return nil, nil }
+
 func nativeProcessIdentity(pid int) (processIdentity, bool, error) {
 	data, err := os.ReadFile(filepath.Join("/proc", strconv.Itoa(pid), "stat"))
 	if errors.Is(err, os.ErrNotExist) {

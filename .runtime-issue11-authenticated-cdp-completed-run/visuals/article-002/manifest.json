@@ -1,0 +1,67 @@
+{
+  "schema_version": 1,
+  "candidate": 2,
+  "source_prose": {
+    "path": "drafts/article-002-prose.md",
+    "sha256": "sha256:dc6bf537178b3ed4cea5d7b40b95be9b393f62e15b5a9d64e942c49bac00b1a2"
+  },
+  "plan": {
+    "path": "visuals/article-002/plan.md",
+    "sha256": "sha256:02ca59dff80ce06318bbc5a6f57f7ef1ee66cb960970569e25086feb0bee12fe"
+  },
+  "actions": [
+    {
+      "id": "opp-001-page-screenshot",
+      "location": "Section 'What the page shows', beside the paragraph describing the heading, the body paragraph, and the 'Learn more' link.",
+      "action": "existing_local_asset",
+      "rationale": "This is the only section making claims about what is visible on the page, so a reader gains from seeing the pixels rather than a report of them. The capture corroborates claim-004 independently and gives the pixel-level check that claim-007 leaves open. The Writer's caption must name the requested URL https://httpbingo.org/redirect-to?url=https%3A%2F%2Fexample.com%2F and the observed final URL https://example.com/ as distinct, per the brief, and must not present the image as the requested URL's own content.",
+      "asset_id": "shot-001",
+      "alt_text": "Screenshot of the example.com page on a light grey background, showing a bold heading reading Example Domain, a paragraph reading This domain is for use in documentation examples without needing permission. Avoid use in operations., and a blue underlined Learn more link beneath it."
+    },
+    {
+      "id": "opp-002-redirect-chain",
+      "location": "Section 'Reaching the page', after the sentence naming the httpbingo redirect endpoint.",
+      "action": "mermaid",
+      "rationale": "The section's content is a relationship between two distinct URLs plus the verification step joining them - the point the article hinges on, since the brief supplies a redirect rather than the destination. The diagram shows requested URL, server-supplied Location value, confirming fetch, and destination at a glance, so the reader sees the destination was confirmed rather than assumed. Every edge traces to claim-001 and claim-002, and the second edge label keeps the qualifier that the target was only the server's word until fetched. The documented chain is linear with no branch or failure outcome, so no decision node is drawn. The Writer should shorten the paragraph to why verification mattered rather than restating the sequence.",
+      "mermaid": "flowchart TD\n    A[\"Requested URL: httpbingo.org/redirect-to?url=example.com\"] --\u003e|\"HTTP 302 Found\"| B[\"Location header names https://example.com/ - server-supplied, not yet verified\"]\n    B --\u003e|\"reported, not auto-followed; destination fetched separately\"| C[\"Independent fetch of https://example.com/\"]\n    C --\u003e|\"returned content; same URL, no substitution\"| D[\"Example Domain page\"]"
+    },
+    {
+      "id": "opp-003-visible-elements-list",
+      "location": "Section 'What the page shows', first paragraph enumerating the three visible elements.",
+      "action": "none",
+      "rationale": "Considered turning the three-item enumeration into a bullet list. Rejected: the sentence is one line and already scans, and the screenshot placed alongside it shows all three elements directly. A list would fragment short prose and restate what the image carries, costing space in an article capped under 350 words."
+    },
+    {
+      "id": "opp-004-limits-section",
+      "location": "Section 'The limits of this description'.",
+      "action": "none",
+      "rationale": "Considered a visual separating firsthand observation from tool-reported wording. Rejected: this section states a boundary on confidence, not a relationship, sequence, or hierarchy. Drawing it would give a caveat the visual weight of a structural claim and imply a taxonomy the claim ledger does not assert. Four sentences of prose need no help."
+    },
+    {
+      "id": "opp-005-opening",
+      "location": "Opening section under the title 'What Example Domain Is For'.",
+      "action": "none",
+      "rationale": "The opening is a conclusion-first paragraph of three sentences with no relationship, comparison, or state change to show. A visual here would only delay the answer the section exists to deliver."
+    }
+  ],
+  "assets": [
+    {
+      "id": "shot-001",
+      "opportunity_id": "opp-001-page-screenshot",
+      "path": "visuals/article-002/assets/shot-001.png",
+      "origin": "screenshot",
+      "source": "evidence/assets/screenshots/shot-001.png",
+      "media_type": "image/png",
+      "byte_size": 19303,
+      "sha256": "sha256:410dd462fa1cc2a7ae84c0feef288195963439a520d826b5a5d44429555d0a59",
+      "alt_text": "Screenshot of the example.com page on a light grey background, showing a bold heading reading Example Domain, a paragraph reading This domain is for use in documentation examples without needing permission. Avoid use in operations., and a blue underlined Learn more link beneath it."
+    }
+  ],
+  "article": {
+    "path": "drafts/article-002.md",
+    "sha256": "sha256:8fe10097ff175f0aaae047b4283c9d2a657a8f02a05dbae3732acc4640a56f1e"
+  },
+  "reviewed_revision": "sha256:0ee2c2b661745bcb46b7453480c0062550288ec27b59a9ee2af1c499558b2bf5",
+  "prose_characters_before": 1671,
+  "prose_characters_after": 1540
+}

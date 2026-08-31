@@ -1,0 +1,67 @@
+{
+  "schema_version": 1,
+  "candidate": 3,
+  "source_prose": {
+    "path": "drafts/article-003-prose.md",
+    "sha256": "sha256:bf96909840998080db3bdf680db2cb53e452bd80e8c7f426f96406c2bb496f07"
+  },
+  "plan": {
+    "path": "visuals/article-003/plan.md",
+    "sha256": "sha256:3e38b427eaa07a2be75f3bbc95368db82d6443cebedd00b7cf78cef01b391c86"
+  },
+  "actions": [
+    {
+      "id": "opp-001-redirect-provenance",
+      "location": "Section 'Reaching the page', the paragraph beginning 'The address that leads there in this case is not example.com itself but a test utility'.",
+      "action": "mermaid",
+      "rationale": "The paragraph carries the article's provenance chain in continuous prose: three distinct URL states plus the point where the server's word stopped being trusted. That is a sequence, easier held as a shape than as sentences that keep re-introducing long percent-encoded URLs. The diagram also fixes the requested-versus-destination distinction the brief depends on, drawing the httpbingo endpoint and https://example.com/ as separate nodes so neither reads as the other. Edge labels carry the qualifications the prose supplies - the redirect was reported rather than auto-followed, and the target was server-supplied and so verified independently - so no edge claims more than claim-001 and claim-002 support. The Writer can then shorten the paragraph to its interpretive point instead of restating each hop.",
+      "mermaid": "flowchart TD\n    A[\"Requested URL\u003cbr/\u003ehttpbingo.org/redirect-to?url=https%3A%2F%2Fexample.com%2F\"]\n    B[\"HTTP 302 Found\u003cbr/\u003eLocation: https://example.com/\"]\n    C[\"Destination fetched separately\u003cbr/\u003ehttps://example.com/ returns content\"]\n    A --\u003e|\"redirect reported, not auto-followed\"| B\n    B --\u003e|\"target is server-supplied, so verified independently\"| C"
+    },
+    {
+      "id": "opp-002-page-screenshot",
+      "location": "Section 'What the page shows', immediately after the paragraph beginning 'The paragraph is the whole answer.'",
+      "action": "existing_local_asset",
+      "rationale": "This is the only section making claims about what is visible, and it rests on the article's weakest evidence: the closing section concedes the text was read through a summarizing fetch tool rather than raw markup, so wording is tool-reported. The screenshot is the independent pixel-level check against that limit, letting the reader see the heading and the permission sentence instead of accepting a report of them. I inspected the file first and confirmed it is a real rendered page, not a blank, consent, challenge, or error state. Caption requirement for the Writer: name both the requested URL https://httpbingo.org/redirect-to?url=https%3A%2F%2Fexample.com%2F and the observed final URL https://example.com/, never one in place of the other. Alt text describes the rendered page only and asserts no URL.",
+      "asset_id": "shot-001",
+      "alt_text": "Screenshot of a plain light grey web page showing a bold dark heading reading Example Domain, below it a paragraph reading This domain is for use in documentation examples without needing permission. Avoid use in operations., and below that a blue underlined Learn more link. The rest of the page is empty."
+    },
+    {
+      "id": "opp-003-visible-elements-list",
+      "location": "Section 'What the page shows', the sentence beginning 'Three things are visible on the destination page'.",
+      "action": "none",
+      "rationale": "Considered converting the enumeration into a three-item bullet list. Rejected: it is already one short scannable sentence in a two-paragraph section, so a list would fragment it without aiding scanning. Also considered whether it becomes redundant once shot-001 sits above it. It does not - the draft's framing requires the prose to stand without the image, and the enumeration is what keeps the section readable for anyone not seeing the screenshot. The sentence names the elements, the image evidences them, so this is not the same explanation stated twice."
+    },
+    {
+      "id": "opp-004-limits-section",
+      "location": "Section 'The limits of this description', entire section.",
+      "action": "none",
+      "rationale": "The section is an epistemic caveat about how the text was obtained - firsthand substance, tool-reported punctuation. That is a claim about confidence, not a relationship, sequence, hierarchy, or state change, so no shape fits it. Drawing raw HTML to tool to summary as a pipeline would imply a verified processing chain this run never observed, which the claim ledger does not support at claim-007. Three sentences of plain prose is the honest form."
+    },
+    {
+      "id": "opp-005-opening",
+      "location": "Opening section, from 'Example Domain is a deliberately plain public page' through the quoted heading.",
+      "action": "none",
+      "rationale": "The opening is a single paragraph delivering the conclusion, meant to be read straight through in seconds. It is not dense, not long, and not a relationship. A visual here would delay the answer the paragraph exists to give, and the screenshot is deliberately held back to the section that actually makes visibility claims."
+    }
+  ],
+  "assets": [
+    {
+      "id": "shot-001",
+      "opportunity_id": "opp-002-page-screenshot",
+      "path": "visuals/article-003/assets/shot-001.png",
+      "origin": "screenshot",
+      "source": "evidence/assets/screenshots/shot-001.png",
+      "media_type": "image/png",
+      "byte_size": 19303,
+      "sha256": "sha256:410dd462fa1cc2a7ae84c0feef288195963439a520d826b5a5d44429555d0a59",
+      "alt_text": "Screenshot of a plain light grey web page showing a bold dark heading reading Example Domain, below it a paragraph reading This domain is for use in documentation examples without needing permission. Avoid use in operations., and below that a blue underlined Learn more link. The rest of the page is empty."
+    }
+  ],
+  "article": {
+    "path": "drafts/article-003.md",
+    "sha256": "sha256:15361ce41b2735f1046cd620f52d593f5775252afd775f26eb7a9ff6096c99e2"
+  },
+  "reviewed_revision": "sha256:efa0440b31351a5db3a46d5c408d68220e6a9f38d42cd9463ec62dc06f665007",
+  "prose_characters_before": 1638,
+  "prose_characters_after": 1509
+}

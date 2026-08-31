@@ -38,9 +38,10 @@ const (
 	// bound the plan's free text. Alt text gets the widest budget: a dense
 	// diagram needs a real description, not a caption. Every bound is stated
 	// in the Visual Editor assignment, so the contract is knowable in advance.
-	visualMaxLocationBytes  = 512
-	visualMaxRationaleBytes = 1024
-	visualMaxAltTextBytes   = 1024
+	visualMaxLocationBytes        = 512
+	visualMaxRationaleBytes       = 1024
+	visualMaxAltTextBytes         = 1024
+	visualMaxEditorialReasonBytes = 1024
 	// visualBriefSection is the optional level-two brief heading. An absent or
 	// empty section is valid and means the run stages no local image.
 	visualBriefSection = "Visual inputs"
@@ -52,6 +53,8 @@ const (
 // visualPlanActions is the exact action vocabulary of this slice. There is no
 // default and no fallback: an unknown action fails the plan.
 var visualPlanActions = []string{"mermaid", "existing_local_asset", "restructure_text", "none"}
+
+var screenshotEditorialStatuses = []string{"usable", "rejected"}
 
 // visualMediaType binds an accepted media type to its accepted extensions and
 // its file signature. Both the extension and the signature must agree, so a
@@ -66,7 +69,9 @@ var visualMediaTypes = []visualMediaType{
 	{
 		mediaType:  "image/png",
 		extensions: []string{".png"},
-		matches:    func(data []byte) bool { return bytes.HasPrefix(data, pngSignature) },
+		matches: func(data []byte) bool {
+			return len(data) >= 8 && bytes.Equal(data[:8], []byte{0x89, 'P', 'N', 'G', '\r', '\n', 0x1a, '\n'})
+		},
 	},
 	{
 		mediaType:  "image/jpeg",
@@ -140,9 +145,10 @@ type VisualInputRecord struct {
 // VisualPlan is the Visual Editor's machine-readable plan. It is validated
 // completely before any asset is placed and before the assembly pass starts.
 type VisualPlan struct {
-	SchemaVersion  int                 `json:"schema_version"`
-	SourceRevision string              `json:"source_revision"`
-	Opportunities  []VisualOpportunity `json:"opportunities"`
+	SchemaVersion      int                          `json:"schema_version"`
+	SourceRevision     string                       `json:"source_revision"`
+	Opportunities      []VisualOpportunity          `json:"opportunities"`
+	ScreenshotOutcomes []ScreenshotEditorialOutcome `json:"screenshot_outcomes,omitempty"`
 }
 
 // VisualOpportunity is one evaluated explanation, its location, the selected
@@ -351,12 +357,28 @@ func loadVisualInput(root *os.Root, name string) (visualInput, error) {
 	}, nil
 }
 
-// adoptScreenshotVisualInputs adds every controller-captured screenshot to the
-// visual input pool. Their bytes are already validated and immutable, so the
-// visual pass consumes them in place instead of re-acquiring anything.
+// adoptScreenshotVisualInputs adds every still-adoptable controller-captured
+// screenshot to the visual input pool. Their bytes are already validated and
+// immutable, so the visual pass consumes them in place instead of re-acquiring
+// anything. A request whose second attempt was rejected remains in durable
+// evidence, but is terminally unavailable to later candidates.
 func (control *controller) adoptScreenshotVisualInputs() error {
+	kept := control.visualInputs[:0]
+	for _, input := range control.visualInputs {
+		if input.Origin != visualInputOriginScreenshot {
+			kept = append(kept, input)
+		}
+	}
+	control.visualInputs = kept
 	for _, request := range control.screenshotRequests {
-		relative := screenshotAssetPath(request.ID)
+		record := control.screenshotRecords[request.ID]
+		if record == nil {
+			return fmt.Errorf("screenshot record %q is missing", request.ID)
+		}
+		if screenshotEditorialRejectionExhausted(record) {
+			continue
+		}
+		relative := record.Path
 		data, err := control.store.readRegular(relative)
 		if err != nil {
 			return fmt.Errorf("read captured screenshot %s: %w", relative, err)
@@ -377,7 +399,8 @@ func (control *controller) publishVisualInputs() error {
 		return err
 	}
 	if len(control.visualInputs) == 0 {
-		return nil
+		control.visualInputManifest = nil
+		return control.store.remove(visualInputManifestArtifact)
 	}
 	seen := make(map[string]bool, len(control.visualInputs))
 	manifest := VisualInputManifest{SchemaVersion: visualSchemaVersion}
@@ -471,7 +494,52 @@ func parseVisualPlan(data []byte, proseRevision string, available map[string]vis
 			return plan, fmt.Errorf("visual plan entry %d: %w", index, err)
 		}
 	}
+	if err := validateScreenshotEditorialOutcomes(plan.ScreenshotOutcomes, available, seenAsset); err != nil {
+		return plan, err
+	}
 	return plan, nil
+}
+
+func validateScreenshotEditorialOutcomes(outcomes []ScreenshotEditorialOutcome, available map[string]visualInput, placed map[string]bool) error {
+	screenshots := make(map[string]bool)
+	for id, input := range available {
+		if input.Origin == visualInputOriginScreenshot {
+			screenshots[id] = true
+		}
+	}
+	if len(screenshots) == 0 {
+		if len(outcomes) != 0 {
+			return fmt.Errorf("visual plan records screenshot outcomes when no screenshot is staged")
+		}
+		return nil
+	}
+	if len(outcomes) != len(screenshots) {
+		return fmt.Errorf("visual plan must record exactly one request-keyed editorial outcome for each of %d screenshots", len(screenshots))
+	}
+	seen := make(map[string]bool, len(outcomes))
+	for index, outcome := range outcomes {
+		if !screenshots[outcome.RequestID] {
+			return fmt.Errorf("screenshot outcome %d names unstaged request %q", index, outcome.RequestID)
+		}
+		if seen[outcome.RequestID] {
+			return fmt.Errorf("screenshot outcome repeats request %q", outcome.RequestID)
+		}
+		seen[outcome.RequestID] = true
+		validStatus := false
+		for _, status := range screenshotEditorialStatuses {
+			validStatus = validStatus || outcome.Status == status
+		}
+		if !validStatus {
+			return fmt.Errorf("screenshot outcome %q has unsupported status %q", outcome.RequestID, outcome.Status)
+		}
+		if err := validateBoundedText("screenshot editorial reason", outcome.Reason, visualMaxEditorialReasonBytes); err != nil {
+			return fmt.Errorf("screenshot outcome %q: %w", outcome.RequestID, err)
+		}
+		if outcome.Status == "rejected" && placed[outcome.RequestID] {
+			return fmt.Errorf("editorially rejected screenshot %q cannot be placed", outcome.RequestID)
+		}
+	}
+	return nil
 }
 
 func validateVisualOpportunity(opportunity *VisualOpportunity, available map[string]visualInput, seenID, seenAsset map[string]bool) error {
@@ -581,6 +649,11 @@ func validatePlanReport(report string, plan VisualPlan) error {
 		}
 		if !strings.Contains(report, opportunity.Action) {
 			return fmt.Errorf("plan.md does not record the %s action selected for %s", opportunity.Action, opportunity.ID)
+		}
+	}
+	for _, outcome := range plan.ScreenshotOutcomes {
+		if !strings.Contains(report, outcome.RequestID) || !strings.Contains(report, outcome.Status) {
+			return fmt.Errorf("plan.md does not record the %s editorial outcome for %s", outcome.Status, outcome.RequestID)
 		}
 	}
 	return nil

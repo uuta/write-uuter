@@ -1,0 +1,27 @@
+# Evidence review
+
+status: fix_required
+
+lens: evidence
+
+reviewed_revision: sha256:0ee2c2b661745bcb46b7453480c0062550288ec27b59a9ee2af1c499558b2bf5
+
+id: evidence-001
+
+severity: major
+
+location: What the page shows — placed image visuals/article-002/assets/shot-001.png
+
+problem: The placed image is a blank light-grey frame and does not visibly contain the Example Domain heading, paragraph, or Learn more link claimed by its alt text and surrounding prose. The validated source capture at evidence/assets/screenshots/shot-001.png does contain those elements, so the candidate's placed asset is not faithful to the validated screenshot or to the manifest's assertion that the two assets are identical.
+
+suggested_direction: Replace the blank placed copy with the validated shot-001 capture while preserving the requested-versus-final URL distinction, then regenerate the revision-bound visual manifest with metadata and a digest matching the actually placed file.
+
+id: evidence-002
+
+severity: minor
+
+location: Reaching the page — Mermaid node A
+
+problem: The node labels the requested URL as httpbingo.org/redirect-to?url=example.com, but the supplied and observed request uses a url parameter whose value is the full https://example.com/ URL, percent-encoded in the actual request. As written, the diagram presents a different request value as the requested URL.
+
+suggested_direction: Label node A with the exact supplied redirect URL, or explicitly mark any shortened rendering as schematic while retaining the https://example.com/ target value.

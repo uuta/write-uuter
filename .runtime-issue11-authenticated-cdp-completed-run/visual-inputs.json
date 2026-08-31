@@ -1,0 +1,14 @@
+{
+  "schema_version": 1,
+  "inputs": [
+    {
+      "id": "shot-001",
+      "origin": "screenshot",
+      "source": "evidence/assets/screenshots/shot-001.png",
+      "media_type": "image/png",
+      "byte_size": 19303,
+      "sha256": "sha256:410dd462fa1cc2a7ae84c0feef288195963439a520d826b5a5d44429555d0a59",
+      "staged_path": "visual-inputs/shot-001.png"
+    }
+  ]
+}

@@ -62,6 +62,28 @@ image before you place it and write alt text describing what it actually shows.
 Refer to an image only by its staged ID, place each one at most once, and never
 edit, rename, move, or re-request an asset.
 
+For every staged input whose origin is `screenshot`, visible-content validation
+is mandatory before placement. Compare what the image visibly shows with its
+request reason and supported claim IDs in `evidence/screenshots.json`, then with
+the intended surrounding article context. A valid PNG and provenance record do
+not establish editorial usability. Blank or skeleton screens, login or consent
+pages, bot challenges, regional-unavailable pages, generic errors, and unrelated
+content must not be placed unless that exact state is the requested evidence.
+Choose `none` for an unusable or mismatched capture and state the observed
+problem explicitly in the rationale; this is the durable non-placement signal
+that allows runner policy to choose a different backend on a later attempt.
+`screenshot_outcomes` must be a JSON array, with exactly one entry keyed by
+each `visual-inputs.json` entry whose origin is `screenshot`, for example
+`"screenshot_outcomes":[{"request_id":"shot-001","status":"usable","reason":"..."}]`.
+Each screenshot outcome `reason` is limited to 1024 bytes.
+Use status `usable` only when the visible content passes that comparison;
+otherwise use `rejected` with a concrete reason. Rejected pixels must not be
+placed. The controller permits only one fresh provider-neutral retry, so
+evaluate the second capture independently and never direct backend selection.
+A durable record in `evidence/screenshots.json` that has no staged
+screenshot-origin entry has already reached terminal non-placement. Do not name
+that record in `screenshot_outcomes` and do not place it.
+
 You do not write the article. You do not edit the prose draft, an earlier
 draft, a review, a PM decision, or `article.md`, and you do not decide whether
 a reviewer finding is valid. A fresh Writer assembly invocation applies your

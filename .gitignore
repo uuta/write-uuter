@@ -1,5 +1,19 @@
 /bin/
 
+# Issue 11 local-only capture fixtures, incomplete runs, and review scratch.
+/.runtime-issue11-authenticated-cdp-input/
+/.runtime-issue11-authenticated-cdp-run/
+/.runtime-issue11-cdp-fixture/
+/.runtime-issue11-cdp-nonplacement-fixture/
+/.runtime-issue11-cdp-nonplacement-run/
+/.runtime-issue11-cdp-run/
+/.runtime-issue11-run/
+/tmp/
+
+# Keep the completed authenticated run's durable invocation records, but not
+# raw provider/agent output logs.
+/.runtime-issue11-authenticated-cdp-completed-run/.control/logs/
+
 # Raw agent transcripts from a smoke run. The prompts, provider stdout/stderr,
 # and exit markers are reproducible per-invocation detail, not review evidence.
 # The durable per-invocation profile record under .control/invocations/ is kept.

@@ -1,0 +1,50 @@
+{
+  "schema_version": 1,
+  "roles": {
+    "pm": {
+      "provider": "codex",
+      "model": "gpt-5.6-sol",
+      "reasoning_effort": "high"
+    },
+    "researcher": {
+      "provider": "claude_code",
+      "model": "claude-sonnet-5",
+      "reasoning_effort": "medium"
+    },
+    "story_editor": {
+      "provider": "claude_code",
+      "model": "claude-opus-5",
+      "reasoning_effort": "high"
+    },
+    "visual_editor": {
+      "provider": "claude_code",
+      "model": "claude-opus-5",
+      "reasoning_effort": "high"
+    },
+    "writer": {
+      "provider": "claude_code",
+      "model": "claude-opus-5",
+      "reasoning_effort": "medium"
+    },
+    "reviewer_evidence": {
+      "provider": "codex",
+      "model": "gpt-5.6-sol",
+      "reasoning_effort": "medium"
+    },
+    "reviewer_story": {
+      "provider": "claude_code",
+      "model": "claude-sonnet-5",
+      "reasoning_effort": "medium"
+    },
+    "reviewer_clarity": {
+      "provider": "claude_code",
+      "model": "claude-sonnet-5",
+      "reasoning_effort": "medium"
+    },
+    "reviewer_copy": {
+      "provider": "codex",
+      "model": "gpt-5.6-luna",
+      "reasoning_effort": "low"
+    }
+  }
+}

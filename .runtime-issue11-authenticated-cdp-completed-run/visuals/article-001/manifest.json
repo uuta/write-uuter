@@ -1,0 +1,66 @@
+{
+  "schema_version": 1,
+  "candidate": 1,
+  "source_prose": {
+    "path": "drafts/article-001-prose.md",
+    "sha256": "sha256:2182d470bbe1c6dc15061f05fbe23e0f842c1e3651de129442cb7053742fcc67"
+  },
+  "plan": {
+    "path": "visuals/article-001/plan.md",
+    "sha256": "sha256:76ceedceb5857d81df901df39c6e17a3fe185199a303c5a3612fef41e86f1b78"
+  },
+  "actions": [
+    {
+      "id": "opp-001",
+      "location": "Untitled opening section, before the \"Reaching the page\" heading.",
+      "action": "none",
+      "rationale": "The opening is three lines stating the conclusion and attributing it to the page's own visible text. There is no relationship, sequence, or comparison underneath it to draw, and placing the article's only image here would spend it before the section that actually makes claims about what is visible."
+    },
+    {
+      "id": "opp-002",
+      "location": "\"Reaching the page\" section, the paragraph covering the httpbingo endpoint, the HTTP 302 response, and the independent fetch of the destination.",
+      "action": "none",
+      "rationale": "A flow diagram would restate a five-sentence paragraph edge for edge without compressing anything, and would lose the section's point: a Location header is only the server's word for the destination until it is fetched separately. An unqualified requested-URL to 302 to example.com arrow asserts the confirmed destination as if the header alone established it, so this stays in prose where it can be qualified."
+    },
+    {
+      "id": "opp-003",
+      "location": "\"What the page shows\" section, immediately after the paragraph naming the heading, the body paragraph, and the \"Learn more\" link.",
+      "action": "existing_local_asset",
+      "rationale": "This is the only section making claims about what is visible, and the one place where the reader must otherwise take tool-reported wording on trust. The capture makes the heading, the permission sentence, and the link directly checkable, corroborating claim-004 at pixel level and giving the pixel check the ledger anticipated against the unresolved claim-007. It sits after the prose so the text still stands if the image is absent. The caption must distinguish the requested URL, the httpbingo redirect endpoint, from the observed final URL https://example.com/.",
+      "asset_id": "shot-001",
+      "alt_text": "Screenshot of the example.com page: a bold heading reading Example Domain, below it one short paragraph reading This domain is for use in documentation examples without needing permission. Avoid use in operations. and below that a Learn more link, all on a plain light grey background."
+    },
+    {
+      "id": "opp-004",
+      "location": "\"What the page shows\" section, the paragraphs beginning \"Three things are visible on the destination page\" and \"That paragraph is the whole answer\".",
+      "action": "restructure_text",
+      "rationale": "With shot-001 placed below, the inventory of heading, paragraph, and link is carried twice. Tightening the two paragraphs into one - naming what the page says and the single limit it sets, without walking the reader element by element down a layout they can see - removes the duplication and buys back words against the 350-word cap. A diagram of the same three elements would be a third statement of the same fact."
+    },
+    {
+      "id": "opp-005",
+      "location": "\"The limits of this description\" section.",
+      "action": "none",
+      "rationale": "Three sentences distinguishing firsthand substance from tool-reported wording. This is a caveat about evidential strength rather than a structure; drawing it would invite a confidence hierarchy the claim ledger does not support, and the paragraph already reads cleanly at this length."
+    }
+  ],
+  "assets": [
+    {
+      "id": "shot-001",
+      "opportunity_id": "opp-003",
+      "path": "visuals/article-001/assets/shot-001.png",
+      "origin": "screenshot",
+      "source": "evidence/assets/screenshots/shot-001.png",
+      "media_type": "image/png",
+      "byte_size": 19303,
+      "sha256": "sha256:410dd462fa1cc2a7ae84c0feef288195963439a520d826b5a5d44429555d0a59",
+      "alt_text": "Screenshot of the example.com page: a bold heading reading Example Domain, below it one short paragraph reading This domain is for use in documentation examples without needing permission. Avoid use in operations. and below that a Learn more link, all on a plain light grey background."
+    }
+  ],
+  "article": {
+    "path": "drafts/article-001.md",
+    "sha256": "sha256:0382351bef1851ca656e54fbc40d8851a452e565e0cb569f534873f9a3225cd4"
+  },
+  "reviewed_revision": "sha256:bd6977253b6a09af21f278ae75afb6facd9e1e5a0f724a0cc6e7e18a5df5f47e",
+  "prose_characters_before": 1678,
+  "prose_characters_after": 1607
+}

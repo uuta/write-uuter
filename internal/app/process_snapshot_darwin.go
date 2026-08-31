@@ -62,3 +62,37 @@ func childProcessIdentities(parentPID int) ([]processIdentity, error) {
 	}
 	return result, nil
 }
+
+func boundaryProcessIdentities(path string) ([]processIdentity, error) {
+	cPath := C.CString(path)
+	defer C.free(unsafe.Pointer(cPath))
+	bytes := int(C.proc_listpidspath(C.PROC_ALL_PIDS, 0, cPath, 0, nil, 0))
+	if bytes < 0 {
+		return nil, fmt.Errorf("read process ownership boundary")
+	}
+	if bytes == 0 {
+		return nil, nil
+	}
+	bytes += 32 * int(C.sizeof_int)
+	buffer := C.malloc(C.size_t(bytes))
+	if buffer == nil {
+		return nil, fmt.Errorf("allocate process ownership boundary buffer")
+	}
+	defer C.free(buffer)
+	written := int(C.proc_listpidspath(C.PROC_ALL_PIDS, 0, cPath, 0, buffer, C.int(bytes)))
+	if written < 0 {
+		return nil, fmt.Errorf("read process ownership boundary")
+	}
+	pids := unsafe.Slice((*C.int)(buffer), written/int(C.sizeof_int))
+	result := make([]processIdentity, 0, len(pids))
+	for _, rawPID := range pids {
+		identity, found, err := nativeProcessIdentity(int(rawPID))
+		if err != nil {
+			return nil, err
+		}
+		if found {
+			result = append(result, identity)
+		}
+	}
+	return result, nil
+}

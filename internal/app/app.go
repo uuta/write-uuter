@@ -56,11 +56,14 @@ type controller struct {
 	decisionBindings    map[int]map[string]decisionBinding
 	// screenshotRequests is the validated Researcher request list. It is empty
 	// for every run that asked for no screenshot, and that run never reads a
-	// Cloudflare credential.
+	// capture runner or provider credential.
 	screenshotRequests []ScreenshotRequest
 	// screenshotManifest is the exact controller-generated manifest handed to
 	// later roles as read-only context.
 	screenshotManifest []byte
+	// screenshotRecords owns the current attempt and prior rejected provenance
+	// for each logical request, keyed by the Researcher-issued request ID.
+	screenshotRecords map[string]*ScreenshotRecord
 	// visualInputs is the validated pool of local images this run staged. It
 	// is empty for every brief without a `## Visual inputs` section whose
 	// Researcher requested no screenshot, and the bytes are the controller's
@@ -166,6 +169,7 @@ func Run(config Config) error {
 		policy: policy, providerExecutables: providerExecutables,
 		reachedLenses: make(map[int][]string), decisionBindings: make(map[int]map[string]decisionBinding),
 		visualPlans: make(map[int]VisualPlan), visualAssets: make(map[int][]VisualAssetRecord),
+		screenshotRecords: make(map[string]*ScreenshotRecord),
 	}
 	// Optional visual inputs are validated and privately copied here, before
 	// the run directory exists and before any agent starts, so an unsafe or
@@ -488,7 +492,7 @@ func (control *controller) validateScreenshotRequests(workspace *artifactStore, 
 	}
 	if len(requests) == 0 {
 		// An explicit empty list is valid and means the same thing as no
-		// artifact: no capture, and no Cloudflare credential is required.
+		// artifact: no capture runner or provider credential is required.
 		control.screenshotRequests = nil
 		return nil
 	}
@@ -745,10 +749,19 @@ func (control *controller) runVisualEditor(candidate int) error {
 		"\n  embedded directly in `![alt text](path)`."+
 		"\n- A `restructure_text` or `none` entry adds no `mermaid`, `asset_id`, or `alt_text`."+
 		"\n\nRecord at least one evaluated opportunity even when no visual is appropriate."+
+		"\n\nWhen screenshot inputs are staged, `screenshot_outcomes` is required and contains exactly one entry for each"+
+		" `visual-inputs.json` entry whose origin is `screenshot`. Each entry uses status `usable` or `rejected` and a"+
+		" concrete reason grounded in the request reason,"+
+		" supported claims, visible pixels, and article context. A rejected screenshot must not be placed. The outcome"+
+		" controls one bounded provider-neutral recapture; it must never direct backend selection. Use this exact member"+
+		" shape: `\"screenshot_outcomes\":[{\"request_id\":\"shot-001\",\"status\":\"usable\",\"reason\":\"...\"}]`."+
+		" A durable `evidence/screenshots.json` record absent from the staged screenshot-origin inputs has already reached"+
+		" terminal non-placement; do not name it in `screenshot_outcomes` or place it."+
 		"\n\nBounds: at most %d opportunities; `location` at most %d bytes; `rationale` at most %d bytes; `alt_text` at most"+
-		"\n%d bytes; a `mermaid` body at most %d bytes. Unknown fields and duplicate keys are rejected.",
+		"\n%d bytes; each screenshot outcome `reason` at most %d bytes; a `mermaid` body at most %d bytes. Unknown fields and duplicate keys are rejected.",
 		candidate, proseRevision, visualSchemaVersion, proseRevision, strings.Join(visualPlanActions, ", "),
-		visualMaxOpportunities, visualMaxLocationBytes, visualMaxRationaleBytes, visualMaxAltTextBytes, visualMaxMermaidBytes)
+		visualMaxOpportunities, visualMaxLocationBytes, visualMaxRationaleBytes, visualMaxAltTextBytes,
+		visualMaxEditorialReasonBytes, visualMaxMermaidBytes)
 	if len(available) != 0 {
 		prompt += fmt.Sprintf("\n\nStaged visual inputs are read-only regular files under `context/visual-inputs/`. Placing one copies it to"+
 			"\n`%s`, keeping its extension, which is the exact relative path the assembled article will reference.",
@@ -772,7 +785,7 @@ func (control *controller) runVisualEditor(candidate int) error {
 	}
 	var plan VisualPlan
 	var planReport []byte
-	return control.runWorker("visual_editor", "", candidate, proseRevision, "visual planning", prompt,
+	workerErr := control.runWorker("visual_editor", "", candidate, proseRevision, "visual planning", prompt,
 		func(workspace *artifactStore) error {
 			for _, relative := range inputs {
 				data, readErr := control.store.readRegular(relative)
@@ -845,6 +858,28 @@ func (control *controller) runVisualEditor(candidate int) error {
 			delete(control.visualAssets, candidate)
 			return control.store.removeAll(visualDirPath(candidate))
 		})
+	if workerErr != nil {
+		return workerErr
+	}
+	retryRequests, err := control.recordScreenshotEditorialOutcomes(plan.ScreenshotOutcomes)
+	if err != nil {
+		return err
+	}
+	if len(retryRequests) == 0 {
+		return nil
+	}
+	// The rejected plan is not an adoptable revision. Remove it before the
+	// fresh runner invocation, then require a fresh Visual Editor evaluation of
+	// the replacement pixels before assembly can begin.
+	delete(control.visualPlans, candidate)
+	delete(control.visualAssets, candidate)
+	if err := control.store.removeAll(visualDirPath(candidate)); err != nil {
+		return err
+	}
+	if err := control.retryRejectedScreenshots(retryRequests); err != nil {
+		return err
+	}
+	return control.runVisualEditor(candidate)
 }
 
 // runWriterAssembly applies one validated visual plan in a fresh Writer

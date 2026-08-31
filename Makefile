@@ -2,6 +2,7 @@
 
 build:
 	go build -trimpath -o bin/write-uuter ./cmd/write-uuter
+	go build -trimpath -o bin/write-uuter-cloudflare-capture ./cmd/write-uuter-cloudflare-capture
 
 # The black-box suite drives real tmux sessions and now runs a Visual Editor
 # and a Writer assembly pass per candidate, so it needs more than the default

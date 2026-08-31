@@ -54,9 +54,11 @@ blocks the run instead of being ignored:
   port. Embedded credentials, `localhost`, `.local` and similar private
   suffixes, IP literals, and non-HTTPS schemes are rejected.
 
-You never receive Cloudflare credentials and never call a capture API. The Go
-controller performs each capture, validates the image, and generates
-`evidence/screenshots.json`. Do not write `evidence/assets/screenshots/`: that
-directory is controller-owned. Logins, cookies, clicks, waits, scrolling,
-multi-step navigation, and page scripts are not available in this slice, so do
-not request a page that only renders behind them.
+You never receive provider credentials, direct browser or MCP access, and never
+call a capture API. The controller delegates validated requests through its
+external capture-runner boundary, independently validates the returned image,
+and generates `evidence/screenshots.json`. Do not write
+`evidence/assets/screenshots/`: that directory is controller-owned. Logins,
+cookies, custom headers, clicks, waits, scrolling, multi-step navigation, and
+page scripts are not request fields, so do not request a page that depends on
+them.

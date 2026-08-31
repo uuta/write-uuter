@@ -1,0 +1,9 @@
+{
+  "invocation": "006-writer",
+  "role": "writer",
+  "candidate": 1,
+  "provider": "claude_code",
+  "model": "claude-opus-5",
+  "reasoning_effort": "medium",
+  "model_policy_digest": "sha256:9703ed426833532d2db38a2baffeef8e29171ce4b28bbb3677a57c6a274136c3"
+}
