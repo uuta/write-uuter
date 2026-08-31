@@ -10,9 +10,12 @@
 /.runtime-issue11-run/
 /tmp/
 
-# Keep the completed authenticated run's durable invocation records, but not
-# raw provider/agent output logs.
+# Keep the completed authenticated run's curated verification evidence, but not
+# per-invocation control files or raw provider/agent output logs.
+/.runtime-issue11-authenticated-cdp-completed-run/.control/exits/
+/.runtime-issue11-authenticated-cdp-completed-run/.control/invocations/
 /.runtime-issue11-authenticated-cdp-completed-run/.control/logs/
+/.runtime-issue11-authenticated-cdp-completed-run/.control/prompts/
 
 # Raw agent transcripts from a smoke run. The prompts, provider stdout/stderr,
 # and exit markers are reproducible per-invocation detail, not review evidence.
