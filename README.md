@@ -18,7 +18,11 @@ that produced it.
 - macOS for real runs; the controller uses the native Seatbelt sandbox to
   enforce role filesystem isolation
 
-No third-party Go packages are used.
+The controller has no third-party Go dependency. The optional external
+Cloudflare capture adapter uses the approved pinned
+`github.com/coder/websocket v1.8.15` dependency for its adapter-local CDP
+connection; that dependency and provider behavior do not enter the
+provider-neutral controller protocol or article-agent environments.
 
 Linux cross-builds are supported, but Linux execution fails closed until an
 equivalent native read-isolation backend is implemented.
@@ -152,53 +156,74 @@ an ambient credential cannot move a run to API billing or another provider.
 
 The Researcher may ask for public page screenshots by writing the optional
 `evidence/screenshot-requests.json` documented in
-[artifacts](docs/artifacts.md). The Go controller - never an agent - performs
-each capture with the Cloudflare Browser Rendering Chromium quick action:
+[artifacts](docs/artifacts.md). For a non-empty validated request list, the
+controller directly executes the trusted absolute executable configured by
+`WRITE_UUTER_CAPTURE_RUNNER`. Browser execution, provider choice, credentials,
+and browser policy live in that external runner, never in an agent or the
+controller.
 
-```text
-POST https://api.cloudflare.com/client/v4/accounts/{account_id}/browser-rendering/screenshot
+The repository includes a compatibility adapter, built as
+`bin/write-uuter-cloudflare-capture`, for the existing Cloudflare Browser
+Rendering Chromium DevTools service:
+
+```sh
+make build
+export WRITE_UUTER_CAPTURE_RUNNER="$PWD/bin/write-uuter-cloudflare-capture"
 ```
 
-It reads `CLOUDFLARE_ACCOUNT_ID` and `CLOUDFLARE_API_TOKEN` from its own
-environment only. The token needs Browser Rendering Write/Edit permission.
+```text
+POST   https://api.cloudflare.com/client/v4/accounts/{account_id}/browser-rendering/devtools/browser
+GET/WSS https://api.cloudflare.com/client/v4/accounts/{account_id}/browser-rendering/devtools/browser/{session_id}
+DELETE https://api.cloudflare.com/client/v4/accounts/{account_id}/browser-rendering/devtools/browser/{session_id}
+```
+
+The adapter reads `CLOUDFLARE_ACCOUNT_ID` and `CLOUDFLARE_API_TOKEN` from its
+own environment. The token needs Browser Rendering Write/Edit permission.
 Neither value reaches a prompt, a durable artifact, a log, an error, a process
 argument, or an agent environment, and both are stripped from the tmux client
-environment as well. Transport errors that embed the request URL are scrubbed
-before they are reported.
+environment as well. The adapter reduces provider failures to HTTP status and
+documented numeric error codes; provider response text, headers, URLs, CDP
+details, and credentials are not reported to the controller.
 
 | Contract | Value |
 | --- | --- |
 | Requests per run | 0-5, captured sequentially in artifact order |
 | Viewport | fixed 1280x800, `fullPage: false` |
 | Output | PNG only, at most 10 MiB, dimensions 1-20000 and at most 40M pixels |
-| Per-request timeout | 60 s, no automatic retry |
+| Runner deadline | each invocation has one aggregate budget of 60 s × requests, with an inner runner deadline reserved for cleanup |
 | Page targeting | optional CSS `selector` only |
 
-Cookies, HTTP authentication, extra headers, injected scripts or styles,
-clicks, waits, and multi-step navigation are never sent, and there is no
-fallback to a local Chromium, Playwright, or an MCP server. Successful captures
-become read-only `evidence/assets/screenshots/<id>.png` files plus a generated
+The Cloudflare adapter sends no cookies, page HTTP authentication, extra page
+headers, injected scripts or styles, clicks, or multi-step page interactions.
+It uses one DevTools browser session per capture to navigate, observe the final
+URL, resolve an optional selector, and capture the PNG, then closes that
+session. It has no fallback backend; backend/fallback selection is external
+runner policy. Successful initial captures become read-only
+`evidence/assets/screenshots/<id>.png` files; a replacement attempt uses the
+collision-proof `evidence/assets/screenshots/attempts/<id>/attempt-002.png`
+namespace. They are accompanied by a generated
 `evidence/screenshots.json` recording the request ID, path, requested URL and
-selector, timestamp, supported claims and rationale, engine, media type, byte
-size, dimensions, and SHA-256 digest. The Writer and the Evidence Reviewer
+selector, final URL, timestamp, supported claims and rationale, backend, media
+type, viewport/full-page state, byte size, dimensions, SHA-256 digest, and
+bounded action provenance. The Writer and the Evidence Reviewer
 receive both as read-only context.
 
 A run whose Researcher requested no screenshot behaves exactly as before and
-needs no Cloudflare variables. Otherwise a missing credential, an invalid
-request, an unsafe URL, an unknown claim ID, a failed or non-2xx response, a
-timeout, or an invalid or oversized image blocks the run before drafting, with
-a credential-free `block_reason`. A non-2xx response is reported by status code
-and the documented Cloudflare error codes only; the response body is never
-copied into an artifact, because filtering arbitrary upstream text cannot prove
-it carries no secret.
+needs no runner or provider variables. Otherwise a missing/unhealthy runner,
+invalid request, runner failure/timeout, or invalid output blocks before
+drafting with a credential-free recovery message. Runner stdout/stderr is
+discarded. The controller independently rejects schema drift, ambiguous or
+mismatched results, extra files, unsafe paths/file types, invalid PNGs, and
+metadata or digest disagreement before copying accepted bytes.
 
-The declared image size is bounded before the PNG is decoded, so a small body
-that declares an enormous canvas is rejected rather than allocated.
+Both the adapter before returning output and the controller after runner exit
+bound the PNG IHDR dimensions and pixel count before decoding. A small body
+that declares an enormous canvas is therefore rejected rather than allocated,
+and adapter validation never replaces the controller's independent check.
 
-For local development the base URL and per-request timeout can be redirected
+For local adapter development the base URL and per-request timeout can be redirected
 with `WRITE_UUTER_TEST_BROWSER_RENDERING_BASE_URL` and
-`WRITE_UUTER_TEST_SCREENSHOT_TIMEOUT`. Both are controller-only test seams:
-they never become sandbox rules or agent environment variables. The base URL
+`WRITE_UUTER_TEST_SCREENSHOT_TIMEOUT`. Both are adapter-only test seams. The base URL
 override is accepted only for a loopback origin (`127.0.0.1`, `::1`, or
 `localhost`) with no userinfo, query, or fragment, and is validated before the
 credentials are read; any other value fails the run, because the redirected
@@ -222,7 +247,19 @@ keychain, cannot start the keychain client, and cannot reach the user's home.
 Every candidate takes the same three passes before review: a Writer prose
 draft, a fresh Visual Editor, and a fresh Writer assembly invocation. Only the
 assembled candidate is reviewed and only it can become `article.md`. The visual
-pass does not consume one of the three review candidates.
+editor must open every screenshot it considers and compare visible content with
+the request reason, supported claims, and intended article context. Blank,
+skeleton, login/consent, bot-challenge, regional-unavailable, generic-error, or
+unrelated captures are explicitly non-placed unless that state is the requested
+evidence; PNG validity and provenance alone never authorize adoption. The
+visual pass records one request-keyed `usable` or `rejected` outcome per
+currently staged screenshot-origin entry in `visual-inputs.json`. A durable
+screenshot record that is no longer staged after retry exhaustion is terminal
+non-placement and receives no later outcome. After a first rejection, the controller permits exactly one fresh
+external-runner invocation carrying bounded rejection context and prior
+provenance but no backend direction. The replacement is evaluated again; a
+second rejection is a durable explicit non-placement and cannot loop. The
+visual pass does not consume one of the three review candidates.
 
 The Visual Editor decides where a diagram, a staged image, or a change of shape
 would make an explanation clearer, and records every opportunity it evaluated -
@@ -230,7 +267,8 @@ including the ones it rejected - in `visuals/article-00N/plan.md`. Supported
 actions are exactly `mermaid`, `existing_local_asset`, `restructure_text`, and
 `none`. There is no image quota, no per-heading rule, and a run can succeed
 with no visual at all. There is no image generation, no remote download, and no
-new browser capture in this slice.
+browser/backend choice in this slice; the bounded editorial retry is another
+provider-neutral external-runner invocation.
 
 The Writer assembly pass then applies the validated plan and shortens the prose
 a visual now carries. Go checks the result: every planned diagram and image

@@ -1,0 +1,38 @@
+{
+  "schema_version": 3,
+  "screenshots": [
+    {
+      "id": "shot-001",
+      "path": "evidence/assets/screenshots/shot-001.png",
+      "requested_url": "https://httpbingo.org/redirect-to?url=https%3A%2F%2Fexample.com%2F",
+      "final_url": "https://example.com/",
+      "captured_at": "2026-08-30T10:22:33.371676Z",
+      "supports": [
+        "claim-004"
+      ],
+      "reason": "Shows the destination page visibly identifying itself as Example Domain and stating it permits use in documentation examples, reached via the exact supplied redirect URL",
+      "backend": "cloudflare-chromium",
+      "media_type": "image/png",
+      "viewport": {
+        "width": 1280,
+        "height": 800
+      },
+      "full_page": false,
+      "byte_size": 19303,
+      "width": 1280,
+      "height": 800,
+      "sha256": "sha256:410dd462fa1cc2a7ae84c0feef288195963439a520d826b5a5d44429555d0a59",
+      "action_summary": [
+        "navigate to the requested public URL",
+        "observe the final URL from the capture session",
+        "capture the visible viewport as a PNG"
+      ],
+      "attempt": 1,
+      "editorial_outcome": {
+        "request_id": "shot-001",
+        "status": "usable",
+        "reason": "Opened the staged capture before planning placement. It shows a fully rendered page on a plain light grey background: a bold heading reading Example Domain, a paragraph reading This domain is for use in documentation examples without needing permission. Avoid use in operations., and a blue underlined Learn more link. That matches the request reason - the destination visibly identifies itself as Example Domain and visibly permits documentation use - and independently corroborates claim-004 at pixel level while also answering the unresolved claim-007. It is not a blank or skeleton screen, login or consent page, bot challenge, regional-unavailable page, or generic error. It fits the What the page shows section, the only part of the article making visibility claims."
+      }
+    }
+  ]
+}

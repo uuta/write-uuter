@@ -29,24 +29,65 @@ type processManifest struct {
 }
 
 type processTracker struct {
-	path      string
-	rootPID   int
-	mu        sync.Mutex
-	processes map[int]processIdentity
-	stop      chan struct{}
-	done      chan struct{}
+	path       string
+	rootPID    int
+	boundaries []string
+	mu         sync.Mutex
+	processes  map[int]processIdentity
+	stop       chan struct{}
+	done       chan struct{}
 }
 
 func configureProcessGroup(command *exec.Cmd) {
 	command.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 }
 
-func startProcessTracker(path string, rootPID int) (*processTracker, error) {
+// configureTrackedProcessLaunch makes the new process stop at exec before any
+// runner code executes. The controller can therefore establish stable root
+// ownership before the runner can fork, detach, or exit.
+func configureTrackedProcessLaunch(command *exec.Cmd) {
+	configureProcessGroup(command)
+	command.SysProcAttr.Ptrace = true
+}
+
+func waitForTrackedProcessLaunch(pid int, deadline time.Time) error {
+	for time.Now().Before(deadline) {
+		var status syscall.WaitStatus
+		waited, err := syscall.Wait4(pid, &status, syscall.WNOHANG|syscall.WUNTRACED, nil)
+		if errors.Is(err, syscall.EINTR) {
+			continue
+		}
+		if err != nil {
+			return fmt.Errorf("wait for tracked process launch: %w", err)
+		}
+		if waited == 0 {
+			time.Sleep(time.Millisecond)
+			continue
+		}
+		if waited != pid {
+			continue
+		}
+		if status.Stopped() {
+			return nil
+		}
+		return fmt.Errorf("tracked process exited before its launch boundary")
+	}
+	return fmt.Errorf("timed out waiting for tracked process launch boundary")
+}
+
+func releaseTrackedProcessLaunch(pid int) error {
+	if err := syscall.PtraceDetach(pid); err != nil {
+		return fmt.Errorf("release tracked process launch boundary: %w", err)
+	}
+	return nil
+}
+
+func startProcessTracker(path string, rootPID int, boundaries ...string) (*processTracker, error) {
 	if err := enableProcessBoundary(); err != nil {
 		return nil, err
 	}
 	tracker := &processTracker{
-		path: path, rootPID: rootPID, processes: make(map[int]processIdentity),
+		path: path, rootPID: rootPID, boundaries: append([]string(nil), boundaries...), processes: make(map[int]processIdentity),
 		stop: make(chan struct{}), done: make(chan struct{}),
 	}
 	if err := tracker.refresh(); err != nil {
@@ -79,19 +120,63 @@ func (tracker *processTracker) close() {
 
 func (tracker *processTracker) refresh() error {
 	tracker.mu.Lock()
-	defer tracker.mu.Unlock()
 	dirty := false
 	if len(tracker.processes) == 0 {
 		root, found, err := currentProcessIdentity(tracker.rootPID)
 		if err != nil {
+			tracker.mu.Unlock()
 			return err
 		}
 		if !found {
+			tracker.mu.Unlock()
 			return fmt.Errorf("ownership root pid %d disappeared", tracker.rootPID)
 		}
 		tracker.processes[root.PID] = root
 		dirty = true
 	}
+	if dirty {
+		if err := writeProcessManifest(tracker.path, tracker.processes); err != nil {
+			tracker.mu.Unlock()
+			return err
+		}
+	}
+	tracker.mu.Unlock()
+	return tracker.refreshDescendants()
+}
+
+func (tracker *processTracker) refreshBoundaries() error {
+	tracker.mu.Lock()
+	defer tracker.mu.Unlock()
+	dirty := false
+	// A private open-file boundary is inherited by ordinary runner children and
+	// remains discoverable after reparenting or setsid. Scan it at teardown,
+	// rather than in the millisecond ancestry poll: proc_listpidspath is a
+	// system-wide query and cannot be allowed to delay the hard runner deadline.
+	for _, boundary := range tracker.boundaries {
+		identities, err := boundaryProcessIdentities(boundary)
+		if err != nil {
+			return err
+		}
+		for _, identity := range identities {
+			if identity.PID == os.Getpid() {
+				continue
+			}
+			if previous, found := tracker.processes[identity.PID]; !found || previous.Started != identity.Started {
+				tracker.processes[identity.PID] = identity
+				dirty = true
+			}
+		}
+	}
+	if dirty {
+		return writeProcessManifest(tracker.path, tracker.processes)
+	}
+	return nil
+}
+
+func (tracker *processTracker) refreshDescendants() error {
+	tracker.mu.Lock()
+	defer tracker.mu.Unlock()
+	dirty := false
 	owned := make(map[int]bool, len(tracker.processes))
 	for pid, identity := range tracker.processes {
 		current, found, err := currentProcessIdentity(pid)
@@ -148,18 +233,39 @@ func (tracker *processTracker) waitFor(pid int, deadline time.Time) (processIden
 }
 
 func (tracker *processTracker) terminate(timeout time.Duration) error {
+	return tracker.terminateUntil(time.Now().Add(timeout))
+}
+
+func (tracker *processTracker) terminateUntil(deadline time.Time) error {
+	timeout := time.Until(deadline)
+	if timeout < 0 {
+		timeout = 0
+	}
 	tracker.close()
+	if err := tracker.refreshBoundaries(); err != nil {
+		return err
+	}
 	// Drain the kernel-adopted child boundary before signaling. A detached
 	// setsid child can be reparented to the runner exactly as its original
 	// parent exits; one final refresh is otherwise a lossy race.
-	stableUntil := time.Now().Add(100 * time.Millisecond)
+	stableWindow := timeout / 4
+	if stableWindow > 100*time.Millisecond {
+		stableWindow = 100 * time.Millisecond
+	}
+	stableUntil := time.Now().Add(stableWindow)
+	if stableUntil.After(deadline) {
+		stableUntil = deadline
+	}
 	for time.Now().Before(stableUntil) {
-		if err := tracker.refresh(); err != nil {
+		if err := tracker.refreshDescendants(); err != nil {
 			return err
 		}
-		time.Sleep(5 * time.Millisecond)
+		sleepUntil(stableUntil, 5*time.Millisecond)
 	}
-	return terminateOwnedProcesses(tracker.path, timeout, os.Getpid())
+	if err := tracker.refreshBoundaries(); err != nil {
+		return err
+	}
+	return terminateOwnedProcessesUntil(tracker.path, deadline, os.Getpid())
 }
 
 func currentProcessIdentity(pid int) (processIdentity, bool, error) {
@@ -283,19 +389,26 @@ func signalOwnedProcesses(path string, signal syscall.Signal, exceptPID int) err
 }
 
 func terminateOwnedProcesses(path string, timeout time.Duration, exceptPID int) error {
+	return terminateOwnedProcessesUntil(path, time.Now().Add(timeout), exceptPID)
+}
+
+func terminateOwnedProcessesUntil(path string, deadline time.Time, exceptPID int) error {
 	if err := signalOwnedProcesses(path, syscall.SIGTERM, exceptPID); err != nil {
 		return err
 	}
-	softDeadline := time.Now().Add(timeout / 4)
+	remaining := time.Until(deadline)
+	softDeadline := time.Now().Add(remaining / 4)
+	if softDeadline.After(deadline) {
+		softDeadline = deadline
+	}
 	for time.Now().Before(softDeadline) {
 		pids, err := ownedProcessIDs(path)
 		pids = withoutPID(pids, exceptPID)
 		if err != nil || len(pids) == 0 {
 			return err
 		}
-		time.Sleep(20 * time.Millisecond)
+		sleepUntil(softDeadline, 20*time.Millisecond)
 	}
-	deadline := time.Now().Add(timeout)
 	for time.Now().Before(deadline) {
 		if err := signalOwnedProcesses(path, syscall.SIGKILL, exceptPID); err != nil {
 			return err
@@ -305,13 +418,28 @@ func terminateOwnedProcesses(path string, timeout time.Duration, exceptPID int) 
 		if err != nil || len(pids) == 0 {
 			return err
 		}
-		time.Sleep(20 * time.Millisecond)
+		sleepUntil(deadline, 20*time.Millisecond)
 	}
 	pids, err := ownedProcessIDs(path)
 	if err != nil {
 		return err
 	}
-	return fmt.Errorf("owned processes remain after termination: %v", withoutPID(pids, exceptPID))
+	pids = withoutPID(pids, exceptPID)
+	if len(pids) == 0 {
+		return nil
+	}
+	return fmt.Errorf("owned processes remain after termination: %v", pids)
+}
+
+func sleepUntil(deadline time.Time, interval time.Duration) {
+	remaining := time.Until(deadline)
+	if remaining <= 0 {
+		return
+	}
+	if interval > remaining {
+		interval = remaining
+	}
+	time.Sleep(interval)
 }
 
 func withoutPID(pids []int, excluded int) []int {

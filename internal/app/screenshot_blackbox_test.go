@@ -2,21 +2,30 @@ package app_test
 
 import (
 	"bytes"
+	"context"
+	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"image"
 	"image/color"
 	"image/png"
-	"io"
 	"io/fs"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"reflect"
+	"slices"
+	"strconv"
 	"strings"
 	"sync"
+	"syscall"
 	"testing"
 	"time"
+
+	"github.com/coder/websocket"
+	"github.com/uuta/write-uuter/internal/captureprotocol"
 )
 
 // The fixture credentials carry a sentinel prefix the fake agent also knows,
@@ -28,83 +37,244 @@ const (
 )
 
 type screenshotManifestFile struct {
-	SchemaVersion int    `json:"schema_version"`
-	Engine        string `json:"engine"`
-	Viewport      struct {
-		Width  int `json:"width"`
-		Height int `json:"height"`
-	} `json:"viewport"`
-	Screenshots []struct {
+	SchemaVersion int `json:"schema_version"`
+	Screenshots   []struct {
 		ID           string   `json:"id"`
 		Path         string   `json:"path"`
 		RequestedURL string   `json:"requested_url"`
+		FinalURL     string   `json:"final_url"`
 		Selector     string   `json:"selector"`
 		CapturedAt   string   `json:"captured_at"`
 		Supports     []string `json:"supports"`
 		Reason       string   `json:"reason"`
-		Engine       string   `json:"engine"`
+		Backend      string   `json:"backend"`
 		MediaType    string   `json:"media_type"`
-		ByteSize     int      `json:"byte_size"`
-		Width        int      `json:"width"`
-		Height       int      `json:"height"`
-		SHA256       string   `json:"sha256"`
+		Viewport     struct {
+			Width  int `json:"width"`
+			Height int `json:"height"`
+		} `json:"viewport"`
+		FullPage         bool   `json:"full_page"`
+		ByteSize         int    `json:"byte_size"`
+		Width            int    `json:"width"`
+		Height           int    `json:"height"`
+		SHA256           string `json:"sha256"`
+		Attempt          int    `json:"attempt"`
+		EditorialOutcome *struct {
+			RequestID string `json:"request_id"`
+			Status    string `json:"status"`
+			Reason    string `json:"reason"`
+		} `json:"editorial_outcome"`
+		PriorAttempts []struct {
+			Attempt          int    `json:"attempt"`
+			Path             string `json:"path"`
+			Backend          string `json:"backend"`
+			SHA256           string `json:"sha256"`
+			EditorialOutcome *struct {
+				RequestID string `json:"request_id"`
+				Status    string `json:"status"`
+				Reason    string `json:"reason"`
+			} `json:"editorial_outcome"`
+		} `json:"prior_attempts"`
 	} `json:"screenshots"`
 }
 
 type capturedCall struct {
-	Method   string
-	Path     string
-	AuthHead string
-	Body     map[string]any
+	AuthHead       string
+	RequestedURL   string
+	FinalURL       string
+	Selector       string
+	ViewportWidth  int
+	ViewportHeight int
+	Screenshot     map[string]any
+	Methods        []string
 }
 
-// fakeBrowserRendering stands in for the Cloudflare Chromium quick action. It
-// records every call so the test can prove the exact endpoint, header, body,
-// and ordering the controller used.
+type fakeBrowserSession struct {
+	callIndex int
+	image     []byte
+}
+
+// fakeBrowserRendering stands in for Cloudflare's DevTools session API and
+// its WebSocket CDP connection. It records same-session navigation, final URL
+// observation, optional selector lookup, viewport, screenshot, and cleanup.
 type fakeBrowserRendering struct {
 	server *httptest.Server
 
 	mutex       sync.Mutex
 	calls       []capturedCall
+	sessions    map[string]*fakeBrowserSession
 	inFlight    int
 	maxInFlight int
+	deleted     int
+	hangMethod  string
+	releaseHang chan struct{}
 
 	respond func(index int, writer http.ResponseWriter)
 }
 
 func newFakeBrowserRendering(t *testing.T, respond func(index int, writer http.ResponseWriter)) *fakeBrowserRendering {
 	t.Helper()
-	fake := &fakeBrowserRendering{respond: respond}
-	fake.server = httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
-		body, _ := io.ReadAll(io.LimitReader(request.Body, 1<<20))
-		decoded := map[string]any{}
-		_ = json.Unmarshal(body, &decoded)
-		fake.mutex.Lock()
-		index := len(fake.calls)
-		fake.calls = append(fake.calls, capturedCall{
-			Method: request.Method, Path: request.URL.Path,
-			AuthHead: request.Header.Get("Authorization"), Body: decoded,
-		})
-		fake.inFlight++
-		if fake.inFlight > fake.maxInFlight {
-			fake.maxInFlight = fake.inFlight
+	fake := &fakeBrowserRendering{respond: respond, sessions: make(map[string]*fakeBrowserSession), releaseHang: make(chan struct{})}
+	t.Cleanup(func() {
+		select {
+		case <-fake.releaseHang:
+		default:
+			close(fake.releaseHang)
 		}
-		fake.mutex.Unlock()
-		defer func() {
+	})
+	fake.server = httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		launchPath := "/accounts/" + fixtureAccountID + "/browser-rendering/devtools/browser"
+		if request.Method == http.MethodPost && request.URL.Path == launchPath {
 			fake.mutex.Lock()
-			fake.inFlight--
+			index := len(fake.calls)
+			fake.calls = append(fake.calls, capturedCall{AuthHead: request.Header.Get("Authorization")})
+			fake.inFlight++
+			if fake.inFlight > fake.maxInFlight {
+				fake.maxInFlight = fake.inFlight
+			}
 			fake.mutex.Unlock()
-		}()
-		fake.respond(index, writer)
+
+			recorder := httptest.NewRecorder()
+			fake.respond(index, recorder)
+			response := recorder.Result()
+			if response.StatusCode < 200 || response.StatusCode > 299 {
+				fake.mutex.Lock()
+				fake.inFlight--
+				fake.mutex.Unlock()
+				for name, values := range response.Header {
+					writer.Header()[name] = append([]string(nil), values...)
+				}
+				writer.WriteHeader(response.StatusCode)
+				_, _ = writer.Write(recorder.Body.Bytes())
+				return
+			}
+			sessionID := fmt.Sprintf("session-%d", index+1)
+			fake.mutex.Lock()
+			fake.sessions[sessionID] = &fakeBrowserSession{callIndex: index, image: append([]byte(nil), recorder.Body.Bytes()...)}
+			fake.mutex.Unlock()
+			websocketURL := "ws" + strings.TrimPrefix(fake.server.URL, "http") + "/cdp/" + sessionID
+			writer.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(writer).Encode(map[string]string{"sessionId": sessionID, "webSocketDebuggerUrl": websocketURL})
+			return
+		}
+		if request.Method == http.MethodDelete && strings.HasPrefix(request.URL.Path, launchPath+"/") {
+			sessionID := strings.TrimPrefix(request.URL.Path, launchPath+"/")
+			fake.mutex.Lock()
+			if _, exists := fake.sessions[sessionID]; exists {
+				delete(fake.sessions, sessionID)
+				fake.inFlight--
+				fake.deleted++
+			}
+			fake.mutex.Unlock()
+			writer.Header().Set("Content-Type", "application/json")
+			_, _ = writer.Write([]byte(`{}`))
+			return
+		}
+		if request.Method == http.MethodGet && strings.HasPrefix(request.URL.Path, launchPath+"/") {
+			fake.serveCDP(writer, request, strings.TrimPrefix(request.URL.Path, launchPath+"/"))
+			return
+		}
+		http.NotFound(writer, request)
 	}))
 	t.Cleanup(fake.server.Close)
 	return fake
+}
+
+func (fake *fakeBrowserRendering) serveCDP(writer http.ResponseWriter, request *http.Request, sessionID string) {
+	fake.mutex.Lock()
+	session := fake.sessions[sessionID]
+	fake.mutex.Unlock()
+	if session == nil {
+		http.NotFound(writer, request)
+		return
+	}
+	connection, err := websocket.Accept(writer, request, nil)
+	if err != nil {
+		return
+	}
+	defer connection.CloseNow()
+	ctx := context.Background()
+	for {
+		_, payload, err := connection.Read(ctx)
+		if err != nil {
+			return
+		}
+		var command struct {
+			ID        int64          `json:"id"`
+			Method    string         `json:"method"`
+			Params    map[string]any `json:"params"`
+			SessionID string         `json:"sessionId"`
+		}
+		if json.Unmarshal(payload, &command) != nil {
+			return
+		}
+		fake.mutex.Lock()
+		call := &fake.calls[session.callIndex]
+		call.Methods = append(call.Methods, command.Method)
+		fake.mutex.Unlock()
+		if fake.hangMethod == command.Method {
+			<-fake.releaseHang
+			return
+		}
+		result := any(map[string]any{})
+		switch command.Method {
+		case "Target.createTarget":
+			result = map[string]any{"targetId": "target-1"}
+		case "Target.attachToTarget":
+			result = map[string]any{"sessionId": "target-session-1"}
+		case "Emulation.setDeviceMetricsOverride":
+			fake.mutex.Lock()
+			call.ViewportWidth = int(command.Params["width"].(float64))
+			call.ViewportHeight = int(command.Params["height"].(float64))
+			fake.mutex.Unlock()
+		case "Page.navigate":
+			requested, _ := command.Params["url"].(string)
+			fake.mutex.Lock()
+			call.RequestedURL = requested
+			call.FinalURL = requested + "?observed-final=1"
+			fake.mutex.Unlock()
+			result = map[string]any{"frameId": "frame-1"}
+			fake.writeCDP(ctx, connection, map[string]any{"method": "Page.loadEventFired", "sessionId": command.SessionID, "params": map[string]any{"timestamp": 1}})
+		case "Page.getNavigationHistory":
+			fake.mutex.Lock()
+			finalURL := call.FinalURL
+			fake.mutex.Unlock()
+			result = map[string]any{"currentIndex": 0, "entries": []map[string]any{{"id": 1, "url": finalURL, "title": "fixture", "transitionType": "typed"}}}
+		case "DOM.getDocument":
+			result = map[string]any{"root": map[string]any{"nodeId": 1}}
+		case "DOM.querySelector":
+			selector, _ := command.Params["selector"].(string)
+			fake.mutex.Lock()
+			call.Selector = selector
+			fake.mutex.Unlock()
+			result = map[string]any{"nodeId": 2}
+		case "DOM.getBoxModel":
+			result = map[string]any{"model": map[string]any{"border": []float64{10, 20, 74, 20, 74, 68, 10, 68}}}
+		case "Page.captureScreenshot":
+			fake.mutex.Lock()
+			call.Screenshot = command.Params
+			fake.mutex.Unlock()
+			result = map[string]any{"data": base64.StdEncoding.EncodeToString(session.image)}
+		}
+		fake.writeCDP(ctx, connection, map[string]any{"id": command.ID, "result": result, "sessionId": command.SessionID})
+	}
+}
+
+func (fake *fakeBrowserRendering) writeCDP(ctx context.Context, connection *websocket.Conn, message any) {
+	payload, _ := json.Marshal(message)
+	_ = connection.Write(ctx, websocket.MessageText, payload)
 }
 
 func (fake *fakeBrowserRendering) recorded() ([]capturedCall, int) {
 	fake.mutex.Lock()
 	defer fake.mutex.Unlock()
 	return append([]capturedCall(nil), fake.calls...), fake.maxInFlight
+}
+
+func (fake *fakeBrowserRendering) cleanupState() (active, deleted int) {
+	fake.mutex.Lock()
+	defer fake.mutex.Unlock()
+	return len(fake.sessions), fake.deleted
 }
 
 func respondPNG(width, height int) func(int, http.ResponseWriter) {
@@ -133,10 +303,16 @@ func fixturePNG(width, height int) []byte {
 }
 
 type screenshotOptions struct {
-	credentials bool
-	baseURL     string
-	timeout     string
-	runTimeout  string
+	credentials    bool
+	baseURL        string
+	timeout        string
+	runTimeout     string
+	omitRunner     bool
+	runner         string
+	runnerScenario string
+	runnerTimeout  string
+	runnerLog      string
+	trackerDelay   string
 }
 
 func runScreenshotScenario(t *testing.T, scenario string, options screenshotOptions) scenarioRun {
@@ -148,7 +324,28 @@ func runScreenshotScenario(t *testing.T, scenario string, options screenshotOpti
 	}
 	command := newRunCommand(t, binary, fake, runDir, runTimeout, filepath.Join(repositoryRoot(t), "examples", "brief.md"))
 	command.Env = withoutEnv(command.Env, "CLOUDFLARE_ACCOUNT_ID", "CLOUDFLARE_API_TOKEN",
-		"WRITE_UUTER_TEST_BROWSER_RENDERING_BASE_URL", "WRITE_UUTER_TEST_SCREENSHOT_TIMEOUT")
+		"WRITE_UUTER_CAPTURE_RUNNER", "WRITE_UUTER_TEST_BROWSER_RENDERING_BASE_URL", "WRITE_UUTER_TEST_SCREENSHOT_TIMEOUT",
+		"WRITE_UUTER_CAPTURE_RUNNER_DEADLINE_UNIX_MS", "WRITE_UUTER_TEST_CAPTURE_INVOCATION_LOG",
+		"WRITE_UUTER_TEST_CAPTURE_TRACKER_DELAY")
+	if !options.omitRunner && (options.baseURL != "" || options.runner != "") {
+		runner := options.runner
+		if runner == "" {
+			runner = filepath.Join(buildDir, "write-uuter-cloudflare-capture")
+		}
+		command.Env = append(command.Env, "WRITE_UUTER_CAPTURE_RUNNER="+runner)
+	}
+	if options.runnerScenario != "" {
+		command.Env = append(command.Env, "WRITE_UUTER_TEST_CAPTURE_SCENARIO="+options.runnerScenario)
+	}
+	if options.runnerTimeout != "" {
+		command.Env = append(command.Env, "WRITE_UUTER_TEST_CAPTURE_RUNNER_TIMEOUT="+options.runnerTimeout)
+	}
+	if options.runnerLog != "" {
+		command.Env = append(command.Env, "WRITE_UUTER_TEST_CAPTURE_INVOCATION_LOG="+options.runnerLog)
+	}
+	if options.trackerDelay != "" {
+		command.Env = append(command.Env, "WRITE_UUTER_TEST_CAPTURE_TRACKER_DELAY="+options.trackerDelay)
+	}
 	if options.credentials {
 		command.Env = append(command.Env,
 			"CLOUDFLARE_ACCOUNT_ID="+fixtureAccountID,
@@ -186,7 +383,7 @@ func TestBlackBoxScreenshotNoRequestKeepsExistingBehaviour(t *testing.T) {
 	for _, scenario := range []string{"happy", "shot_empty"} {
 		t.Run(scenario, func(t *testing.T) {
 			fake := newFakeBrowserRendering(t, respondPNG(64, 48))
-			run := runScreenshotScenario(t, scenario, screenshotOptions{baseURL: fake.server.URL})
+			run := runScreenshotScenario(t, scenario, screenshotOptions{baseURL: fake.server.URL, omitRunner: true})
 			if run.err != nil {
 				t.Fatalf("CLI failed without Cloudflare credentials: %v\n%s", run.err, run.output)
 			}
@@ -225,29 +422,24 @@ func TestBlackBoxScreenshotCaptureProducesManifestDigestAndRoleContext(t *testin
 		t.Fatalf("got %d browser rendering calls, want 1", len(calls))
 	}
 	call := calls[0]
-	if call.Method != http.MethodPost {
-		t.Errorf("method = %q, want POST", call.Method)
-	}
-	if want := "/accounts/" + fixtureAccountID + "/browser-rendering/screenshot"; call.Path != want {
-		t.Errorf("path = %q, want %q", call.Path, want)
-	}
 	if call.AuthHead != "Bearer "+fixtureAPIToken {
-		t.Errorf("authorization header was not the controller-owned bearer token")
+		t.Errorf("session launch did not carry the adapter-owned bearer token")
 	}
-	if call.Body["url"] != "https://example.com/report" || call.Body["selector"] != "main" {
-		t.Errorf("unexpected request body: %+v", call.Body)
+	if call.RequestedURL != "https://example.com/report" || call.Selector != "main" {
+		t.Errorf("same-session navigation/selector were not preserved: %+v", call)
 	}
-	viewport, _ := call.Body["viewport"].(map[string]any)
-	if viewport == nil || viewport["width"] != float64(1280) || viewport["height"] != float64(800) {
-		t.Errorf("viewport is not the fixed documented viewport: %+v", call.Body["viewport"])
+	if call.FinalURL == call.RequestedURL || call.FinalURL != "https://example.com/report?observed-final=1" {
+		t.Errorf("final URL was not observed independently in the capture session: %+v", call)
 	}
-	options, _ := call.Body["screenshotOptions"].(map[string]any)
-	if options == nil || options["type"] != "png" || options["fullPage"] != false {
-		t.Errorf("screenshot options are not the documented PNG viewport capture: %+v", call.Body["screenshotOptions"])
+	if call.ViewportWidth != 1280 || call.ViewportHeight != 800 {
+		t.Errorf("viewport is not the fixed documented viewport: %+v", call)
 	}
-	for _, forbidden := range []string{"cookies", "authenticate", "setExtraHTTPHeaders", "addScriptTag", "addStyleTag", "html", "userAgent", "waitForSelector"} {
-		if _, present := call.Body[forbidden]; present {
-			t.Errorf("request carried unsupported browser action %q", forbidden)
+	if call.Screenshot["format"] != "png" || call.Screenshot["captureBeyondViewport"] != true || call.Screenshot["clip"] == nil {
+		t.Errorf("selector screenshot options were not preserved: %+v", call.Screenshot)
+	}
+	for _, required := range []string{"Target.createTarget", "Target.attachToTarget", "Page.navigate", "Page.getNavigationHistory", "DOM.querySelector", "Page.captureScreenshot"} {
+		if !slices.Contains(call.Methods, required) {
+			t.Errorf("same-session CDP sequence omitted %s: %v", required, call.Methods)
 		}
 	}
 	if maxInFlight != 1 {
@@ -255,11 +447,8 @@ func TestBlackBoxScreenshotCaptureProducesManifestDigestAndRoleContext(t *testin
 	}
 
 	manifest := readScreenshotManifest(t, run.runDir)
-	if manifest.SchemaVersion != 1 || manifest.Engine != "cloudflare-chromium" {
+	if manifest.SchemaVersion != 3 {
 		t.Errorf("unexpected manifest header: %+v", manifest)
-	}
-	if manifest.Viewport.Width != 1280 || manifest.Viewport.Height != 800 {
-		t.Errorf("manifest viewport = %+v", manifest.Viewport)
 	}
 	if len(manifest.Screenshots) != 1 {
 		t.Fatalf("got %d manifest entries, want 1", len(manifest.Screenshots))
@@ -276,14 +465,17 @@ func TestBlackBoxScreenshotCaptureProducesManifestDigestAndRoleContext(t *testin
 	if record.ID != "shot-001" || record.Path != "evidence/assets/screenshots/shot-001.png" {
 		t.Errorf("unexpected record identity: %+v", record)
 	}
-	if record.RequestedURL != "https://example.com/report" || record.Selector != "main" {
+	if record.RequestedURL != "https://example.com/report" || record.FinalURL != call.FinalURL || record.FinalURL == record.RequestedURL || record.Selector != "main" {
 		t.Errorf("record lost the requested URL/selector: %+v", record)
 	}
 	if len(record.Supports) != 1 || record.Supports[0] != "claim-004" || strings.TrimSpace(record.Reason) == "" {
 		t.Errorf("record lost claim linkage or rationale: %+v", record)
 	}
-	if record.Engine != "cloudflare-chromium" || record.MediaType != "image/png" {
+	if record.Backend != "cloudflare-chromium" || record.MediaType != "image/png" {
 		t.Errorf("record lost provenance: %+v", record)
+	}
+	if record.Viewport.Width != 1280 || record.Viewport.Height != 800 || record.FullPage {
+		t.Errorf("record lost viewport/full-page provenance: %+v", record)
 	}
 	if record.ByteSize != len(imageBytes) || record.Width != 64 || record.Height != 48 {
 		t.Errorf("record size/dimensions disagree with the stored image: %+v", record)
@@ -387,8 +579,8 @@ func TestBlackBoxScreenshotSequentialCaptureAndFiveItemLimit(t *testing.T) {
 		}
 		wantOrder := []string{"https://example.com/report", "https://example.com/changelog", "https://example.com/pricing"}
 		for index, want := range wantOrder {
-			if calls[index].Body["url"] != want {
-				t.Errorf("call %d requested %v, want %q", index, calls[index].Body["url"], want)
+			if calls[index].RequestedURL != want {
+				t.Errorf("call %d requested %v, want %q", index, calls[index].RequestedURL, want)
 			}
 		}
 		manifest := readScreenshotManifest(t, run.runDir)
@@ -429,13 +621,13 @@ func TestBlackBoxScreenshotSequentialCaptureAndFiveItemLimit(t *testing.T) {
 }
 
 // Missing credentials block only the non-empty request path.
-func TestBlackBoxScreenshotMissingCredentialsBlockOnlyRequestedCaptures(t *testing.T) {
+func TestBlackBoxScreenshotMissingRunnerCredentialsBlockOnlyRequestedCaptures(t *testing.T) {
 	fake := newFakeBrowserRendering(t, respondPNG(16, 16))
 	run := runScreenshotScenario(t, "shot_one", screenshotOptions{baseURL: fake.server.URL})
-	assertBlockedBeforeWriter(t, run, "CLOUDFLARE_ACCOUNT_ID")
+	assertBlockedBeforeWriter(t, run, "capture runner exited with status 1")
 	state := readWorkflow(t, run.runDir)
-	if !strings.Contains(state.BlockReason, "CLOUDFLARE_API_TOKEN") {
-		t.Errorf("block reason does not name the missing token variable: %q", state.BlockReason)
+	if strings.Contains(state.BlockReason, "CLOUDFLARE") {
+		t.Errorf("block reason crossed the provider credential boundary: %q", state.BlockReason)
 	}
 	if calls, _ := fake.recorded(); len(calls) != 0 {
 		t.Fatalf("a credential-less run still called the browser: %+v", calls)
@@ -517,7 +709,7 @@ func TestBlackBoxScreenshotCaptureFailuresNeverReachTheWriter(t *testing.T) {
 			respond: func(_ int, writer http.ResponseWriter) {
 				writer.Header().Set("Content-Type", "image/jpeg")
 				writer.WriteHeader(http.StatusOK)
-				_, _ = writer.Write(fixturePNG(16, 16))
+				_, _ = writer.Write([]byte{0xff, 0xd8, 0xff, 0xd9})
 			},
 		},
 		{
@@ -541,14 +733,11 @@ func TestBlackBoxScreenshotCaptureFailuresNeverReachTheWriter(t *testing.T) {
 			run := runScreenshotScenario(t, "shot_one", screenshotOptions{
 				credentials: true, baseURL: fake.server.URL, timeout: testCase.timeout,
 			})
-			assertBlockedBeforeWriter(t, run, testCase.want)
+			assertBlockedBeforeWriter(t, run, "capture runner exited with status 1")
 			if _, err := os.Lstat(filepath.Join(run.runDir, "evidence", "assets", "screenshots")); err == nil {
 				t.Errorf("a failed capture left partial screenshot assets behind")
 			}
 			state := readWorkflow(t, run.runDir)
-			if !strings.Contains(state.BlockReason, "https://example.com/report") {
-				t.Errorf("block reason does not name the requested page: %q", state.BlockReason)
-			}
 			// The upstream error body is never copied into a durable artifact,
 			// so its free text must be absent even before scrubbing applies.
 			for _, upstream := range []string{"bad token", "not an image", "<html>"} {
@@ -673,24 +862,632 @@ func TestBlackBoxScreenshotRejectsNonLoopbackEndpointOverride(t *testing.T) {
 	run := runScreenshotScenario(t, "shot_one", screenshotOptions{
 		credentials: true, baseURL: "https://attacker.example/client/v4",
 	})
-	assertBlockedBeforeWriter(t, run, "must address a loopback host")
+	assertBlockedBeforeWriter(t, run, "capture runner exited with status 1")
 	if calls, _ := fake.recorded(); len(calls) != 0 {
 		t.Fatalf("a redirected run still issued a capture: %+v", calls)
 	}
 	assertNoCredentialLeak(t, run, readInvocationRecords(t, run.fixtureDir))
 }
 
+func TestBlackBoxExternalCaptureRunnerProtocolAndInvalidOutputs(t *testing.T) {
+	fakeRunner := filepath.Join(buildDir, "fake-capture-runner")
+	// Populate buildDir before constructing the path above is used.
+	_, _ = buildBinaries(t)
+	fakeRunner = filepath.Join(buildDir, "fake-capture-runner")
+
+	t.Run("fake_success", func(t *testing.T) {
+		run := runScreenshotScenario(t, "shot_selector", screenshotOptions{runner: fakeRunner})
+		if run.err != nil {
+			t.Fatalf("fake external runner failed: %v\n%s", run.err, run.output)
+		}
+		manifest := readScreenshotManifest(t, run.runDir)
+		if len(manifest.Screenshots) != 1 || manifest.Screenshots[0].Backend != "fake-backend" || manifest.Screenshots[0].FinalURL != "https://example.com/report" {
+			t.Fatalf("external provenance was not retained: %+v", manifest)
+		}
+		assertNoCapturePrivateRoots(t, run.runDir)
+	})
+
+	invalid := []struct {
+		scenario string
+		want     string
+		research string
+	}{
+		{"unknown-field", "unknown field", "shot_one"},
+		{"duplicate-field", "duplicate JSON key", "shot_one"},
+		{"omitted-full-page", "missing required field", "shot_one"},
+		{"null-full-page", "must be a JSON boolean", "shot_one"},
+		{"case-variant-full-page", "unknown field", "shot_one"},
+		{"full-page-alias-collision", "unknown field", "shot_one"},
+		{"wrong-version", "does not match protocol", "shot_one"},
+		{"malformed-result", "invalid capture runner result.json", "shot_one"},
+		{"missing-result-file", "did not produce a regular result.json", "shot_one"},
+		{"missing-result", "returned 0 results for 1 requests", "shot_one"},
+		{"duplicate-result", "returned 2 results for 1 requests", "shot_one"},
+		{"mismatch-id", "request ID", "shot_one"},
+		{"mismatch-url", "requested URL", "shot_one"},
+		{"unsafe-final-url", "invalid final URL", "shot_one"},
+		{"bad-media", "media type", "shot_one"},
+		{"bad-backend", "backend identifier", "shot_one"},
+		{"bad-timestamp", "invalid timestamp", "shot_one"},
+		{"bad-viewport", "viewport dimensions", "shot_one"},
+		{"mismatch-claims", "claim binding", "shot_one"},
+		{"mismatch-rationale", "claim binding", "shot_one"},
+		{"bad-trace", "exactly one", "shot_one"},
+		{"traversal", "clean relative path", "shot_one"},
+		{"absolute", "clean relative path", "shot_one"},
+		{"unsafe-path", "clean relative path", "shot_one"},
+		{"extra-file", "undeclared file", "shot_one"},
+		{"extra-root-file", "undeclared file", "shot_one"},
+		{"extra-directory", "undeclared directory", "shot_one"},
+		{"missing-asset", "not a regular no-follow file", "shot_one"},
+		{"symlink", "not a regular no-follow file", "shot_one"},
+		{"special-file", "not a regular no-follow file", "shot_one"},
+		{"invalid-png", "not a PNG", "shot_one"},
+		{"oversized-png", "accepted byte size", "shot_one"},
+		{"digest-mismatch", "digest does not match", "shot_one"},
+		{"size-mismatch", "size or dimensions", "shot_one"},
+		{"dimensions-mismatch", "size or dimensions", "shot_one"},
+		{"duplicate-asset", "duplicate asset path", "shot_multi"},
+		{"mutate-request", "modified or removed read-only request.json", "shot_one"},
+	}
+	for _, testCase := range invalid {
+		t.Run(testCase.scenario, func(t *testing.T) {
+			run := runScreenshotScenario(t, testCase.research, screenshotOptions{runner: fakeRunner, runnerScenario: testCase.scenario})
+			assertBlockedBeforeWriter(t, run, testCase.want)
+			assertNoCapturePrivateRoots(t, run.runDir)
+		})
+	}
+}
+
+func TestBlackBoxCapturedScreenshotPlacementBindsAcceptedRevision(t *testing.T) {
+	_, _ = buildBinaries(t)
+	fakeRunner := filepath.Join(buildDir, "fake-capture-runner")
+	run := runScreenshotScenario(t, "shot_place", screenshotOptions{runner: fakeRunner})
+	if run.err != nil {
+		t.Fatalf("placed screenshot run failed: %v\n%s", run.err, run.output)
+	}
+	evidence, err := os.ReadFile(filepath.Join(run.runDir, "evidence/assets/screenshots/shot-001.png"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var inputs struct {
+		Inputs []struct {
+			ID, Origin, Source, SHA256 string
+		} `json:"inputs"`
+	}
+	inputData, err := os.ReadFile(filepath.Join(run.runDir, "visual-inputs.json"))
+	if err != nil || json.Unmarshal(inputData, &inputs) != nil {
+		t.Fatalf("read screenshot visual-input binding: %v %s", err, inputData)
+	}
+	var input struct{ ID, Origin, Source, SHA256 string }
+	for _, candidate := range inputs.Inputs {
+		if candidate.ID == "shot-001" {
+			input = candidate
+		}
+	}
+	if input.ID != "shot-001" || input.Origin != "screenshot" || input.Source != "evidence/assets/screenshots/shot-001.png" || input.SHA256 != revision(evidence) {
+		t.Fatalf("visual-inputs.json lost screenshot origin/digest binding: %+v", input)
+	}
+	article, err := os.ReadFile(filepath.Join(run.runDir, "article.md"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	placedPath := "visuals/article-001/assets/shot-001.png"
+	if !strings.Contains(string(article), "]("+placedPath+")") {
+		t.Fatalf("accepted article did not embed captured screenshot %s:\n%s", placedPath, article)
+	}
+	manifest := readVisualManifest(t, run.runDir, 1)
+	if len(manifest.Assets) != 1 || manifest.Assets[0].Origin != "screenshot" || manifest.Assets[0].Source != input.Source || manifest.Assets[0].SHA256 != input.SHA256 {
+		t.Fatalf("visual manifest lost placed screenshot provenance: %+v", manifest.Assets)
+	}
+	wantRevision := candidateRevisionFromDisk(t, run.runDir, manifest)
+	state := readWorkflow(t, run.runDir)
+	if state.CurrentRevision != wantRevision || manifest.ReviewedRevision != wantRevision {
+		t.Fatalf("accepted revision is not bound to placed screenshot: workflow=%s manifest=%s want=%s", state.CurrentRevision, manifest.ReviewedRevision, wantRevision)
+	}
+	assertReviewsBoundTo(t, run.runDir, 1, wantRevision)
+	sawContentGate := false
+	for _, invocation := range readInvocationRecords(t, run.fixtureDir) {
+		if invocation.Role == "visual_editor" && strings.Contains(invocation.Prompt, "visible-content validation") &&
+			strings.Contains(invocation.Prompt, "claim-004") && strings.Contains(invocation.Prompt, "generic errors") {
+			sawContentGate = true
+		}
+	}
+	if !sawContentGate {
+		t.Fatal("Visual Editor did not receive the screenshot usability gate with claim/request context")
+	}
+}
+
+func TestBlackBoxUnusableScreenshotIsExplicitlyNotPlaced(t *testing.T) {
+	_, _ = buildBinaries(t)
+	run := runScreenshotScenario(t, "shot_unusable", screenshotOptions{
+		runner: filepath.Join(buildDir, "fake-capture-runner"), runnerScenario: "unusable-success",
+	})
+	if run.err != nil {
+		t.Fatalf("explicit non-placement run failed: %v\n%s", run.err, run.output)
+	}
+	article, err := os.ReadFile(filepath.Join(run.runDir, "article.md"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(article), "shot-001.png") {
+		t.Fatalf("unusable screenshot was silently placed:\n%s", article)
+	}
+	plan, err := os.ReadFile(filepath.Join(run.runDir, "visuals/article-001/plan.md"))
+	if err != nil || !bytes.Contains(plan, []byte("Explicit non-placement")) || !bytes.Contains(plan, []byte("unrelated")) {
+		t.Fatalf("unusable capture lacks an explicit durable non-placement: %v\n%s", err, plan)
+	}
+	manifest := readVisualManifest(t, run.runDir, 1)
+	if len(manifest.Assets) != 0 {
+		t.Fatalf("unusable screenshot entered the accepted revision: %+v", manifest.Assets)
+	}
+	screenshots := readScreenshotManifest(t, run.runDir)
+	if len(screenshots.Screenshots) != 1 || screenshots.Screenshots[0].Attempt != 2 ||
+		screenshots.Screenshots[0].EditorialOutcome == nil || screenshots.Screenshots[0].EditorialOutcome.Status != "rejected" ||
+		len(screenshots.Screenshots[0].PriorAttempts) != 1 || screenshots.Screenshots[0].PriorAttempts[0].EditorialOutcome == nil {
+		t.Fatalf("retry exhaustion lacks request-keyed durable non-placement: %+v", screenshots.Screenshots)
+	}
+}
+
+type captureInvocationLog struct {
+	Workspace string                          `json:"workspace"`
+	Request   captureprotocol.RequestDocument `json:"request"`
+}
+
+func readCaptureInvocationLog(t *testing.T, path string) []captureInvocationLog {
+	t.Helper()
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var records []captureInvocationLog
+	for _, line := range bytes.Split(bytes.TrimSpace(data), []byte{'\n'}) {
+		var record captureInvocationLog
+		if err := json.Unmarshal(line, &record); err != nil {
+			t.Fatalf("decode capture invocation log: %v", err)
+		}
+		records = append(records, record)
+	}
+	return records
+}
+
+func TestBlackBoxEditorialRejectionRetriesOnceWithNeutralPriorProvenance(t *testing.T) {
+	_, _ = buildBinaries(t)
+	logPath := filepath.Join(t.TempDir(), "capture-invocations.jsonl")
+	run := runScreenshotScenario(t, "shot_retry_success", screenshotOptions{
+		runner: filepath.Join(buildDir, "fake-capture-runner"), runnerScenario: "retry-success", runnerLog: logPath,
+	})
+	if run.err != nil {
+		t.Fatalf("retry-success run failed: %v\n%s", run.err, run.output)
+	}
+	invocations := readCaptureInvocationLog(t, logPath)
+	if len(invocations) != 2 {
+		t.Fatalf("capture invocations = %d, want exactly 2", len(invocations))
+	}
+	if invocations[0].Workspace == invocations[1].Workspace {
+		t.Fatalf("retry reused private workspace %q", invocations[0].Workspace)
+	}
+	for _, invocation := range invocations {
+		if _, err := os.Lstat(invocation.Workspace); !errors.Is(err, os.ErrNotExist) {
+			t.Fatalf("private workspace survived runner exit: %s (%v)", invocation.Workspace, err)
+		}
+	}
+	first := invocations[0].Request.Requests[0]
+	second := invocations[1].Request.Requests[0]
+	if first.PriorAttempt != nil || second.PriorAttempt == nil {
+		t.Fatalf("prior-attempt handoff = first:%+v second:%+v", first.PriorAttempt, second.PriorAttempt)
+	}
+	prior := second.PriorAttempt
+	if prior.RequestID != "shot-001" || prior.Attempt != 1 || prior.EditorialOutcome.RequestID != "shot-001" ||
+		prior.EditorialOutcome.Status != "rejected" || strings.TrimSpace(prior.EditorialOutcome.Reason) == "" ||
+		prior.Backend != "fake-backend" || prior.SHA256 == "" {
+		t.Fatalf("retry lost request-keyed rejection/provenance: %+v", prior)
+	}
+	encodedSecond, _ := json.Marshal(second)
+	for _, backendDirective := range []string{"preferred_backend", "fallback_backend", "cloudflare"} {
+		if bytes.Contains(bytes.ToLower(encodedSecond), []byte(backendDirective)) {
+			t.Fatalf("retry request leaked backend selection directive %q: %s", backendDirective, encodedSecond)
+		}
+	}
+	manifest := readScreenshotManifest(t, run.runDir)
+	record := manifest.Screenshots[0]
+	if record.Attempt != 2 || record.Backend != "fake-backend-second-attempt" || record.EditorialOutcome == nil || record.EditorialOutcome.Status != "usable" || len(record.PriorAttempts) != 1 {
+		t.Fatalf("retry-success durable lifecycle is incomplete: %+v", record)
+	}
+	firstBytes, err := os.ReadFile(filepath.Join(run.runDir, record.PriorAttempts[0].Path))
+	if err != nil {
+		t.Fatal(err)
+	}
+	secondBytes, err := os.ReadFile(filepath.Join(run.runDir, record.Path))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if bytes.Equal(firstBytes, secondBytes) || revision(firstBytes) != record.PriorAttempts[0].SHA256 || revision(secondBytes) != record.SHA256 {
+		t.Fatalf("attempt bytes/provenance are not independently retained")
+	}
+	visual := readVisualManifest(t, run.runDir, 1)
+	if len(visual.Assets) != 1 || visual.Assets[0].SHA256 != record.SHA256 || visual.Assets[0].SHA256 == record.PriorAttempts[0].SHA256 {
+		t.Fatalf("accepted revision placed rejected pixels or lost replacement binding: %+v", visual.Assets)
+	}
+	visualEditors := 0
+	for _, invocation := range readInvocationRecords(t, run.fixtureDir) {
+		if invocation.Role == "visual_editor" {
+			visualEditors++
+		}
+	}
+	if visualEditors != 2 {
+		t.Fatalf("editorial evaluations = %d, want exactly 2", visualEditors)
+	}
+	assertNoCapturePrivateRoots(t, run.runDir)
+}
+
+func TestBlackBoxEditorialRetryExhaustionStopsWithoutPlacementOrLoop(t *testing.T) {
+	_, _ = buildBinaries(t)
+	logPath := filepath.Join(t.TempDir(), "capture-invocations.jsonl")
+	run := runScreenshotScenario(t, "shot_retry_exhaust", screenshotOptions{
+		runner: filepath.Join(buildDir, "fake-capture-runner"), runnerScenario: "retry-exhaust", runnerLog: logPath,
+	})
+	if run.err != nil {
+		t.Fatalf("retry-exhaustion run failed: %v\n%s", run.err, run.output)
+	}
+	if invocations := readCaptureInvocationLog(t, logPath); len(invocations) != 2 {
+		t.Fatalf("capture retry loop count = %d, want exactly 2", len(invocations))
+	}
+	record := readScreenshotManifest(t, run.runDir).Screenshots[0]
+	if record.Attempt != 2 || record.EditorialOutcome == nil || record.EditorialOutcome.Status != "rejected" || len(record.PriorAttempts) != 1 {
+		t.Fatalf("exhaustion lacks explicit durable non-placement: %+v", record)
+	}
+	article, err := os.ReadFile(filepath.Join(run.runDir, "article.md"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if bytes.Contains(article, []byte("shot-001")) || len(readVisualManifest(t, run.runDir, 1).Assets) != 0 {
+		t.Fatalf("rejected capture entered accepted article revision:\n%s", article)
+	}
+	visualEditors := 0
+	for _, invocation := range readInvocationRecords(t, run.fixtureDir) {
+		if invocation.Role == "visual_editor" {
+			visualEditors++
+		}
+	}
+	if visualEditors != 2 {
+		t.Fatalf("editorial evaluations = %d, want exactly 2", visualEditors)
+	}
+	assertNoCapturePrivateRoots(t, run.runDir)
+}
+
+func TestBlackBoxRetryExhaustionRemainsTerminalAcrossCandidates(t *testing.T) {
+	_, _ = buildBinaries(t)
+	logPath := filepath.Join(t.TempDir(), "capture-invocations.jsonl")
+	run := runScreenshotScenario(t, "shot_retry_terminal_later_place", screenshotOptions{
+		runner: filepath.Join(buildDir, "fake-capture-runner"), runnerScenario: "retry-exhaust", runnerLog: logPath,
+	})
+	if run.err == nil || !strings.Contains(run.output, "asset \"shot-001\" is not a controller-staged visual input") {
+		t.Fatalf("later candidate was not blocked from reviving terminal pixels: %v\n%s", run.err, run.output)
+	}
+	if invocations := readCaptureInvocationLog(t, logPath); len(invocations) != 2 {
+		t.Fatalf("terminal request capture count = %d, want exactly 2", len(invocations))
+	}
+	record := readScreenshotManifest(t, run.runDir).Screenshots[0]
+	if record.Attempt != 2 || record.EditorialOutcome == nil || record.EditorialOutcome.Status != "rejected" ||
+		!strings.Contains(record.EditorialOutcome.Reason, "unusable or unrelated") || len(record.PriorAttempts) != 1 {
+		t.Fatalf("later candidate changed durable exhaustion: %+v", record)
+	}
+	if _, err := os.Stat(filepath.Join(run.runDir, "article.md")); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("twice-rejected pixels reached a published article: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(run.runDir, "visuals/article-002/assets/shot-001.png")); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("later candidate placed terminal screenshot: %v", err)
+	}
+	visualEditors := 0
+	laterAttempted := false
+	for _, invocation := range readInvocationRecords(t, run.fixtureDir) {
+		if invocation.Role == "visual_editor" {
+			visualEditors++
+			laterAttempted = laterAttempted || invocation.Candidate == 2
+		}
+	}
+	if visualEditors != 3 || !laterAttempted {
+		t.Fatalf("visual-editor lifecycle = %d calls, later attempted=%v; want two evaluations then one blocked later candidate", visualEditors, laterAttempted)
+	}
+	assertNoCapturePrivateRoots(t, run.runDir)
+}
+
+func TestBlackBoxCompliantLaterCandidateCompletesAfterRetryExhaustion(t *testing.T) {
+	_, _ = buildBinaries(t)
+	logPath := filepath.Join(t.TempDir(), "capture-invocations.jsonl")
+	run := runScreenshotScenario(t, "shot_retry_terminal_later_compliant", screenshotOptions{
+		runner: filepath.Join(buildDir, "fake-capture-runner"), runnerScenario: "retry-exhaust", runnerLog: logPath,
+	})
+	if run.err != nil {
+		t.Fatalf("compliant later candidate failed after terminal exhaustion: %v\n%s", run.err, run.output)
+	}
+	if invocations := readCaptureInvocationLog(t, logPath); len(invocations) != 2 {
+		t.Fatalf("terminal request capture count = %d, want exactly 2", len(invocations))
+	}
+	record := readScreenshotManifest(t, run.runDir).Screenshots[0]
+	if record.Attempt != 2 || record.EditorialOutcome == nil || record.EditorialOutcome.Status != "rejected" || len(record.PriorAttempts) != 1 {
+		t.Fatalf("successful later candidate changed durable exhaustion: %+v", record)
+	}
+	article, err := os.ReadFile(filepath.Join(run.runDir, "article.md"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if bytes.Contains(article, []byte("shot-001")) || len(readVisualManifest(t, run.runDir, 2).Assets) != 0 {
+		t.Fatalf("terminal screenshot entered the accepted later candidate: %s", article)
+	}
+	visualEditors := 0
+	compliantLaterEditor := false
+	for _, invocation := range readInvocationRecords(t, run.fixtureDir) {
+		if invocation.Role != "visual_editor" {
+			continue
+		}
+		visualEditors++
+		if invocation.Candidate == 2 {
+			compliantLaterEditor = strings.Contains(invocation.Prompt, "origin is `screenshot`") &&
+				strings.Contains(invocation.Prompt, "terminal non-placement")
+		}
+	}
+	if visualEditors != 3 || !compliantLaterEditor {
+		t.Fatalf("later editor did not receive/follow the staged-only contract: calls=%d compliant=%v", visualEditors, compliantLaterEditor)
+	}
+	assertNoCapturePrivateRoots(t, run.runDir)
+}
+
+func TestBlackBoxRetryAssetNamespaceCannotOverwriteAnotherRequest(t *testing.T) {
+	_, _ = buildBinaries(t)
+	logPath := filepath.Join(t.TempDir(), "capture-invocations.jsonl")
+	run := runScreenshotScenario(t, "shot_retry_path_collision", screenshotOptions{
+		runner: filepath.Join(buildDir, "fake-capture-runner"), runnerScenario: "path-collision", runnerLog: logPath,
+	})
+	if run.err != nil {
+		t.Fatalf("collision regression run failed: %v\n%s", run.err, run.output)
+	}
+	invocations := readCaptureInvocationLog(t, logPath)
+	if len(invocations) != 2 || len(invocations[0].Request.Requests) != 2 || len(invocations[1].Request.Requests) != 1 ||
+		invocations[1].Request.Requests[0].RequestID != "shot-001" {
+		t.Fatalf("unexpected request-keyed retry lifecycle: %+v", invocations)
+	}
+	manifest := readScreenshotManifest(t, run.runDir)
+	if len(manifest.Screenshots) != 2 {
+		t.Fatalf("screenshot records = %d, want 2", len(manifest.Screenshots))
+	}
+	first, other := manifest.Screenshots[0], manifest.Screenshots[1]
+	if first.ID != "shot-001" || first.Attempt != 2 || first.Path != "evidence/assets/screenshots/attempts/shot-001/attempt-002.png" ||
+		other.ID != "shot-001-attempt-002" || other.Attempt != 1 || other.Path != "evidence/assets/screenshots/shot-001-attempt-002.png" ||
+		first.Path == other.Path {
+		t.Fatalf("attempt paths are not request-disjoint: first=%+v other=%+v", first, other)
+	}
+	firstBytes, err := os.ReadFile(filepath.Join(run.runDir, first.Path))
+	if err != nil {
+		t.Fatal(err)
+	}
+	otherBytes, err := os.ReadFile(filepath.Join(run.runDir, other.Path))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if bytes.Equal(firstBytes, otherBytes) || revision(firstBytes) != first.SHA256 || revision(otherBytes) != other.SHA256 {
+		t.Fatalf("retry overwrote or rebound another request's accepted evidence")
+	}
+	if first.EditorialOutcome == nil || first.EditorialOutcome.Status != "usable" || other.EditorialOutcome == nil || other.EditorialOutcome.Status != "usable" {
+		t.Fatalf("both request-keyed records were not evaluated after retry: first=%+v other=%+v", first.EditorialOutcome, other.EditorialOutcome)
+	}
+	assertNoCapturePrivateRoots(t, run.runDir)
+}
+
+func TestBlackBoxExternalCaptureRunnerFailuresAndCleanup(t *testing.T) {
+	_, _ = buildBinaries(t)
+	fakeRunner := filepath.Join(buildDir, "fake-capture-runner")
+
+	t.Run("missing_runner", func(t *testing.T) {
+		run := runScreenshotScenario(t, "shot_one", screenshotOptions{omitRunner: true})
+		assertBlockedBeforeWriter(t, run, "WRITE_UUTER_CAPTURE_RUNNER")
+		assertNoCapturePrivateRoots(t, run.runDir)
+	})
+	for _, scenario := range []string{"nonzero", "partial"} {
+		t.Run(scenario, func(t *testing.T) {
+			t.Setenv("WRITE_UUTER_CAPTURE_SECRET", secretSentinel+"runner")
+			run := runScreenshotScenario(t, "shot_one", screenshotOptions{runner: fakeRunner, runnerScenario: scenario})
+			assertBlockedBeforeWriter(t, run, "capture runner exited with status")
+			if strings.Contains(run.output, secretSentinel) || strings.Contains(readWorkflow(t, run.runDir).BlockReason, secretSentinel) {
+				t.Fatal("runner output crossed the credential-safe diagnostic boundary")
+			}
+			assertNoCapturePrivateRoots(t, run.runDir)
+		})
+	}
+	t.Run("timeout", func(t *testing.T) {
+		run := runScreenshotScenario(t, "shot_one", screenshotOptions{runner: fakeRunner, runnerScenario: "timeout", runnerTimeout: "200ms"})
+		assertBlockedBeforeWriter(t, run, "capture runner timed out")
+		assertNoCapturePrivateRoots(t, run.runDir)
+	})
+	t.Run("inner_deadline_closes_remote_session_before_outer_cleanup", func(t *testing.T) {
+		fake := newFakeBrowserRendering(t, respondPNG(64, 48))
+		fake.hangMethod = "Page.navigate"
+		run := runScreenshotScenario(t, "shot_one", screenshotOptions{
+			credentials: true, baseURL: fake.server.URL, timeout: "3s",
+			runnerTimeout: "3s", runTimeout: "7s",
+		})
+		assertBlockedBeforeWriter(t, run, "capture runner")
+		active, deleted := fake.cleanupState()
+		if active != 0 || deleted != 1 {
+			t.Fatalf("remote cleanup state after equal outer/adapter timeout: active=%d deleted=%d", active, deleted)
+		}
+		assertNoCapturePrivateRoots(t, run.runDir)
+	})
+	t.Run("descriptor_holding_descendant", func(t *testing.T) {
+		marker := filepath.Join(t.TempDir(), "descendant.pid")
+		t.Setenv("WRITE_UUTER_TEST_CAPTURE_CHILD_PID", marker)
+		started := time.Now()
+		run := runScreenshotScenario(t, "shot_one", screenshotOptions{
+			runner: fakeRunner, runnerScenario: "descriptor-descendant", runnerTimeout: "2s", runTimeout: "8s",
+		})
+		elapsed := time.Since(started)
+		assertBlockedBeforeWriter(t, run, "capture runner timed out")
+		if elapsed >= 4*time.Second {
+			t.Fatalf("capture deadline was not bounded: elapsed %s for a 2s deadline", elapsed)
+		}
+		pidData, err := os.ReadFile(marker)
+		if err != nil {
+			t.Fatalf("descriptor-holding descendant was not observed: %v", err)
+		}
+		pid, err := strconv.Atoi(strings.TrimSpace(string(pidData)))
+		if err != nil {
+			t.Fatalf("invalid descendant pid %q: %v", pidData, err)
+		}
+		assertPIDGone(t, pid)
+		assertNoCapturePrivateRoots(t, run.runDir)
+	})
+	t.Run("post_acceptance_replacement", func(t *testing.T) {
+		marker := filepath.Join(t.TempDir(), "child.pid")
+		t.Setenv("WRITE_UUTER_TEST_CAPTURE_CHILD_PID", marker)
+		run := runScreenshotScenario(t, "shot_place", screenshotOptions{runner: fakeRunner, runnerScenario: "replace-after-exit"})
+		if run.err != nil {
+			t.Fatalf("run failed: %v\n%s", run.err, run.output)
+		}
+		data, err := os.ReadFile(filepath.Join(run.runDir, "evidence/assets/screenshots/shot-001.png"))
+		if err != nil || bytes.Equal(data, []byte("replacement")) {
+			t.Fatalf("accepted evidence was replaced: %v", err)
+		}
+		if _, err := png.Decode(bytes.NewReader(data)); err != nil {
+			t.Fatalf("accepted evidence is no longer the validated PNG: %v", err)
+		}
+		articlePath := filepath.Join(run.runDir, "article.md")
+		articleBefore, err := os.ReadFile(articlePath)
+		if err != nil {
+			t.Fatal(err)
+		}
+		manifestBefore := readVisualManifest(t, run.runDir, 1)
+		if len(manifestBefore.Assets) != 1 || manifestBefore.Assets[0].SHA256 != revision(data) {
+			t.Fatalf("placed revision was not bound to accepted evidence: %+v", manifestBefore.Assets)
+		}
+		revisionBefore := readWorkflow(t, run.runDir).CurrentRevision
+		pidData, err := os.ReadFile(marker)
+		if err != nil {
+			t.Fatalf("replacement child was not observed: %v", err)
+		}
+		pid, err := strconv.Atoi(strings.TrimSpace(string(pidData)))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := syscall.Kill(pid, 0); err != syscall.ESRCH {
+			t.Fatalf("capture runner child %d survived acceptance cleanup: %v", pid, err)
+		}
+		time.Sleep(600 * time.Millisecond)
+		evidenceAfter, evidenceErr := os.ReadFile(filepath.Join(run.runDir, "evidence/assets/screenshots/shot-001.png"))
+		articleAfter, articleErr := os.ReadFile(articlePath)
+		if evidenceErr != nil || articleErr != nil || !bytes.Equal(evidenceAfter, data) || !bytes.Equal(articleAfter, articleBefore) {
+			t.Fatalf("post-exit mutation changed durable evidence or article: evidence=%v article=%v", evidenceErr, articleErr)
+		}
+		manifestAfter := readVisualManifest(t, run.runDir, 1)
+		if !reflect.DeepEqual(manifestAfter, manifestBefore) || readWorkflow(t, run.runDir).CurrentRevision != revisionBefore {
+			t.Fatalf("post-exit mutation changed accepted placed revision")
+		}
+		assertNoCapturePrivateRoots(t, run.runDir)
+	})
+}
+
+func TestBlackBoxFastCaptureRunnerExitReachesNormalResultAndStatusHandling(t *testing.T) {
+	_, _ = buildBinaries(t)
+	fakeRunner := filepath.Join(buildDir, "fake-capture-runner")
+
+	t.Run("valid_result", func(t *testing.T) {
+		for attempt := 0; attempt < 5; attempt++ {
+			run := runScreenshotScenario(t, "shot_one", screenshotOptions{
+				runner: fakeRunner, runnerScenario: "fast-success", trackerDelay: "20ms",
+			})
+			if run.err != nil {
+				t.Fatalf("fast valid runner attempt %d failed: %v\n%s", attempt+1, run.err, run.output)
+			}
+			manifest := readScreenshotManifest(t, run.runDir)
+			if len(manifest.Screenshots) != 1 || manifest.Screenshots[0].Backend != "fake-backend" {
+				t.Fatalf("fast valid runner attempt %d did not reach result validation: %+v", attempt+1, manifest)
+			}
+			assertNoCapturePrivateRoots(t, run.runDir)
+		}
+	})
+
+	t.Run("nonzero_status", func(t *testing.T) {
+		t.Setenv("WRITE_UUTER_CAPTURE_SECRET", secretSentinel+"fast-runner")
+		for attempt := 0; attempt < 5; attempt++ {
+			run := runScreenshotScenario(t, "shot_one", screenshotOptions{
+				runner: fakeRunner, runnerScenario: "nonzero", trackerDelay: "20ms",
+			})
+			assertBlockedBeforeWriter(t, run, "capture runner exited with status 7")
+			if strings.Contains(run.output, "process ownership") || strings.Contains(run.output, secretSentinel) ||
+				strings.Contains(readWorkflow(t, run.runDir).BlockReason, secretSentinel) {
+				t.Fatalf("fast nonzero attempt %d bypassed sanitized status handling: %s", attempt+1, run.output)
+			}
+			assertNoCapturePrivateRoots(t, run.runDir)
+		}
+	})
+}
+
+func TestBlackBoxFastCaptureRunnerDetachedDescendantsAreAlwaysRemoved(t *testing.T) {
+	_, _ = buildBinaries(t)
+	fakeRunner := filepath.Join(buildDir, "fake-capture-runner")
+
+	for _, testCase := range []struct {
+		name           string
+		runnerScenario string
+		wantStatus     string
+	}{
+		{name: "valid_result", runnerScenario: "fast-detached-success"},
+		{name: "nonzero_status", runnerScenario: "fast-detached-nonzero", wantStatus: "capture runner exited with status 7"},
+	} {
+		t.Run(testCase.name, func(t *testing.T) {
+			for attempt := 0; attempt < 5; attempt++ {
+				marker := filepath.Join(t.TempDir(), fmt.Sprintf("detached-%d.pid", attempt))
+				t.Setenv("WRITE_UUTER_TEST_CAPTURE_CHILD_PID", marker)
+				run := runScreenshotScenario(t, "shot_one", screenshotOptions{
+					runner: fakeRunner, runnerScenario: testCase.runnerScenario, trackerDelay: "20ms",
+				})
+				if testCase.wantStatus == "" {
+					if run.err != nil {
+						t.Fatalf("fast detached success attempt %d failed: %v\n%s", attempt+1, run.err, run.output)
+					}
+					if manifest := readScreenshotManifest(t, run.runDir); len(manifest.Screenshots) != 1 || manifest.Screenshots[0].Backend != "fake-backend" {
+						t.Fatalf("fast detached success attempt %d lost its valid result: %+v", attempt+1, manifest)
+					}
+				} else {
+					assertBlockedBeforeWriter(t, run, testCase.wantStatus)
+				}
+				pidData, err := os.ReadFile(marker)
+				if err != nil {
+					t.Fatalf("fast detached attempt %d did not record a descendant: %v", attempt+1, err)
+				}
+				pid, err := strconv.Atoi(strings.TrimSpace(string(pidData)))
+				if err != nil {
+					t.Fatalf("fast detached attempt %d recorded invalid PID %q: %v", attempt+1, pidData, err)
+				}
+				assertPIDGone(t, pid)
+				assertNoCapturePrivateRoots(t, run.runDir)
+			}
+		})
+	}
+}
+
+func assertNoCapturePrivateRoots(t *testing.T, runDir string) {
+	t.Helper()
+	paths, err := filepath.Glob(filepath.Join(filepath.Dir(runDir), ".write-uuter-capture-*"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(paths) != 0 {
+		t.Fatalf("capture runner private workspace survived cleanup: %v", paths)
+	}
+}
+
 // pngSignatureBytes is the PNG magic number. A prompt must never contain it:
 // images are staged as files, never inlined into an agent assignment.
 var pngSignatureBytes = []byte{0x89, 'P', 'N', 'G', '\r', '\n', 0x1a, '\n'}
 
-// The capture path must remain a remote HTTP call. No local browser engine or
-// driver may be introduced behind it. (An MCP server cannot appear either: the
-// controller launches no process for a capture, which the failure-path tests
-// above observe directly.)
+// Browser execution must remain outside the controller. The controller may
+// launch only the configured external runner; no local browser engine, driver,
+// per-agent browser, or MCP server may be introduced into article workflow
+// code. Provider-specific transport stays inside the external adapter.
 func TestScreenshotSliceReferencesNoLocalBrowserEngine(t *testing.T) {
-	// "cloudflare-chromium" is the remote engine name and is expected; a local
-	// driver or a locally launched browser binary is not.
+	// "cloudflare-chromium" is recorded external-backend provenance and is
+	// expected; a controller-owned driver or browser binary is not.
 	forbidden := []string{"playwright", "puppeteer", "chromedriver", "chrome-headless",
 		"exec.command(\"chrom", "/applications/google chrome", "headless_shell"}
 	_ = filepath.WalkDir(filepath.Join(repositoryRoot(t), "internal"), func(path string, entry fs.DirEntry, err error) error {

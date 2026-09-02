@@ -1,0 +1,10 @@
+{
+  "screenshots": [
+    {
+      "id": "shot-001",
+      "url": "https://httpbingo.org/redirect-to?url=https%3A%2F%2Fexample.com%2F",
+      "reason": "Shows the destination page visibly identifying itself as Example Domain and stating it permits use in documentation examples, reached via the exact supplied redirect URL",
+      "supports": ["claim-004"]
+    }
+  ]
+}

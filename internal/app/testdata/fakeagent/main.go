@@ -351,6 +351,8 @@ func runReviewer(workDir, scenario string, candidate int, lens, revision string)
 		result.Lens = "story"
 	}
 	needsFinding := (scenario == "mustfix_once" && candidate == 1 && lens == "evidence") ||
+		(scenario == "shot_retry_terminal_later_place" && candidate == 1 && lens == "evidence") ||
+		(scenario == "shot_retry_terminal_later_compliant" && candidate == 1 && lens == "evidence") ||
 		(scenario == "budget" && lens == "evidence") ||
 		(scenario == "human" && candidate == 1 && lens == "evidence") ||
 		(scenario == "optional_invalid" && candidate == 1 && lens == "evidence") ||
@@ -458,9 +460,16 @@ type visualOpportunity struct {
 }
 
 type visualPlan struct {
-	SchemaVersion  int                 `json:"schema_version"`
-	SourceRevision string              `json:"source_revision"`
-	Opportunities  []visualOpportunity `json:"opportunities"`
+	SchemaVersion      int                          `json:"schema_version"`
+	SourceRevision     string                       `json:"source_revision"`
+	Opportunities      []visualOpportunity          `json:"opportunities"`
+	ScreenshotOutcomes []screenshotEditorialOutcome `json:"screenshot_outcomes,omitempty"`
+}
+
+type screenshotEditorialOutcome struct {
+	RequestID string `json:"request_id"`
+	Status    string `json:"status"`
+	Reason    string `json:"reason"`
 }
 
 type visualInputManifest struct {
@@ -484,6 +493,51 @@ func stagedVisualInputID(workDir string) string {
 		return ""
 	}
 	return manifest.Inputs[0].ID
+}
+
+func stagedScreenshotInputID(workDir string) string {
+	var manifest visualInputManifest
+	if readJSON(filepath.Join(workDir, "context", "visual-inputs.json"), &manifest) != nil {
+		return ""
+	}
+	for _, input := range manifest.Inputs {
+		if input.Origin == "screenshot" {
+			return input.ID
+		}
+	}
+	return ""
+}
+
+func stagedScreenshotInputIDs(workDir string) []string {
+	var manifest visualInputManifest
+	if readJSON(filepath.Join(workDir, "context", "visual-inputs.json"), &manifest) != nil {
+		return nil
+	}
+	var ids []string
+	for _, input := range manifest.Inputs {
+		if input.Origin == "screenshot" {
+			ids = append(ids, input.ID)
+		}
+	}
+	return ids
+}
+
+func stagedScreenshotAttempt(workDir, requestID string) int {
+	var manifest struct {
+		Screenshots []struct {
+			ID      string `json:"id"`
+			Attempt int    `json:"attempt"`
+		} `json:"screenshots"`
+	}
+	if readJSON(filepath.Join(workDir, "context", "evidence", "screenshots.json"), &manifest) != nil {
+		return 0
+	}
+	for _, screenshot := range manifest.Screenshots {
+		if screenshot.ID == requestID {
+			return screenshot.Attempt
+		}
+	}
+	return 0
 }
 
 // runVisualEditor emits one deterministic plan. Each case is either an
@@ -513,6 +567,53 @@ func runVisualEditor(workDir, scenario string, candidate int, revision string) {
 			{ID: "vis-002", Location: "section: opening", Action: "none",
 				Rationale: "The opening is two sentences long and a visual would add nothing."},
 		}
+	case "shot_place":
+		assetID := stagedScreenshotInputID(workDir)
+		plan.Opportunities = []visualOpportunity{
+			{ID: "vis-001", Location: "section: How the stages connect", Action: "existing_local_asset",
+				AssetID: assetID, AltText: "Captured report page supporting claim 004",
+				Rationale: "The visible captured report matches the request reason, supports claim-004, and belongs beside this explanation."},
+			{ID: "vis-002", Location: "section: opening", Action: "none",
+				Rationale: "The opening is two sentences long and a visual would add nothing."},
+		}
+	case "shot_unusable", "shot_retry_exhaust", "shot_retry_terminal_later_place", "shot_retry_terminal_later_compliant":
+		if scenario == "shot_retry_terminal_later_place" && candidate > 1 {
+			plan.Opportunities = []visualOpportunity{
+				{ID: "vis-001", Location: "section: How the stages connect", Action: "existing_local_asset",
+					AssetID: "shot-001", AltText: "A twice rejected capture that must remain unavailable",
+					Rationale: "This deliberately tries to place terminally rejected pixels from an earlier candidate."},
+			}
+			plan.ScreenshotOutcomes = append(plan.ScreenshotOutcomes, screenshotEditorialOutcome{
+				RequestID: "shot-001", Status: "usable", Reason: "This deliberately attempts to overwrite the terminal rejection.",
+			})
+			break
+		}
+		if scenario == "shot_retry_terminal_later_compliant" && candidate > 1 {
+			plan.Opportunities = []visualOpportunity{
+				{ID: "vis-001", Location: "section: How the stages connect", Action: "none",
+					Rationale: "The terminal screenshot is not staged, so this candidate leaves it durably unplaced."},
+			}
+			break
+		}
+		plan.Opportunities = []visualOpportunity{
+			{ID: "vis-001", Location: "section: How the stages connect", Action: "none",
+				Rationale: "Explicit non-placement: the capture is unrelated to claim-004, the request reason, and this workflow article context."},
+		}
+	case "shot_retry_path_collision":
+		plan.Opportunities = []visualOpportunity{
+			{ID: "vis-001", Location: "section: How the stages connect", Action: "none",
+				Rationale: "Both request-keyed captures were evaluated; neither improves this explanation enough to place."},
+		}
+	case "shot_retry_success":
+		assetID := stagedScreenshotInputID(workDir)
+		if stagedScreenshotAttempt(workDir, assetID) == 1 {
+			plan.Opportunities = []visualOpportunity{{ID: "vis-001", Location: "section: How the stages connect", Action: "none",
+				Rationale: "Explicit first-attempt rejection: the capture does not visibly support claim-004 or the request reason."}}
+		} else {
+			plan.Opportunities = []visualOpportunity{{ID: "vis-001", Location: "section: How the stages connect", Action: "existing_local_asset",
+				AssetID: assetID, AltText: "Replacement report page supporting claim 004",
+				Rationale: "The replacement visibly matches the request reason, claim-004, and the surrounding article context."}}
+		}
 	case "visual_unstaged":
 		plan.Opportunities = []visualOpportunity{
 			{ID: "vis-001", Location: "section: How the stages connect", Action: "existing_local_asset",
@@ -532,6 +633,17 @@ func runVisualEditor(workDir, scenario string, candidate int, revision string) {
 				Rationale: "The opening is two sentences long and a visual would add nothing."},
 		}
 	}
+	for _, requestID := range stagedScreenshotInputIDs(workDir) {
+		status := "usable"
+		reason := "The visible capture matches its request reason, supported claims, and intended article context."
+		if scenario == "shot_unusable" || scenario == "shot_retry_exhaust" || scenario == "shot_retry_terminal_later_place" || scenario == "shot_retry_terminal_later_compliant" ||
+			(scenario == "shot_retry_success" && stagedScreenshotAttempt(workDir, requestID) == 1) ||
+			(scenario == "shot_retry_path_collision" && requestID == "shot-001" && stagedScreenshotAttempt(workDir, requestID) == 1) {
+			status = "rejected"
+			reason = "The visible capture is unusable or unrelated to its request reason, supported claims, and article context."
+		}
+		plan.ScreenshotOutcomes = append(plan.ScreenshotOutcomes, screenshotEditorialOutcome{RequestID: requestID, Status: status, Reason: reason})
+	}
 	if scenario == "visual_stale" {
 		plan.SourceRevision = "sha256:stale"
 	}
@@ -540,6 +652,9 @@ func runVisualEditor(workDir, scenario string, candidate int, revision string) {
 	for _, opportunity := range plan.Opportunities {
 		fmt.Fprintf(&report, "- ID: %s\n- Location: %s\n- Action: %s\n- Rationale: %s\n\n",
 			opportunity.ID, opportunity.Location, opportunity.Action, opportunity.Rationale)
+	}
+	for _, outcome := range plan.ScreenshotOutcomes {
+		fmt.Fprintf(&report, "- Screenshot request: %s\n- Editorial status: %s\n- Editorial reason: %s\n\n", outcome.RequestID, outcome.Status, outcome.Reason)
 	}
 	if scenario != "visual_missing_report" {
 		mustWrite(filepath.Join(workDir, "plan.md"), report.String())
@@ -666,7 +781,7 @@ func runPM(workDir, scenario string) {
 			classification := "valid_optional"
 			reason := "The finding is useful but not required."
 			switch scenario {
-			case "mustfix_once", "budget":
+			case "mustfix_once", "budget", "shot_retry_terminal_later_place", "shot_retry_terminal_later_compliant":
 				classification = "valid_must_fix"
 				reason = "The supported correction is required."
 			case "human", "detached_child_block":
@@ -1132,7 +1247,7 @@ func writeScreenshotScenario(workDir, scenario string) {
 		return
 	case "shot_empty":
 		mustWrite(target, "{\"screenshots\": []}\n")
-	case "shot_one", "shot_selector":
+	case "shot_one", "shot_selector", "shot_place", "shot_unusable", "shot_retry_success", "shot_retry_exhaust", "shot_retry_terminal_later_place", "shot_retry_terminal_later_compliant":
 		selector := ""
 		if scenario == "shot_selector" {
 			selector = `,"selector":"main"`
@@ -1148,6 +1263,10 @@ func writeScreenshotScenario(workDir, scenario string) {
 			entry("shot-001", "https://example.com/report", "claim-004"),
 			entry("shot-002", "https://example.com/changelog", "claim-005"),
 			entry("shot-003", "https://example.com/pricing", "claim-006")))
+	case "shot_retry_path_collision":
+		mustWrite(target, fmt.Sprintf("{\"screenshots\":[%s,%s]}\n",
+			entry("shot-001", "https://example.com/report", "claim-004"),
+			entry("shot-001-attempt-002", "https://example.com/changelog", "claim-005")))
 	case "shot_five", "shot_six":
 		entries := []string{
 			entry("shot-001", "https://example.com/report", "claim-004"),

@@ -10,6 +10,8 @@ import (
 	"strings"
 )
 
+func boundaryProcessIdentities(_ string) ([]processIdentity, error) { return nil, nil }
+
 func psProcessSnapshot() (map[int]processIdentity, error) {
 	command := exec.Command("/bin/ps", "-axo", "pid=,ppid=,lstart=")
 	output, err := command.Output()

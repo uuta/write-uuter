@@ -2,21 +2,17 @@ package app
 
 import (
 	"bytes"
-	"context"
-	"encoding/binary"
 	"encoding/json"
-	"errors"
 	"fmt"
-	"image/png"
-	"io"
 	"net"
-	"net/http"
 	"net/url"
 	"os"
 	"path/filepath"
-	"strconv"
 	"strings"
 	"time"
+
+	"github.com/uuta/write-uuter/internal/captureimage"
+	"github.com/uuta/write-uuter/internal/captureprotocol"
 )
 
 // Screenshot acquisition contract.
@@ -32,45 +28,32 @@ const (
 	// screenshotAssetDir is controller-owned. The Researcher may not write it.
 	screenshotAssetDir = "evidence/assets/screenshots"
 
-	screenshotManifestVersion = 1
-	// screenshotEngine names the only capture engine in this slice.
-	screenshotEngine = "cloudflare-chromium"
+	screenshotManifestVersion = 3
 	// screenshotMediaType is the only accepted response media type.
 	screenshotMediaType = "image/png"
 
 	// screenshotMaxRequests is the per-run request ceiling.
 	screenshotMaxRequests = 5
 	// screenshotMaxBytes is the accepted per-image byte ceiling (10 MiB).
-	screenshotMaxBytes = 10 << 20
+	screenshotMaxBytes = captureimage.MaxBytes
 	// screenshotViewportWidth/Height is the fixed documented viewport. It is
 	// not configurable: a stable viewport keeps captures comparable.
 	screenshotViewportWidth  = 1280
 	screenshotViewportHeight = 800
 	// screenshotMinDimension/screenshotMaxDimension bound accepted image
 	// dimensions, so a 0-pixel or absurd image is rejected as invalid.
-	screenshotMinDimension = 1
-	screenshotMaxDimension = 20000
+	screenshotMinDimension = captureimage.MinDimension
+	screenshotMaxDimension = captureimage.MaxDimension
 	// screenshotMaxPixels bounds the decoded allocation. Per-axis limits alone
 	// do not: 20000x20000 is inside them and still allocates gigabytes.
-	screenshotMaxPixels = 40_000_000
-	// screenshotRequestTimeout bounds one capture request end to end. There is
-	// no automatic retry: a retry could hide duplicate billing or an unstable
-	// page, so a timeout blocks the run instead.
+	screenshotMaxPixels = captureimage.MaxPixels
+	// screenshotRequestTimeout bounds one capture request end to end. The only
+	// retry is a new invocation after a request-keyed editorial rejection, and
+	// each logical request is capped at two evaluated attempts.
 	screenshotRequestTimeout = 60 * time.Second
-
-	// screenshotAPIBaseURL is the Cloudflare API base. The Chromium quick
-	// action is POST /accounts/{account_id}/browser-rendering/screenshot.
-	screenshotAPIBaseURL = "https://api.cloudflare.com/client/v4"
-
-	screenshotAccountEnv = "CLOUDFLARE_ACCOUNT_ID"
-	screenshotTokenEnv   = "CLOUDFLARE_API_TOKEN"
-
-	// screenshotBaseURLEnv redirects the API base for local testing. It is
-	// accepted only for a loopback origin: the request it retargets carries the
-	// bearer token, so an ambient value pointing anywhere else would be a
-	// credential exfiltration channel rather than a test seam.
-	screenshotBaseURLEnv = "WRITE_UUTER_TEST_BROWSER_RENDERING_BASE_URL"
 )
+
+var pngSignature = []byte{0x89, 'P', 'N', 'G', '\r', '\n', 0x1a, '\n'}
 
 // screenshotRequestDocument is the strict shape of the optional Researcher
 // artifact. Unknown fields and duplicate JSON keys are rejected recursively.
@@ -92,18 +75,17 @@ type screenshotRequestEntry struct {
 // ScreenshotRequest is one validated request. Every field has already passed
 // the contract by the time a value of this type exists.
 type ScreenshotRequest struct {
-	ID       string
-	URL      string
-	Reason   string
-	Supports []string
-	Selector string
+	ID           string
+	URL          string
+	Reason       string
+	Supports     []string
+	Selector     string
+	PriorAttempt *captureprotocol.PriorAttempt
 }
 
 // ScreenshotManifest is controller-generated. No agent writes it.
 type ScreenshotManifest struct {
 	SchemaVersion int                `json:"schema_version"`
-	Engine        string             `json:"engine"`
-	Viewport      ScreenshotViewport `json:"viewport"`
 	Screenshots   []ScreenshotRecord `json:"screenshots"`
 }
 
@@ -113,24 +95,67 @@ type ScreenshotViewport struct {
 }
 
 type ScreenshotRecord struct {
-	ID           string    `json:"id"`
-	Path         string    `json:"path"`
-	RequestedURL string    `json:"requested_url"`
-	Selector     string    `json:"selector,omitempty"`
-	CapturedAt   time.Time `json:"captured_at"`
-	Supports     []string  `json:"supports"`
-	Reason       string    `json:"reason"`
-	Engine       string    `json:"engine"`
-	MediaType    string    `json:"media_type"`
-	ByteSize     int       `json:"byte_size"`
-	Width        int       `json:"width"`
-	Height       int       `json:"height"`
-	SHA256       string    `json:"sha256"`
+	ID               string                      `json:"id"`
+	Path             string                      `json:"path"`
+	RequestedURL     string                      `json:"requested_url"`
+	FinalURL         string                      `json:"final_url"`
+	Selector         string                      `json:"selector,omitempty"`
+	CapturedAt       time.Time                   `json:"captured_at"`
+	Supports         []string                    `json:"supports"`
+	Reason           string                      `json:"reason"`
+	Backend          string                      `json:"backend"`
+	MediaType        string                      `json:"media_type"`
+	Viewport         ScreenshotViewport          `json:"viewport"`
+	FullPage         bool                        `json:"full_page"`
+	ByteSize         int                         `json:"byte_size"`
+	Width            int                         `json:"width"`
+	Height           int                         `json:"height"`
+	SHA256           string                      `json:"sha256"`
+	ActionSummary    []string                    `json:"action_summary,omitempty"`
+	TraceReference   string                      `json:"trace_reference,omitempty"`
+	Attempt          int                         `json:"attempt"`
+	EditorialOutcome *ScreenshotEditorialOutcome `json:"editorial_outcome,omitempty"`
+	PriorAttempts    []ScreenshotAttemptRecord   `json:"prior_attempts,omitempty"`
+}
+
+type ScreenshotEditorialOutcome struct {
+	RequestID string `json:"request_id"`
+	Status    string `json:"status"`
+	Reason    string `json:"reason"`
+}
+
+type ScreenshotAttemptRecord struct {
+	Attempt          int                         `json:"attempt"`
+	Path             string                      `json:"path"`
+	FinalURL         string                      `json:"final_url"`
+	CapturedAt       time.Time                   `json:"captured_at"`
+	Backend          string                      `json:"backend"`
+	MediaType        string                      `json:"media_type"`
+	Viewport         ScreenshotViewport          `json:"viewport"`
+	FullPage         bool                        `json:"full_page"`
+	ByteSize         int                         `json:"byte_size"`
+	Width            int                         `json:"width"`
+	Height           int                         `json:"height"`
+	SHA256           string                      `json:"sha256"`
+	ActionSummary    []string                    `json:"action_summary,omitempty"`
+	TraceReference   string                      `json:"trace_reference,omitempty"`
+	EditorialOutcome *ScreenshotEditorialOutcome `json:"editorial_outcome"`
 }
 
 // screenshotAssetPath is the durable relative path of one captured image.
 func screenshotAssetPath(id string) string {
 	return screenshotAssetDir + "/" + id + ".png"
+}
+
+func screenshotAttemptAssetPath(id string, attempt int) string {
+	if attempt <= 1 {
+		return screenshotAssetPath(id)
+	}
+	// Initial request assets always occupy a single file directly below
+	// screenshotAssetDir. Later attempts live in a controller-owned namespace
+	// below that directory, so no valid single-component request ID can derive
+	// the same path as another request's initial asset.
+	return fmt.Sprintf("%s/attempts/%s/attempt-%03d.png", screenshotAssetDir, id, attempt)
 }
 
 // parseScreenshotRequests validates the Researcher artifact completely. Every
@@ -399,280 +424,15 @@ func validatePublicHostname(host string) error {
 	return nil
 }
 
-// screenshotCredentials never leaves the controller process. It is not staged
-// into a workspace, an environment, a process argument, or a prompt.
-type screenshotCredentials struct {
-	accountID string
-	apiToken  string
-}
-
-func loadScreenshotCredentials() (screenshotCredentials, error) {
-	var credentials screenshotCredentials
-	account := strings.TrimSpace(os.Getenv(screenshotAccountEnv))
-	token := strings.TrimSpace(os.Getenv(screenshotTokenEnv))
-	var missing []string
-	if account == "" {
-		missing = append(missing, screenshotAccountEnv)
-	}
-	if token == "" {
-		missing = append(missing, screenshotTokenEnv)
-	}
-	if len(missing) != 0 {
-		return credentials, fmt.Errorf("screenshot capture requires %s; set it in the controller environment",
-			strings.Join(missing, " and "))
-	}
-	if err := validateCredentialToken(screenshotAccountEnv, account, 128); err != nil {
-		return credentials, err
-	}
-	if strings.ContainsAny(account, "/?#") {
-		return credentials, fmt.Errorf("%s contains a URL path character", screenshotAccountEnv)
-	}
-	if err := validateCredentialToken(screenshotTokenEnv, token, 4096); err != nil {
-		return credentials, err
-	}
-	return screenshotCredentials{accountID: account, apiToken: token}, nil
-}
-
-// validateCredentialToken reports only the variable name, never its value.
-func validateCredentialToken(name, value string, limit int) error {
-	if len(value) > limit {
-		return fmt.Errorf("%s is longer than %d characters", name, limit)
-	}
-	for _, character := range value {
-		if character < 0x21 || character > 0x7e {
-			return fmt.Errorf("%s contains a character that is not printable ASCII", name)
-		}
-	}
-	return nil
-}
-
-// screenshotClient owns the authenticated Cloudflare call. No agent process
-// ever constructs it, receives it, or sees any value inside it.
-type screenshotClient struct {
-	credentials screenshotCredentials
-	baseURL     string
-	timeout     time.Duration
-	http        *http.Client
-}
-
-// resolveScreenshotBaseURL returns the API base for this run. It is validated
-// before any credential is read, so a hostile ambient override fails the run
-// instead of ever being combined with the bearer token.
-func resolveScreenshotBaseURL() (string, error) {
-	override := strings.TrimSpace(os.Getenv(screenshotBaseURLEnv))
-	if override == "" {
-		return screenshotAPIBaseURL, nil
-	}
-	parsed, err := url.Parse(override)
-	if err != nil {
-		return "", fmt.Errorf("%s is not a parseable URL", screenshotBaseURLEnv)
-	}
-	if parsed.Scheme != "http" && parsed.Scheme != "https" {
-		return "", fmt.Errorf("%s scheme %q is not http or https", screenshotBaseURLEnv, parsed.Scheme)
-	}
-	if parsed.Opaque != "" || parsed.User != nil || parsed.RawQuery != "" || parsed.Fragment != "" {
-		return "", fmt.Errorf("%s must be a bare origin with an optional path", screenshotBaseURLEnv)
-	}
-	host := parsed.Hostname()
-	address := net.ParseIP(host)
-	if host != "localhost" && (address == nil || !address.IsLoopback()) {
-		return "", fmt.Errorf("%s must address a loopback host, but names %q; the redirected request carries the API token",
-			screenshotBaseURLEnv, host)
-	}
-	return strings.TrimSuffix(override, "/"), nil
-}
-
-func newScreenshotClient(credentials screenshotCredentials, baseURL string) *screenshotClient {
-	timeout := screenshotRequestTimeout
-	if injected, err := time.ParseDuration(os.Getenv("WRITE_UUTER_TEST_SCREENSHOT_TIMEOUT")); err == nil && injected > 0 {
-		timeout = injected
-	}
-	return &screenshotClient{
-		credentials: credentials,
-		baseURL:     baseURL,
-		timeout:     timeout,
-		http: &http.Client{
-			// Keep-alives are disabled so the transport never replays a POST
-			// onto a reused connection: one request means one capture.
-			Transport: &http.Transport{DisableKeepAlives: true, Proxy: http.ProxyFromEnvironment},
-			CheckRedirect: func(*http.Request, []*http.Request) error {
-				return errors.New("browser rendering endpoint redirected")
-			},
-		},
-	}
-}
-
-// scrub removes credential material from any text that is about to become an
-// error, a log line, or a durable artifact. Transport errors embed the request
-// URL, which contains the account ID, so this is not optional.
-func (client *screenshotClient) scrub(text string) string {
-	for _, secret := range []string{client.credentials.apiToken, client.credentials.accountID} {
-		if secret != "" {
-			text = strings.ReplaceAll(text, secret, "[redacted]")
-		}
-	}
-	return text
-}
-
-func (client *screenshotClient) scrubbed(format string, arguments ...any) error {
-	return errors.New(client.scrub(fmt.Sprintf(format, arguments...)))
-}
-
-type screenshotAPIRequest struct {
-	URL               string                  `json:"url"`
-	Selector          string                  `json:"selector,omitempty"`
-	Viewport          ScreenshotViewport      `json:"viewport"`
-	ScreenshotOptions screenshotAPIImageParam `json:"screenshotOptions"`
-}
-
-type screenshotAPIImageParam struct {
-	Type     string `json:"type"`
-	FullPage bool   `json:"fullPage"`
-}
-
-type capturedImage struct {
-	data   []byte
-	width  int
-	height int
-}
-
-// capture performs exactly one Cloudflare Chromium screenshot request. It never
-// retries, never falls back to another engine, and never sends cookies,
-// credentials, extra headers, scripts, or navigation steps for the page.
-func (client *screenshotClient) capture(parent context.Context, request ScreenshotRequest) (capturedImage, error) {
-	var captured capturedImage
-	payload, err := json.Marshal(screenshotAPIRequest{
-		URL:               request.URL,
-		Selector:          request.Selector,
-		Viewport:          ScreenshotViewport{Width: screenshotViewportWidth, Height: screenshotViewportHeight},
-		ScreenshotOptions: screenshotAPIImageParam{Type: "png", FullPage: false},
-	})
-	if err != nil {
-		return captured, fmt.Errorf("encode screenshot request %q: %w", request.ID, err)
-	}
-	ctx, cancel := context.WithTimeout(parent, client.timeout)
-	defer cancel()
-	endpoint := client.baseURL + "/accounts/" + client.credentials.accountID + "/browser-rendering/screenshot"
-	httpRequest, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader(payload))
-	if err != nil {
-		return captured, client.scrubbed("build screenshot request %q: %v", request.ID, err)
-	}
-	httpRequest.Header.Set("Authorization", "Bearer "+client.credentials.apiToken)
-	httpRequest.Header.Set("Content-Type", "application/json")
-	httpRequest.Header.Set("Accept", screenshotMediaType)
-	response, err := client.http.Do(httpRequest)
-	if err != nil {
-		if errors.Is(err, context.DeadlineExceeded) {
-			return captured, client.scrubbed("screenshot %q timed out after %s capturing %s",
-				request.ID, client.timeout, request.URL)
-		}
-		return captured, client.scrubbed("screenshot %q request failed for %s: %v", request.ID, request.URL, err)
-	}
-	defer func() {
-		_, _ = io.Copy(io.Discard, io.LimitReader(response.Body, 4096))
-		_ = response.Body.Close()
-	}()
-	body, err := io.ReadAll(io.LimitReader(response.Body, screenshotMaxBytes+1))
-	if err != nil {
-		if errors.Is(err, context.DeadlineExceeded) {
-			return captured, client.scrubbed("screenshot %q timed out after %s reading %s",
-				request.ID, client.timeout, request.URL)
-		}
-		return captured, client.scrubbed("screenshot %q response read failed for %s: %v", request.ID, request.URL, err)
-	}
-	if response.StatusCode < 200 || response.StatusCode > 299 {
-		// Only the status code and the documented numeric error codes are
-		// reported. Upstream free text is never copied into a durable
-		// artifact: scrubbing is a denylist and cannot prove that an arbitrary
-		// response body is credential-free. No response header is ever read.
-		return captured, client.scrubbed("screenshot %q for %s returned HTTP %d (%s)",
-			request.ID, request.URL, response.StatusCode, apiErrorCodes(body))
-	}
-	if len(body) > screenshotMaxBytes {
-		return captured, client.scrubbed("screenshot %q for %s exceeds the %d byte limit",
-			request.ID, request.URL, screenshotMaxBytes)
-	}
-	if mediaType := strings.TrimSpace(strings.SplitN(response.Header.Get("Content-Type"), ";", 2)[0]); mediaType != screenshotMediaType {
-		return captured, client.scrubbed("screenshot %q for %s returned media type %q, want %q",
-			request.ID, request.URL, mediaType, screenshotMediaType)
-	}
-	width, height, err := validatePNG(body)
-	if err != nil {
-		return captured, client.scrubbed("screenshot %q for %s: %v", request.ID, request.URL, err)
-	}
-	return capturedImage{data: body, width: width, height: height}, nil
-}
-
-// screenshotAPIErrorEnvelope is the documented Cloudflare error shape. Only
-// the numeric codes are ever extracted from it.
-type screenshotAPIErrorEnvelope struct {
-	Errors []struct {
-		Code int `json:"code"`
-	} `json:"errors"`
-}
-
-// apiErrorCodes renders the documented numeric error codes of a failed
-// response and nothing else. Every value it can return is generated here, so
-// the diagnostic is credential-free by construction rather than by filtering.
-func apiErrorCodes(body []byte) string {
-	var envelope screenshotAPIErrorEnvelope
-	if err := json.Unmarshal(body, &envelope); err != nil || len(envelope.Errors) == 0 {
-		return "no documented error code in the response body"
-	}
-	codes := make([]string, 0, len(envelope.Errors))
-	for _, item := range envelope.Errors {
-		codes = append(codes, strconv.Itoa(item.Code))
-	}
-	return "Cloudflare error codes " + strings.Join(codes, ", ")
-}
-
-var pngSignature = []byte{0x89, 'P', 'N', 'G', '\r', '\n', 0x1a, '\n'}
-
 // validatePNG proves the bytes are a complete PNG with usable dimensions. A
 // transport-level success is not enough: a truncated or non-image body is
 // rejected here rather than persisted as evidence.
 func validatePNG(data []byte) (int, int, error) {
-	if len(data) == 0 {
-		return 0, 0, fmt.Errorf("image is empty")
-	}
-	if len(data) < len(pngSignature)+25 || !bytes.Equal(data[:len(pngSignature)], pngSignature) {
-		return 0, 0, fmt.Errorf("image is not a PNG")
-	}
-	header := data[len(pngSignature):]
-	if binary.BigEndian.Uint32(header[0:4]) != 13 || !bytes.Equal(header[4:8], []byte("IHDR")) {
-		return 0, 0, fmt.Errorf("image has no PNG header chunk")
-	}
-	width := int(binary.BigEndian.Uint32(header[8:12]))
-	height := int(binary.BigEndian.Uint32(header[12:16]))
-	// Bound the declared dimensions BEFORE decoding. png.Decode allocates from
-	// the header, so a small compressed body may declare an enormous canvas;
-	// checking afterwards would mean the allocation has already happened.
-	if width < screenshotMinDimension || height < screenshotMinDimension ||
-		width > screenshotMaxDimension || height > screenshotMaxDimension {
-		return 0, 0, fmt.Errorf("image dimensions %dx%d are outside the accepted %d-%d range",
-			width, height, screenshotMinDimension, screenshotMaxDimension)
-	}
-	// A per-axis bound alone still permits a 20000x20000 allocation, so the
-	// pixel count is bounded too. The fixed capture viewport is far below this.
-	if width*height > screenshotMaxPixels {
-		return 0, 0, fmt.Errorf("image declares %d pixels, more than the accepted %d",
-			width*height, screenshotMaxPixels)
-	}
-	// Only now is a full decode safe. It proves the stream is complete rather
-	// than a valid prefix, and that the header did not lie about its canvas.
-	decoded, err := png.Decode(bytes.NewReader(data))
-	if err != nil {
-		return 0, 0, fmt.Errorf("image is not a decodable PNG: %v", err)
-	}
-	bounds := decoded.Bounds()
-	if bounds.Dx() != width || bounds.Dy() != height {
-		return 0, 0, fmt.Errorf("image dimensions disagree with the PNG header")
-	}
-	return width, height, nil
+	return captureimage.ValidatePNG(data)
 }
 
 // captureScreenshots runs between the Researcher and every later role. It is a
-// no-op - and requires no Cloudflare credential - when the Researcher asked for
+// no-op - and requires no capture runner - when the Researcher asked for
 // nothing, so existing briefs are unaffected. Any failure here returns an
 // error, which blocks the run before the Story Editor and the Writer start.
 func (control *controller) captureScreenshots() error {
@@ -683,56 +443,192 @@ func (control *controller) captureScreenshots() error {
 	if err := control.saveWorkflow(); err != nil {
 		return err
 	}
-	// The endpoint is settled before the credentials are read, so an unsafe
-	// override can never reach the same code path as the bearer token.
-	baseURL, err := resolveScreenshotBaseURL()
-	if err != nil {
-		return err
-	}
-	credentials, err := loadScreenshotCredentials()
-	if err != nil {
-		return err
-	}
-	client := newScreenshotClient(credentials, baseURL)
-	manifest := ScreenshotManifest{
-		SchemaVersion: screenshotManifestVersion,
-		Engine:        screenshotEngine,
-		Viewport:      ScreenshotViewport{Width: screenshotViewportWidth, Height: screenshotViewportHeight},
-		Screenshots:   make([]ScreenshotRecord, 0, len(control.screenshotRequests)),
-	}
 	rollback := func() {
 		_ = control.store.removeAll(screenshotAssetDir)
 		_ = control.store.remove(screenshotManifestArtifact)
+		control.screenshotRecords = make(map[string]*ScreenshotRecord)
+		control.screenshotManifest = nil
 	}
-	// Requests are captured strictly one at a time, in artifact order.
-	for _, request := range control.screenshotRequests {
-		captured, captureErr := client.capture(context.Background(), request)
-		if captureErr != nil {
-			rollback()
-			return captureErr
-		}
-		relative := screenshotAssetPath(request.ID)
+	captures, err := control.runCaptureRunner(control.screenshotRequests)
+	if err != nil {
+		rollback()
+		return err
+	}
+	for index, captured := range captures {
+		request := control.screenshotRequests[index]
+		relative := screenshotAttemptAssetPath(request.ID, 1)
 		if err := control.store.writeAtomic(relative, captured.data, 0o444); err != nil {
 			rollback()
 			return fmt.Errorf("persist screenshot %q: %w", request.ID, err)
 		}
-		manifest.Screenshots = append(manifest.Screenshots, ScreenshotRecord{
-			ID: request.ID, Path: relative, RequestedURL: request.URL, Selector: request.Selector,
-			CapturedAt: time.Now().UTC(), Supports: request.Supports, Reason: request.Reason,
-			Engine: screenshotEngine, MediaType: screenshotMediaType, ByteSize: len(captured.data),
+		record := &ScreenshotRecord{
+			ID: request.ID, Path: relative, RequestedURL: request.URL, FinalURL: captured.protocol.FinalURL, Selector: request.Selector,
+			CapturedAt: captured.time, Supports: request.Supports, Reason: request.Reason,
+			Backend: captured.protocol.Backend, MediaType: captured.protocol.MediaType,
+			Viewport: ScreenshotViewport{Width: captured.protocol.Viewport.Width, Height: captured.protocol.Viewport.Height},
+			FullPage: captured.protocol.FullPage, ByteSize: len(captured.data),
 			Width: captured.width, Height: captured.height, SHA256: revisionFor(captured.data),
-		})
+			ActionSummary: captured.protocol.ActionSummary, TraceReference: captured.protocol.TraceReference,
+			Attempt: 1,
+		}
+		control.screenshotRecords[request.ID] = record
+	}
+	if err := control.persistScreenshotManifest(); err != nil {
+		rollback()
+		return err
+	}
+	return nil
+}
+
+func (control *controller) persistScreenshotManifest() error {
+	manifest := ScreenshotManifest{SchemaVersion: screenshotManifestVersion, Screenshots: make([]ScreenshotRecord, 0, len(control.screenshotRequests))}
+	for _, request := range control.screenshotRequests {
+		record := control.screenshotRecords[request.ID]
+		if record == nil {
+			return fmt.Errorf("screenshot record %q is missing", request.ID)
+		}
+		manifest.Screenshots = append(manifest.Screenshots, *record)
 	}
 	data, err := json.MarshalIndent(manifest, "", "  ")
 	if err != nil {
-		rollback()
 		return fmt.Errorf("encode %s: %w", screenshotManifestArtifact, err)
 	}
-	if err := control.store.writeAtomic(screenshotManifestArtifact, append(data, '\n'), 0o444); err != nil {
-		rollback()
+	data = append(data, '\n')
+	if err := control.store.writeAtomic(screenshotManifestArtifact, data, 0o444); err != nil {
 		return fmt.Errorf("write %s: %w", screenshotManifestArtifact, err)
 	}
-	control.screenshotManifest = append(data, '\n')
+	control.screenshotManifest = append([]byte(nil), data...)
+	return nil
+}
+
+func screenshotAttemptFromRecord(record *ScreenshotRecord) ScreenshotAttemptRecord {
+	return ScreenshotAttemptRecord{
+		Attempt: record.Attempt, Path: record.Path, FinalURL: record.FinalURL, CapturedAt: record.CapturedAt,
+		Backend: record.Backend, MediaType: record.MediaType, Viewport: record.Viewport, FullPage: record.FullPage,
+		ByteSize: record.ByteSize, Width: record.Width, Height: record.Height, SHA256: record.SHA256,
+		ActionSummary: append([]string(nil), record.ActionSummary...), TraceReference: record.TraceReference,
+		EditorialOutcome: record.EditorialOutcome,
+	}
+}
+
+func screenshotEditorialRejectionExhausted(record *ScreenshotRecord) bool {
+	return record != nil && record.Attempt >= 2 && record.EditorialOutcome != nil && record.EditorialOutcome.Status == "rejected"
+}
+
+func (control *controller) recordScreenshotEditorialOutcomes(outcomes []ScreenshotEditorialOutcome) ([]ScreenshotRequest, error) {
+	if len(control.screenshotRequests) == 0 {
+		return nil, nil
+	}
+	var retry []ScreenshotRequest
+	for _, outcome := range outcomes {
+		record := control.screenshotRecords[outcome.RequestID]
+		if record == nil {
+			return nil, fmt.Errorf("editorial outcome names unknown screenshot request %q", outcome.RequestID)
+		}
+		if screenshotEditorialRejectionExhausted(record) {
+			if outcome.Status != "rejected" {
+				return nil, fmt.Errorf("screenshot request %q already exhausted two editorially rejected attempts; its durable non-placement is terminal", outcome.RequestID)
+			}
+			// Preserve the exact terminal outcome and its reason. A later
+			// candidate cannot rewrite already-evaluated attempt provenance.
+			continue
+		}
+		copyOfOutcome := outcome
+		record.EditorialOutcome = &copyOfOutcome
+		if outcome.Status != "rejected" || record.Attempt >= 2 {
+			continue
+		}
+		var original ScreenshotRequest
+		found := false
+		for _, request := range control.screenshotRequests {
+			if request.ID == outcome.RequestID {
+				original = request
+				found = true
+				break
+			}
+		}
+		if !found {
+			return nil, fmt.Errorf("editorial outcome lost screenshot request %q", outcome.RequestID)
+		}
+		original.PriorAttempt = &captureprotocol.PriorAttempt{
+			Attempt: record.Attempt, RequestID: record.ID, FinalURL: record.FinalURL,
+			CapturedAt: record.CapturedAt.UTC().Format(time.RFC3339Nano), Backend: record.Backend,
+			MediaType: record.MediaType,
+			Viewport:  captureprotocol.Viewport{Width: record.Viewport.Width, Height: record.Viewport.Height},
+			FullPage:  record.FullPage, ByteSize: int64(record.ByteSize), Width: record.Width, Height: record.Height,
+			SHA256: record.SHA256,
+			EditorialOutcome: captureprotocol.EditorialRejection{
+				RequestID: outcome.RequestID, Status: outcome.Status, Reason: outcome.Reason,
+			},
+		}
+		retry = append(retry, original)
+	}
+	if err := control.persistScreenshotManifest(); err != nil {
+		return nil, err
+	}
+	// A terminally rejected second attempt remains durable evidence, but its
+	// pixels are no longer an adoptable input for any later candidate.
+	if err := control.publishVisualInputs(); err != nil {
+		return nil, err
+	}
+	return retry, nil
+}
+
+func (control *controller) retryRejectedScreenshots(requests []ScreenshotRequest) error {
+	captures, err := control.runCaptureRunner(requests)
+	if err != nil {
+		return err
+	}
+	type writtenAttempt struct {
+		path  string
+		owned os.FileInfo
+	}
+	written := make([]writtenAttempt, 0, len(captures))
+	rollback := func() {
+		for _, item := range written {
+			_ = control.store.removeOwned(item.path, item.owned)
+		}
+	}
+	for index, captured := range captures {
+		request := requests[index]
+		record := control.screenshotRecords[request.ID]
+		if record == nil || record.EditorialOutcome == nil || record.EditorialOutcome.Status != "rejected" || record.Attempt != 1 {
+			rollback()
+			return fmt.Errorf("screenshot retry %q has no first-attempt editorial rejection", request.ID)
+		}
+		relative := screenshotAttemptAssetPath(request.ID, 2)
+		owned, err := control.store.writeAtomicNoReplace(relative, captured.data, 0o444)
+		if owned != nil {
+			written = append(written, writtenAttempt{path: relative, owned: owned})
+		}
+		if err != nil {
+			rollback()
+			return fmt.Errorf("persist screenshot retry %q: %w", request.ID, err)
+		}
+		record.PriorAttempts = append(record.PriorAttempts, screenshotAttemptFromRecord(record))
+		record.Path = relative
+		record.FinalURL = captured.protocol.FinalURL
+		record.CapturedAt = captured.time
+		record.Backend = captured.protocol.Backend
+		record.MediaType = captured.protocol.MediaType
+		record.Viewport = ScreenshotViewport{Width: captured.protocol.Viewport.Width, Height: captured.protocol.Viewport.Height}
+		record.FullPage = captured.protocol.FullPage
+		record.ByteSize = len(captured.data)
+		record.Width = captured.width
+		record.Height = captured.height
+		record.SHA256 = revisionFor(captured.data)
+		record.ActionSummary = append([]string(nil), captured.protocol.ActionSummary...)
+		record.TraceReference = captured.protocol.TraceReference
+		record.Attempt = 2
+		record.EditorialOutcome = nil
+	}
+	if err := control.persistScreenshotManifest(); err != nil {
+		rollback()
+		return err
+	}
+	if err := control.publishVisualInputs(); err != nil {
+		return err
+	}
 	return nil
 }
 
@@ -745,7 +641,11 @@ func (control *controller) screenshotContext() (manifest []byte, images map[stri
 	}
 	images = make(map[string][]byte, len(control.screenshotRequests))
 	for _, request := range control.screenshotRequests {
-		relative := screenshotAssetPath(request.ID)
+		record := control.screenshotRecords[request.ID]
+		if record == nil {
+			return nil, nil, fmt.Errorf("screenshot record %q is missing", request.ID)
+		}
+		relative := record.Path
 		data, readErr := control.store.readRegular(relative)
 		if readErr != nil {
 			return nil, nil, fmt.Errorf("read staged screenshot %s: %w", relative, readErr)

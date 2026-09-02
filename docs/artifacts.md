@@ -110,7 +110,7 @@ appear in `claim-ledger.md` as a whole token, so `claim-004` never matches
 default port; embedded credentials, `localhost`, `.local`, `.internal`, `.lan`,
 `.home`, `.intranet`, `.corp`, IP literals, single-label hosts, non-default
 ports, and non-HTTPS schemes are rejected. An explicitly empty `screenshots`
-list means the same as no artifact: no capture, and no Cloudflare credential.
+list means the same as no artifact: no capture runner or provider credential.
 The Researcher may not create `evidence/assets/screenshots/`; that directory is
 controller-owned. The artifact is copied into the run only when it asks for at
 least one capture, and it is stored read-only (`0444`).
@@ -119,28 +119,58 @@ least one capture, and it is stored read-only (`0444`).
 
 ```json
 {
-  "schema_version": 1,
-  "engine": "cloudflare-chromium",
-  "viewport": { "width": 1280, "height": 800 },
+  "schema_version": 3,
   "screenshots": [
     {
       "id": "shot-001",
       "path": "evidence/assets/screenshots/shot-001.png",
-      "requested_url": "https://example.com/report",
+      "requested_url": "https://redirect.example/to-report",
+      "final_url": "https://example.com/report",
       "selector": "main",
       "captured_at": "2026-08-26T10:00:00Z",
       "supports": ["claim-004"],
       "reason": "Shows the interface described by claim-004",
-      "engine": "cloudflare-chromium",
+      "backend": "cloudflare-chromium",
       "media_type": "image/png",
+      "viewport": { "width": 1280, "height": 800 },
+      "full_page": false,
       "byte_size": 51234,
       "width": 1280,
       "height": 800,
-      "sha256": "sha256:..."
+      "sha256": "sha256:...",
+      "action_summary": ["navigate to the requested public URL", "capture the requested PNG viewport"],
+      "attempt": 1,
+      "editorial_outcome": {
+        "request_id": "shot-001",
+        "status": "usable",
+        "reason": "The visible page matches the request reason, supported claim, and article context."
+      }
     }
   ]
 }
 ```
+
+The external runner protocol is version 2. The controller creates a private
+`0700` workspace, writes immutable `request.json`, and directly invokes the
+configured executable with `--protocol-version=2` and that workspace as
+its current directory. The request preserves each request ID, public URL,
+optional selector, reason, and supported claim IDs. A runner may return only
+strict `result.json` plus the assets declared below `assets/`. Each result binds
+the request/requested/final URLs, timestamp, backend, media type,
+viewport/full-page state, relative image path, byte size, dimensions, digest,
+claim IDs/rationale, and exactly one bounded action summary or trace reference.
+The controller terminates the complete runner process tree before validation,
+copies accepted bytes under controller-owned names, and removes the workspace
+on success and failure.
+
+After a request-keyed Visual Editor rejection, the controller may make one new
+invocation for that logical request. Its request carries a bounded
+`prior_attempt` containing the rejected attempt's final URL, timestamp,
+backend, viewport/full-page state, size, dimensions, digest, and editorial
+reason. It carries no preferred provider or fallback directive. The second
+attempt uses a fresh private workspace, is evaluated independently, and either
+becomes the current usable evidence or ends in a durable rejected outcome;
+there is no third attempt.
 
 The manifest and the images are read-only (`0444`) immutable inputs to later
 roles. Their bytes are exactly the accepted capture response, and the visual
@@ -225,6 +255,13 @@ fields and duplicate object keys are rejected recursively:
       "action": "none",
       "rationale": "The opening is two sentences long."
     }
+  ],
+  "screenshot_outcomes": [
+    {
+      "request_id": "shot-001",
+      "status": "usable",
+      "reason": "The visible page matches the request reason, supported claim, and article context."
+    }
   ]
 }
 ```
@@ -238,6 +275,12 @@ opportunity is required and at most twenty are accepted. `location` is at most
 512 bytes, `rationale` and `alt_text` at most 1024 bytes each, and a `mermaid`
 body at most 8192 bytes. Every bound is repeated in the Visual Editor
 assignment, so the contract is knowable before the plan is written.
+When screenshots are staged, exactly one `screenshot_outcomes` entry is
+required for each `visual-inputs.json` entry whose origin is `screenshot`.
+`rejected` inputs cannot be placed; each reason is bounded to 1024 bytes and is
+persisted in `evidence/screenshots.json` with the attempt history. A durable
+screenshot record absent from that staged set is a terminal non-placement and
+must not be named in `screenshot_outcomes` or placed.
 
 `visuals/article-00N/manifest.json` is controller-generated and read-only
 (`0444`). It binds the plan, the source prose revision, the assembled

@@ -1903,6 +1903,8 @@ func buildBinaries(t *testing.T) (string, string) {
 			input  string
 		}{
 			{filepath.Join(buildDir, "write-uuter"), "./cmd/write-uuter"},
+			{filepath.Join(buildDir, "write-uuter-cloudflare-capture"), "./cmd/write-uuter-cloudflare-capture"},
+			{filepath.Join(buildDir, "fake-capture-runner"), "./internal/app/testdata/fakecapture"},
 			{filepath.Join(buildDir, "fake-agent"), "./internal/app/testdata/fakeagent"},
 		} {
 			command := exec.Command("go", "build", "-o", item.output, item.input)

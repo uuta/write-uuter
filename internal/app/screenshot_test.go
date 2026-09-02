@@ -6,6 +6,8 @@ import (
 	"image"
 	"image/color"
 	"image/png"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -22,6 +24,106 @@ func testPNG(t *testing.T, width, height int) []byte {
 		t.Fatal(err)
 	}
 	return buffer.Bytes()
+}
+
+func TestScreenshotAttemptPathsCannotCollideWithRequestAssetPaths(t *testing.T) {
+	retry := screenshotAttemptAssetPath("shot-001", 2)
+	otherRequest := screenshotAttemptAssetPath("shot-001-attempt-002", 1)
+	if retry == otherRequest {
+		t.Fatalf("derived retry path %q collides with another request asset", retry)
+	}
+	if retry != "evidence/assets/screenshots/attempts/shot-001/attempt-002.png" {
+		t.Fatalf("retry path = %q, want reserved attempt namespace", retry)
+	}
+}
+
+func TestTerminalScreenshotRejectionCannotBeOverwritten(t *testing.T) {
+	terminal := &ScreenshotEditorialOutcome{RequestID: "shot-001", Status: "rejected", Reason: "second attempt is unrelated"}
+	control := controller{
+		screenshotRequests: []ScreenshotRequest{{ID: "shot-001"}},
+		screenshotRecords: map[string]*ScreenshotRecord{
+			"shot-001": {ID: "shot-001", Attempt: 2, EditorialOutcome: terminal},
+		},
+	}
+	if _, err := control.recordScreenshotEditorialOutcomes([]ScreenshotEditorialOutcome{{
+		RequestID: "shot-001", Status: "usable", Reason: "later candidate tries to revive it",
+	}}); err == nil || !strings.Contains(err.Error(), "durable non-placement is terminal") {
+		t.Fatalf("later usable outcome did not fail at terminal rejection: %v", err)
+	}
+	if got := control.screenshotRecords["shot-001"].EditorialOutcome; got != terminal || got.Status != "rejected" || got.Reason != "second attempt is unrelated" {
+		t.Fatalf("terminal rejection was overwritten: %+v", got)
+	}
+}
+
+func TestScreenshotEditorialReasonByteBoundary(t *testing.T) {
+	available := map[string]visualInput{
+		"shot-001": {ID: "shot-001", Origin: visualInputOriginScreenshot},
+	}
+	for _, test := range []struct {
+		name    string
+		length  int
+		wantErr bool
+	}{
+		{name: "1024 accepted", length: 1024},
+		{name: "1025 rejected", length: 1025, wantErr: true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			err := validateScreenshotEditorialOutcomes([]ScreenshotEditorialOutcome{{
+				RequestID: "shot-001", Status: "usable", Reason: strings.Repeat("x", test.length),
+			}}, available, nil)
+			if test.wantErr && (err == nil || !strings.Contains(err.Error(), "longer than 1024 bytes")) {
+				t.Fatalf("reason length %d did not fail at documented boundary: %v", test.length, err)
+			}
+			if !test.wantErr && err != nil {
+				t.Fatalf("reason length %d rejected: %v", test.length, err)
+			}
+		})
+	}
+}
+
+func TestValidateCaptureWorkspaceRequiresExactDeclaredAssetPath(t *testing.T) {
+	declarations := map[string]bool{"assets/declared.png": true}
+	folded := map[string]bool{"assets/declared.png": true}
+
+	t.Run("actual_case_variant_is_undeclared", func(t *testing.T) {
+		workspace := t.TempDir()
+		if err := os.Mkdir(filepath.Join(workspace, "assets"), 0o700); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(workspace, "assets", "DECLARED.png"), []byte("extra"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		if err := validateCaptureWorkspaceEntries(workspace, declarations, folded); err == nil || !strings.Contains(err.Error(), "undeclared file") {
+			t.Fatalf("case-variant file passed exact declaration membership: %v", err)
+		}
+	})
+
+	t.Run("two_case_variants_on_case_sensitive_filesystem", func(t *testing.T) {
+		workspace := t.TempDir()
+		assets := filepath.Join(workspace, "assets")
+		if err := os.Mkdir(assets, 0o700); err != nil {
+			t.Fatal(err)
+		}
+		lower := filepath.Join(assets, "declared.png")
+		upper := filepath.Join(assets, "DECLARED.png")
+		if err := os.WriteFile(lower, []byte("declared"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(upper, []byte("extra"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		lowerInfo, lowerErr := os.Stat(lower)
+		upperInfo, upperErr := os.Stat(upper)
+		if lowerErr != nil || upperErr != nil {
+			t.Fatalf("inspect case variants: lower=%v upper=%v", lowerErr, upperErr)
+		}
+		if os.SameFile(lowerInfo, upperInfo) {
+			t.Skip("filesystem is case-insensitive")
+		}
+		if err := validateCaptureWorkspaceEntries(workspace, declarations, folded); err == nil || !strings.Contains(err.Error(), "undeclared file") {
+			t.Fatalf("extra case variant passed on case-sensitive filesystem: %v", err)
+		}
+	})
 }
 
 func TestValidatePublicPageURLAcceptsOnlyPublicHTTPSPages(t *testing.T) {
@@ -138,49 +240,13 @@ func TestValidatePNGRejectsAnythingButACompleteImage(t *testing.T) {
 	}
 }
 
-func TestScreenshotClientScrubsCredentialsFromDiagnostics(t *testing.T) {
-	client := newScreenshotClient(screenshotCredentials{accountID: "acct-secret", apiToken: "tok-secret"}, screenshotAPIBaseURL)
-	message := client.scrubbed("request to https://api.example/accounts/%s failed: token %s rejected", "acct-secret", "tok-secret").Error()
-	if strings.Contains(message, "acct-secret") || strings.Contains(message, "tok-secret") {
-		t.Fatalf("diagnostic retained credential material: %q", message)
-	}
-	if !strings.Contains(message, "[redacted]") {
-		t.Fatalf("diagnostic did not mark the redaction: %q", message)
-	}
-}
-
-func TestLoadScreenshotCredentialsNamesOnlyTheMissingVariable(t *testing.T) {
-	t.Setenv(screenshotAccountEnv, "")
-	t.Setenv(screenshotTokenEnv, "")
-	_, err := loadScreenshotCredentials()
-	if err == nil {
-		t.Fatal("missing credentials were accepted")
-	}
-	if !strings.Contains(err.Error(), screenshotAccountEnv) || !strings.Contains(err.Error(), screenshotTokenEnv) {
-		t.Fatalf("error does not name both variables: %v", err)
-	}
-
-	t.Setenv(screenshotAccountEnv, "account-id")
-	t.Setenv(screenshotTokenEnv, "bad token with space")
-	if _, err := loadScreenshotCredentials(); err == nil {
-		t.Fatal("a token containing whitespace was accepted")
-	} else if strings.Contains(err.Error(), "bad token") {
-		t.Fatalf("rejection echoed the credential value: %v", err)
-	}
-
-	t.Setenv(screenshotAccountEnv, "acct/../other")
-	t.Setenv(screenshotTokenEnv, "token")
-	if _, err := loadScreenshotCredentials(); err == nil {
-		t.Fatal("an account ID containing a path separator was accepted")
-	}
-}
-
 func TestControllerCommandEnvironmentDropsScreenshotCredentials(t *testing.T) {
-	t.Setenv(screenshotAccountEnv, "account-id")
-	t.Setenv(screenshotTokenEnv, "token-value")
+	t.Setenv("CLOUDFLARE_ACCOUNT_ID", "account-id")
+	t.Setenv("CLOUDFLARE_API_TOKEN", "token-value")
+	t.Setenv("FUTURE_CAPTURE_PROVIDER_SECRET", "future-secret")
 	for _, entry := range controllerCommandEnvironment() {
-		if strings.HasPrefix(entry, screenshotAccountEnv+"=") || strings.HasPrefix(entry, screenshotTokenEnv+"=") {
-			t.Fatalf("controller helper environment carried %q", entry)
+		if strings.Contains(entry, "account-id") || strings.Contains(entry, "token-value") || strings.Contains(entry, "future-secret") {
+			t.Fatalf("controller helper environment carried capture-runner credential material: %q", entry)
 		}
 	}
 	for _, entry := range agentEnvironment(providerCodex, t.TempDir(), t.TempDir(), "researcher", "", 1, "rev", "inv") {
@@ -261,59 +327,5 @@ func TestParseScreenshotRequestsRejectsCaseInsensitiveIDCollisions(t *testing.T)
 	payload := `{"screenshots":[` + entry("shot-001") + `,` + entry("shot-002") + `]}`
 	if _, err := parseScreenshotRequests([]byte(payload), []byte(testClaimLedger)); err != nil {
 		t.Fatalf("distinct IDs rejected: %v", err)
-	}
-}
-
-// Regression: the base URL override retargets a request that carries the API
-// token, so anything but a loopback origin must fail the run.
-func TestResolveScreenshotBaseURLAcceptsOnlyLoopbackOverrides(t *testing.T) {
-	t.Setenv(screenshotBaseURLEnv, "")
-	base, err := resolveScreenshotBaseURL()
-	if err != nil || base != screenshotAPIBaseURL {
-		t.Fatalf("unset override did not resolve to the Cloudflare API: %q %v", base, err)
-	}
-	for _, accepted := range []string{
-		"http://127.0.0.1:8080", "http://127.0.0.1:8080/", "https://127.0.0.1:9443/v4",
-		"http://[::1]:8080", "http://localhost:8080",
-	} {
-		t.Setenv(screenshotBaseURLEnv, accepted)
-		if _, err := resolveScreenshotBaseURL(); err != nil {
-			t.Errorf("loopback override %q rejected: %v", accepted, err)
-		}
-	}
-	for _, rejected := range []string{
-		"https://attacker.example/v4", "http://169.254.169.254/latest",
-		"http://10.0.0.5:8080", "https://api.cloudflare.com.evil.example/client/v4",
-		"ftp://127.0.0.1/x", "file:///tmp/x", "http://user:pass@127.0.0.1/x",
-		"http://127.0.0.1/x?token=1", "http://127.0.0.1/x#f", "not a url at all",
-		"http://0.0.0.0:8080",
-	} {
-		t.Setenv(screenshotBaseURLEnv, rejected)
-		if base, err := resolveScreenshotBaseURL(); err == nil {
-			t.Errorf("unsafe override %q accepted as %q", rejected, base)
-		}
-	}
-}
-
-// Regression: an upstream error body must never be copied into a durable
-// artifact. Only the status code and documented numeric codes are reported.
-func TestNonSuccessDiagnosticsReportOnlyGeneratedText(t *testing.T) {
-	secret := "sk-live-abcdefghijklmnopqrstuvwxyz"
-	for name, body := range map[string]string{
-		"documented envelope": `{"success":false,"errors":[{"code":10000,"message":"Authentication error for ` + secret + `"}]}`,
-		"undocumented shape":  `{"detail":"` + secret + `"}`,
-		"html error page":     `<html><body>` + secret + `</body></html>`,
-		"empty body":          ``,
-	} {
-		rendered := apiErrorCodes([]byte(body))
-		if strings.Contains(rendered, secret) || strings.Contains(rendered, "Authentication error") {
-			t.Errorf("%s leaked upstream text into a diagnostic: %q", name, rendered)
-		}
-	}
-	if got := apiErrorCodes([]byte(`{"errors":[{"code":10000},{"code":7003}]}`)); !strings.Contains(got, "10000") || !strings.Contains(got, "7003") {
-		t.Errorf("documented error codes were dropped: %q", got)
-	}
-	if got := apiErrorCodes([]byte(`{"detail":"nope"}`)); !strings.Contains(got, "no documented error code") {
-		t.Errorf("unparseable body produced an unexpected diagnostic: %q", got)
 	}
 }
