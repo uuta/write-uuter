@@ -11,3 +11,25 @@
 # summary is durable enough to keep reviewable.
 /docs/review/*
 !/docs/review/manager*.md
+
+# macOS metadata.
+.DS_Store
+
+# Private per-run provider homes: several GB total, containing auth.json
+# credentials and SQLite state. Never commit or copy these anywhere.
+.write-uuter-private-*/
+
+# Accidental zero-byte shell-redirection targets at the repository root.
+/PNG
+/external
+/screenshot
+/validated
+
+# Article content is managed separately from this tool repo. Files stay on
+# disk but out of git. Topic-scoped so future curated smoke fixtures and
+# briefs stay visible; add a new line per topic as needed.
+/examples/idoubi-*
+/examples/blake-valis-*
+/smoke-runs/idoubi-*
+/smoke-runs/blake-valis-*
+/smoke-runs/dprk-*

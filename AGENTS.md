@@ -1,5 +1,17 @@
 # Repository Instructions
 
+## Authoring briefs
+
+Start new article briefs from `examples/brief-template.md`. The brief
+validator requires `Audience` and `Publication target` sections; a brief
+without them fails before any agent runs. The series plan document referenced
+by the brief is the source of truth for series-level media design (reader
+persona, value, strengths, freshness rules); reusable prose rules live in
+`STYLE.md`. A brief may quote the applicable persona, value, and strengths so
+the run is self-contained — agents read the brief, not the plan — but keep the
+quote in sync with the plan rather than diverging or inventing new
+series-level design there.
+
 ## Editorial guidance
 
 `STYLE.md` is the source of truth for reusable article-writing conventions.
